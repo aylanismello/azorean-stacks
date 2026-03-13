@@ -27,14 +27,17 @@ export default function SeedsPage() {
     fetchSeeds();
   }, [fetchSeeds]);
 
-  const handleAddSeed = async (artist: string, title: string) => {
+  const handleAddSeed = async (input: string) => {
     try {
       const res = await fetch("/api/seeds", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ artist, title }),
+        body: JSON.stringify({ input }),
       });
-      if (!res.ok) throw new Error("Failed to add seed");
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Failed to add seed");
+      }
       fetchSeeds();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add seed");
@@ -74,7 +77,7 @@ export default function SeedsPage() {
       {/* Add seed form */}
       <div className="mb-8">
         <p className="text-sm text-muted mb-3">
-          Add tracks as seeds — Pico uses these as starting points for discovery.
+          Add tracks as seeds — the agent uses these for discovery.
         </p>
         <SeedForm onSubmit={handleAddSeed} />
       </div>
@@ -124,7 +127,8 @@ function SeedCard({
   const [expanded, setExpanded] = useState(false);
   const episodes = seed.episodes || [];
   const lastRun = seed.last_run;
-  const noMatches = lastRun && lastRun.tracks_found === 0;
+  const totalFound = (seed.discovery_count || 0) + episodes.length;
+  const noMatches = lastRun && lastRun.tracks_found === 0 && episodes.length === 0;
 
   return (
     <div
@@ -155,7 +159,7 @@ function SeedCard({
           {/* Episode count hint */}
           {episodes.length > 0 && (
             <p className="text-[10px] text-muted mt-0.5">
-              {episodes.length} episode{episodes.length !== 1 ? "s" : ""} {expanded ? "▾" : "▸"}
+              {seed.curated_count || 0}/{episodes.length} curated {expanded ? "▾" : "▸"}
             </p>
           )}
         </button>
@@ -163,7 +167,7 @@ function SeedCard({
         {/* Discovery count + no-match warning */}
         <div className="text-right flex-shrink-0">
           <p className="text-sm font-mono text-accent">
-            {seed.discovery_count || 0}
+            {totalFound}
           </p>
           <p className="text-[10px] text-muted">found</p>
           {noMatches && (
@@ -201,6 +205,13 @@ function SeedCard({
             >
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-muted uppercase tracking-wider flex-shrink-0">
                 {ep.source}
+              </span>
+              <span className={`text-[9px] px-1 py-0.5 rounded flex-shrink-0 ${
+                ep.match_type === "full"
+                  ? "bg-accent/15 text-accent"
+                  : "bg-amber-500/15 text-amber-400"
+              }`}>
+                {ep.match_type === "full" ? "exact" : "artist only"}
               </span>
               <a
                 href={ep.url}

@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef } from "react";
 import { Track } from "@/lib/types";
 import { PlayerSection } from "./PlayerSection";
+import { AudioPlayerHandle } from "./AudioPlayer";
 
 interface TrackCardProps {
   track: Track;
@@ -48,6 +49,15 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   const [voting, setVoting] = useState(false);
   const [approved, setApproved] = useState(false);
   const votingRef = useRef(false);
+  const playerRef = useRef<AudioPlayerHandle>(null);
+  const [audioState, setAudioState] = useState({ playing: false, loading: false });
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    await navigator.clipboard.writeText(`${track.artist} - ${track.title}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, [track.artist, track.title]);
 
   const handleVote = useCallback(
     async (status: "approved" | "rejected", advance: boolean = true) => {
@@ -73,6 +83,11 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   const gradient = generateGradient(track.artist, track.title);
   const coverUrl = safeCoverUrl(track.cover_art_url);
   const meta = track.metadata as Record<string, string | undefined>;
+  const hasAudio = !!(track.audio_url || track.preview_url);
+
+  const handleArtworkPlay = useCallback(() => {
+    playerRef.current?.toggle();
+  }, []);
 
   return (
     <div
@@ -97,12 +112,60 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
           {/* Gradient overlay for text readability */}
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
 
+          {/* Play/pause overlay on artwork */}
+          {hasAudio && (
+            <button
+              onClick={handleArtworkPlay}
+              className="absolute inset-0 z-10 flex items-center justify-center group/play"
+            >
+              <span
+                className={`flex items-center justify-center w-14 h-14 rounded-full backdrop-blur-md transition-all active:scale-90 ${
+                  audioState.playing
+                    ? "bg-black/50 opacity-0 group-hover/play:opacity-100"
+                    : "bg-black/40 opacity-100"
+                } ${audioState.loading ? "opacity-100" : ""}`}
+              >
+                {audioState.loading ? (
+                  <svg className="animate-spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
+                    <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                  </svg>
+                ) : audioState.playing ? (
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
+                    <rect x="6" y="4" width="4" height="16" rx="1" />
+                    <rect x="14" y="4" width="4" height="16" rx="1" />
+                  </svg>
+                ) : (
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                )}
+              </span>
+            </button>
+          )}
+
           {/* Track info overlay */}
-          <div className="relative z-10 p-5 w-full">
+          <div className="relative z-20 p-5 w-full pointer-events-none">
             <h2 className="text-2xl font-bold text-white leading-tight truncate">
               {track.title}
             </h2>
-            <p className="text-lg text-white/80 mt-0.5 truncate">{track.artist}</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <p className="text-lg text-white/80 truncate">{track.artist}</p>
+              <button
+                onClick={handleCopy}
+                className="pointer-events-auto flex-shrink-0 p-1 rounded-md hover:bg-white/10 active:scale-90 transition-all"
+                title="Copy artist - title"
+              >
+                {copied ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                )}
+              </button>
+            </div>
             <div className="flex items-center gap-2 mt-2">
               <span className="px-2 py-0.5 bg-white/10 backdrop-blur-sm rounded text-xs text-white/70">
                 {sourceLabel(track.source)}
@@ -123,10 +186,19 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
 
         {/* Details section */}
         <div className="p-5 space-y-4">
-          {/* Discovery context */}
-          {(track.metadata as any)?.seed_artist && (
+          {/* Discovery context — seed track info */}
+          {(track.seed_track?.artist || (track.metadata as any)?.seed_artist) && (
             <p className="text-sm text-white/60 leading-relaxed">
-              via {(track.metadata as any).seed_artist}
+              via{" "}
+              {track.seed_track ? (
+                <>
+                  <span className="text-white/80">{track.seed_track.artist}</span>
+                  {" — "}
+                  <span className="text-white/70">{track.seed_track.title}</span>
+                </>
+              ) : (
+                (track.metadata as any).seed_artist
+              )}
               {(track.metadata as any)?.co_occurrence > 1 && ` · ${(track.metadata as any).co_occurrence} sets`}
             </p>
           )}
@@ -156,12 +228,15 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
             )
           )}
 
-          {/* Player — audio preferred over Spotify, tabs if both */}
+          {/* Player — progress bar + controls, play button is on artwork */}
           <PlayerSection
+            ref={playerRef}
             spotifyUrl={track.spotify_url}
             audioSrc={track.audio_url || track.preview_url}
             compact
             autoPlay
+            externalPlayButton={hasAudio}
+            onStateChange={setAudioState}
           />
 
           {/* YouTube link — shown separately if available */}

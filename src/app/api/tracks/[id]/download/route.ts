@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getServiceClient } from "@/lib/supabase";
 
 // GET /api/tracks/[id]/download — get download URL
 export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const supabase = getServiceClient();
   const { data: track, error } = await supabase
     .from("tracks")
     .select("id, storage_path, download_url, artist, title")

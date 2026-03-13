@@ -265,32 +265,66 @@ function EpisodeCard({ episode, onUnskip }: { episode: Episode; onUnskip?: () =>
           ) : (
             <div className="space-y-1">
               {tracks.map((t) => (
-                <div
-                  key={t.id}
-                  className="flex items-center gap-2 py-1.5 text-sm"
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusDot(t.status)}`} />
-                  <span className={`flex-1 min-w-0 truncate ${statusColor(t.status)}`}>
-                    {t.artist} — {t.title}
-                  </span>
-                  <div className="flex gap-1.5 flex-shrink-0">
-                    {t.spotify_url && (
-                      <a href={t.spotify_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-green-400/60 hover:text-green-400">
-                        SP
-                      </a>
-                    )}
-                    {t.youtube_url && (
-                      <a href={t.youtube_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-red-400/60 hover:text-red-400">
-                        YT
-                      </a>
-                    )}
-                  </div>
-                </div>
+                <TrackRow key={t.id} track={t} statusDot={statusDot} statusColor={statusColor} />
               ))}
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function TrackRow({
+  track: t,
+  statusDot,
+  statusColor,
+}: {
+  track: EpisodeTrack;
+  statusDot: (s: string) => string;
+  statusColor: (s: string) => string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(`${t.artist} - ${t.title}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="flex items-center gap-2 py-1.5 text-sm">
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusDot(t.status)}`} />
+      <span className={`flex-1 min-w-0 truncate ${statusColor(t.status)}`}>
+        {t.artist} — {t.title}
+      </span>
+      <div className="flex gap-1.5 flex-shrink-0 items-center">
+        <button
+          onClick={handleCopy}
+          className="p-0.5 rounded hover:bg-surface-3 active:scale-90 transition-all"
+          title="Copy artist - title"
+        >
+          {copied ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted/50 hover:text-muted">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          )}
+        </button>
+        {t.spotify_url && (
+          <a href={t.spotify_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-green-400/60 hover:text-green-400">
+            SP
+          </a>
+        )}
+        {t.youtube_url && (
+          <a href={t.youtube_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-red-400/60 hover:text-red-400">
+            YT
+          </a>
+        )}
+      </div>
     </div>
   );
 }

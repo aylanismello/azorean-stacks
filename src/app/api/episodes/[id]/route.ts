@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getServiceClient } from "@/lib/supabase";
 
 // PATCH /api/episodes/[id] — update episode (e.g. mark as skipped)
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const supabase = getServiceClient();
   const { id } = await params;
   const body = await req.json();
 
@@ -27,6 +28,16 @@ export async function PATCH(
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // When skipping, reject all pending tracks from this episode
+  if (body.skipped) {
+    const now = new Date().toISOString();
+    await supabase
+      .from("tracks")
+      .update({ status: "rejected", voted_at: now })
+      .eq("episode_id", id)
+      .eq("status", "pending");
   }
 
   return NextResponse.json({ ok: true });

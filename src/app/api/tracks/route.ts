@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from("tracks")
-    .select("*", { count: "exact" })
+    .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date)", { count: "exact" })
     .eq("status", status)
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
@@ -36,9 +36,20 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Generate fresh signed URLs for tracks with audio in storage
+  // Normalize & generate fresh signed URLs for tracks with audio in storage
   const tracks = data || [];
   for (const track of tracks) {
+    // Self-referential join can return [] instead of null — normalize
+    if (Array.isArray(track.seed_track)) {
+      track.seed_track = track.seed_track[0] || null;
+    }
+    if (track.seed_track && !track.seed_track.artist) {
+      track.seed_track = null;
+    }
+    // Normalize episode join
+    if (Array.isArray(track.episode)) {
+      track.episode = track.episode[0] || null;
+    }
     if (track.storage_path) {
       const { data: signed } = await supabase.storage
         .from("tracks")

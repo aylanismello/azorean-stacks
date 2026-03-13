@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase, getServiceClient } from "@/lib/supabase";
+import { getServiceClient } from "@/lib/supabase";
 
 // PATCH /api/tracks/[id] — update track status (vote)
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const supabase = getServiceClient();
   const body = await req.json();
   const { status } = body;
 
@@ -34,8 +35,7 @@ export async function PATCH(
       .single();
 
     if (track?.storage_path) {
-      const service = getServiceClient();
-      await service.storage.from("tracks").remove([track.storage_path]);
+      await supabase.storage.from("tracks").remove([track.storage_path]);
       updates.storage_path = null;
       updates.download_url = null;
     }
@@ -60,6 +60,7 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const supabase = getServiceClient();
   const { data, error } = await supabase
     .from("tracks")
     .select("*")

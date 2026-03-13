@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getServiceClient } from "@/lib/supabase";
 
 // GET /api/episodes/[id]/tracks
 export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const supabase = getServiceClient();
   const { data, error } = await supabase
     .from("tracks")
     .select("id, artist, title, status, spotify_url, youtube_url")

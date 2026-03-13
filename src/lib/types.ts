@@ -13,6 +13,8 @@ export interface Track {
   spotify_url: string | null;
   youtube_url: string | null;
 
+  seed_track: { artist: string; title: string } | null;
+  episode: { id: string; title: string | null; source: string; aired_date: string | null } | null;
   metadata: Record<string, unknown>;
   status: "pending" | "approved" | "rejected" | "downloaded";
   created_at: string;
@@ -32,7 +34,8 @@ export interface Seed {
   active: boolean;
   created_at: string;
   discovery_count?: number;
-  episodes?: Array<{ id: string; title: string | null; url: string; source: string; aired_date: string | null }>;
+  episodes?: Array<{ id: string; title: string | null; url: string; source: string; aired_date: string | null; match_type: string }>;
+  curated_count?: number;
   last_run?: { tracks_found: number; tracks_added: number; started_at: string } | null;
 }
 

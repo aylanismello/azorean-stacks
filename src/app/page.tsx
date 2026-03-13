@@ -19,6 +19,58 @@ export default function StackPage() {
   );
 }
 
+// Deterministic hue from a string (seed name, episode id, etc.)
+function hueFromString(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return Math.abs(hash % 360);
+}
+
+function ContextBar({ track }: { track: Track }) {
+  const seed = track.seed_track || (track.metadata as any)?.seed_artist
+    ? { artist: track.seed_track?.artist || (track.metadata as any)?.seed_artist, title: track.seed_track?.title }
+    : null;
+  const episode = track.episode;
+
+  if (!seed && !episode) return null;
+
+  const seedKey = seed ? `${seed.artist}-${seed.title || ""}` : "";
+  const episodeKey = episode?.id || "";
+  const seedHue = seedKey ? hueFromString(seedKey) : 0;
+  const episodeHue = episodeKey ? hueFromString(episodeKey) : 0;
+
+  return (
+    <div className="max-w-card mx-auto mb-2 flex items-center gap-3 px-1 text-[11px] text-muted">
+      {seed && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+            style={{ backgroundColor: `hsl(${seedHue}, 50%, 55%)` }}
+          />
+          <span className="truncate">
+            <span style={{ color: `hsl(${seedHue}, 40%, 70%)` }}>{seed.artist}</span>
+            {seed.title && <span className="text-muted/50"> · {seed.title}</span>}
+          </span>
+        </div>
+      )}
+      {seed && episode && <span className="text-muted/30">→</span>}
+      {episode && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+            style={{ backgroundColor: `hsl(${episodeHue}, 45%, 50%)` }}
+          />
+          <span className="truncate" style={{ color: `hsl(${episodeHue}, 35%, 65%)` }}>
+            {episode.title || episode.source}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StackPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -233,12 +285,15 @@ function StackPageContent() {
         </div>
       )}
 
-      {/* Counter */}
-      <div className="text-center mb-6">
+      {/* Counter — hidden on mobile */}
+      <div className="hidden md:block text-center mb-6">
         <span className="text-sm text-muted font-mono">
           {total} track{total !== 1 ? "s" : ""} waiting
         </span>
       </div>
+
+      {/* Context bar — seed + episode */}
+      <ContextBar track={tracks[0]} />
 
       {/* Current card */}
       <TrackCard

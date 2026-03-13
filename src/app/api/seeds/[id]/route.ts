@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getServiceClient } from "@/lib/supabase";
 
 // PATCH /api/seeds/[id] — toggle active
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const supabase = getServiceClient();
   const body = await req.json();
 
   const updates: Record<string, unknown> = {};
@@ -36,6 +37,7 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
+  const supabase = getServiceClient();
   const { error } = await supabase
     .from("seeds")
     .delete()

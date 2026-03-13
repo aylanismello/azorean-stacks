@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getServiceClient } from "@/lib/supabase";
 
 export async function GET() {
   try {
+    const supabase = getServiceClient();
+
     // Counts by status — efficient head-only queries
     const [pending, approved, rejected] = await Promise.all([
       supabase.from("tracks").select("id", { count: "exact", head: true }).eq("status", "pending"),

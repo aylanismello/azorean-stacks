@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { getServiceClient } from "@/lib/supabase";
 
 // GET /api/episodes?limit=30&offset=0&source=nts
 export async function GET(req: NextRequest) {
+  const supabase = getServiceClient();
   const { searchParams } = req.nextUrl;
   const limit = parseInt(searchParams.get("limit") || "30", 10);
   const offset = parseInt(searchParams.get("offset") || "0", 10);
