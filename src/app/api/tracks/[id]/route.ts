@@ -35,7 +35,18 @@ export async function PATCH(
       .single();
 
     if (track?.storage_path) {
-      await supabase.storage.from("tracks").remove([track.storage_path]);
+      const { error: storageError } = await supabase.storage
+        .from("tracks")
+        .remove([track.storage_path]);
+
+      if (storageError) {
+        console.error(`Failed to delete storage file ${track.storage_path}:`, storageError);
+        return NextResponse.json(
+          { error: `Failed to delete audio file: ${storageError.message}` },
+          { status: 500 }
+        );
+      }
+
       updates.storage_path = null;
       updates.download_url = null;
     }
