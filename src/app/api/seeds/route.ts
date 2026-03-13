@@ -165,6 +165,7 @@ async function parseInput(input: string): Promise<{ artist: string; title: strin
 
 // POST /api/seeds
 export async function POST(req: NextRequest) {
+  const supabase = getServiceClient();
   const body = await req.json();
 
   let artist: string;
