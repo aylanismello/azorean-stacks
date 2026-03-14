@@ -54,6 +54,9 @@ function StackPageContent() {
   // Don't auto-play until the user has interacted (vote, skip, click track, etc.)
   const userHasInteracted = useRef(false);
 
+  // Track whether we've already reconciled player state after a fetch
+  const reconciledTrackId = useRef<string | null>(null);
+
   // Position index into the tracks array (used when we have an episode context)
   const [episodePos, setEpisodePos] = useState(0);
   const prevEpisodeId = useRef(episodeId);
@@ -98,6 +101,7 @@ function StackPageContent() {
   }, [episodeId, isTasteMode, genreFilter, seedFilter]);
 
   const fetchTracks = useCallback(async () => {
+    reconciledTrackId.current = null;
     try {
       const res = await fetch(buildUrl());
       if (!res.ok) throw new Error(`Failed to load tracks (${res.status})`);
@@ -124,6 +128,67 @@ function StackPageContent() {
   useEffect(() => {
     fetchTracks();
   }, [fetchTracks]);
+
+  // Reconcile tracks with globalPlayer.currentTrack after fetch completes.
+  // When re-mounting (e.g. navigating back to Playing tab), fetchTracks gets fresh
+  // data but globalPlayer still holds the previously-playing track. This syncs them.
+  const reconcilePlayerWithTracks = useCallback(() => {
+    const playerTrack = globalPlayer.currentTrack;
+    if (!playerTrack) return;
+    if (reconciledTrackId.current === playerTrack.id) return;
+
+    setTracks((prev) => {
+      if (prev.length === 0) return prev;
+
+      if (episodeId || hasEpisodeTracks) {
+        // Episode mode: find the playing track and set episodePos
+        const idx = prev.findIndex((t) => t.id === playerTrack.id);
+        if (idx >= 0) {
+          setEpisodePos(idx);
+        }
+        // Don't reorder episode tracks — position is semantic
+        return prev;
+      }
+
+      // Taste/genre/seed mode: promote or prepend the playing track
+      const idx = prev.findIndex((t) => t.id === playerTrack.id);
+      if (idx === 0) return prev; // already first
+
+      if (idx > 0) {
+        // Found in list — move to front
+        const reordered = [...prev];
+        const [playing] = reordered.splice(idx, 1);
+        reordered.unshift(playing);
+        return reordered;
+      }
+
+      // Not in list — prepend a synthetic track from player state
+      const synthetic: Track = {
+        id: playerTrack.id,
+        artist: playerTrack.artist,
+        title: playerTrack.title,
+        cover_art_url: playerTrack.coverArtUrl,
+        spotify_url: playerTrack.spotifyUrl,
+        audio_url: playerTrack.audioUrl,
+        episode_id: playerTrack.episodeId,
+        status: "pending",
+      } as Track;
+      return [synthetic, ...prev];
+    });
+
+    reconciledTrackId.current = playerTrack.id;
+    if (!episodeId && !hasEpisodeTracks) {
+      userHasInteracted.current = true;
+    }
+  }, [globalPlayer.currentTrack, episodeId, hasEpisodeTracks]);
+
+  // Fire reconciliation when tracks finish loading and player has a current track
+  const playerTrackId = globalPlayer.currentTrack?.id ?? null;
+  useEffect(() => {
+    if (loading) return;
+    if (!playerTrackId) return;
+    reconcilePlayerWithTracks();
+  }, [loading, playerTrackId, reconcilePlayerWithTracks]);
 
   const advanceToNextEpisode = useCallback(async () => {
     setAdvancingEpisode(true);
