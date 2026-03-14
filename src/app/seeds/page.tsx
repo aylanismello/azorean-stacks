@@ -3,11 +3,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { Seed } from "@/lib/types";
 import { SeedForm } from "@/components/SeedForm";
+import { useSpotify } from "@/components/SpotifyProvider";
 
 export default function SeedsPage() {
   const [seeds, setSeeds] = useState<Seed[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ synced: number; playlist_url: string | null } | null>(null);
+  const { connected: spotifyConnected } = useSpotify();
 
   const fetchSeeds = useCallback(async () => {
     try {
@@ -70,9 +74,70 @@ export default function SeedsPage() {
     }
   };
 
+  const handleSyncToSpotify = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/spotify/sync-seeds", { method: "POST" });
+      const data = await res.json();
+      if (data.error && !data.synced && data.synced !== 0) {
+        throw new Error(data.error);
+      }
+      if (data.synced === 0) {
+        setError(data.error || "No tracks with Spotify URLs to sync");
+      } else {
+        setSyncResult({ synced: data.synced, playlist_url: data.playlist_url });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to sync to Spotify");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-2xl mx-auto pb-24">
-      <h1 className="text-xl font-semibold mb-6">Seeds</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-xl font-semibold">Seeds</h1>
+        {spotifyConnected && (
+          <button
+            onClick={handleSyncToSpotify}
+            disabled={syncing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-[#1DB954]/15 text-[#1DB954] hover:bg-[#1DB954]/25 transition-colors disabled:opacity-50"
+          >
+            {syncing ? (
+              <>
+                <span className="w-3.5 h-3.5 border-2 border-[#1DB954]/30 border-t-[#1DB954] rounded-full animate-spin" />
+                Syncing...
+              </>
+            ) : (
+              "Sync to Spotify"
+            )}
+          </button>
+        )}
+      </div>
+
+      {syncResult && (
+        <div className="mb-4 p-3 bg-[#1DB954]/10 border border-[#1DB954]/20 rounded-lg text-sm text-[#1DB954] flex items-center justify-between">
+          <span>Synced {syncResult.synced} tracks to Spotify</span>
+          <div className="flex items-center gap-2">
+            {syncResult.playlist_url && (
+              <a
+                href={syncResult.playlist_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:no-underline"
+              >
+                Open playlist
+              </a>
+            )}
+            <button onClick={() => setSyncResult(null)} className="text-[#1DB954]/60 hover:text-[#1DB954]">
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Add seed form */}
       <div className="mb-8">
