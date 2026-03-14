@@ -10,7 +10,7 @@ export async function GET() {
   // 1. Get all seeds
   const { data: seeds, error: seedErr } = await supabase
     .from("seeds")
-    .select("id, artist, title, active")
+    .select("id, artist, title, active, cover_art_url")
     .order("created_at", { ascending: false });
 
   if (seedErr) {
@@ -127,8 +127,9 @@ export async function GET() {
     const total = eps.reduce((s, e) => s + e.total, 0);
     globalPending += totalPending;
 
-    // Pick first non-null cover_art_url from episodes
-    const cover_art_url = eps.find((e) => e.cover_art_url)?.cover_art_url ?? null;
+    // Use the seed's own cover art (from Spotify lookup of the seed song itself)
+    // Fall back to episode track art only if seed has no cover art yet
+    const cover_art_url = seed.cover_art_url || eps.find((e) => e.cover_art_url)?.cover_art_url || null;
 
     return {
       id: seed.id,

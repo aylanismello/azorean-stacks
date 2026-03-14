@@ -33,11 +33,14 @@ function StackPageContent() {
   const fromSeedId = searchParams.get("seed_id");
   const fromEpisodes = searchParams.get("from") === "episodes";
 
-  // Stack source: "taste" (For You), "genre", "episode" (legacy)
+  // Stack source: "taste" (For You), "genre", "seed", "episode" (legacy)
   // Default to taste mode when no source/episode params are set
   const stackSource = searchParams.get("source");
   const genreFilter = searchParams.get("genre");
-  const isTasteMode = stackSource === "taste" || stackSource === "genre" || (!stackSource && !episodeId);
+  const seedFilter = searchParams.get("seed_artist");
+  const seedName = searchParams.get("seed_name"); // "Artist — Title" for display
+  const isSeedMode = stackSource === "seed";
+  const isTasteMode = stackSource === "taste" || stackSource === "genre" || isSeedMode || (!stackSource && !episodeId);
 
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,7 +82,7 @@ function StackPageContent() {
       if (extra) url += extra;
       return url;
     }
-    // Taste/genre mode: fetch pending tracks ranked by taste_score
+    // Taste/genre/seed mode: fetch pending tracks ranked by taste_score
     let url = `/api/tracks?status=pending&limit=20`;
     if (isTasteMode) {
       url += `&order_by=taste_score`;
@@ -87,9 +90,12 @@ function StackPageContent() {
     if (genreFilter) {
       url += `&genre=${encodeURIComponent(genreFilter)}`;
     }
+    if (seedFilter) {
+      url += `&seed_artist=${encodeURIComponent(seedFilter)}`;
+    }
     if (extra) url += extra;
     return url;
-  }, [episodeId, isTasteMode, genreFilter]);
+  }, [episodeId, isTasteMode, genreFilter, seedFilter]);
 
   const fetchTracks = useCallback(async () => {
     try {
@@ -370,7 +376,7 @@ function StackPageContent() {
       id: currentTrack.id,
       artist: currentTrack.artist,
       title: currentTrack.title,
-      coverArtUrl: currentTrack.cover_art_url,
+      coverArtUrl: currentTrack.cover_art_url || currentTrack.episode?.artwork_url || null,
       spotifyUrl: currentTrack.spotify_url,
       audioUrl: currentTrack.audio_url || currentTrack.preview_url || null,
       episodeId: currentTrack.episode_id,
@@ -560,50 +566,51 @@ function StackPageContent() {
   // ── Main stack view ──
   return (
     <div className="px-4 pt-2 pb-0 h-[calc(100dvh-3.5rem-env(safe-area-inset-bottom,0px))] flex flex-col overflow-hidden md:h-[calc(100dvh-100px)] md:pb-4">
-      {/* Top bar — clean, readable */}
-      <div className="flex items-center justify-between mb-3 md:mb-2 md:max-w-6xl md:mx-auto md:w-full md:flex-shrink-0">
+      {/* Top bar — stack identity always visible */}
+      <div className="relative flex items-center justify-between mb-3 md:mb-2 md:max-w-6xl md:mx-auto md:w-full md:flex-shrink-0 min-h-[40px]">
         {/* Left: back to stacks */}
         <button
           onClick={handleGoBack}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl bg-surface-1 hover:bg-surface-2 border border-surface-2/50 hover:border-surface-3 transition-all group text-muted hover:text-white"
+          className="flex items-center gap-1.5 text-muted hover:text-white transition-colors flex-shrink-0 z-10"
           title={fromEpisodes ? "Back to episodes" : "All stacks"}
         >
-          {fromEpisodes ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="group-hover:text-accent transition-colors">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="7" height="7" rx="1" />
-            </svg>
-          )}
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
           <span className="text-xs hidden md:inline">
-            {fromEpisodes ? "Episodes" : "All stacks"}
+            {fromEpisodes ? "Episodes" : "Stacks"}
           </span>
         </button>
 
-        {/* Center: context label + count */}
-        <span className="text-[11px] font-mono text-muted/50">
-          {hasEpisodeTracks
-            ? `${safeEpisodePos + 1} / ${total}`
-            : genreFilter
-              ? `${genreFilter} · ${total}`
-              : isTasteMode
-                ? `for you · ${total} pending`
-                : `${total} pending`}
-        </span>
+        {/* Center: stack name — absolutely centered, always prominent */}
+        <button
+          onClick={handleGoBack}
+          className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+        >
+          <span className="text-sm font-semibold text-white truncate max-w-[200px] md:max-w-[400px] pointer-events-auto">
+            {hasEpisodeTracks && currentEpisodeTitle
+              ? currentEpisodeTitle
+              : seedName
+                ? seedName
+                : genreFilter
+                  ? genreFilter
+                  : "For You"}
+          </span>
+          <span className="text-[10px] font-mono text-muted/60 pointer-events-auto">
+            {hasEpisodeTracks
+              ? `${safeEpisodePos + 1} / ${total}`
+              : `${total} pending`}
+          </span>
+        </button>
 
-        {/* Right: episode tracklist button (mobile only — desktop always shows it) */}
-        {currentEpisodeId && (
+        {/* Right: tracklist button (mobile only — desktop always shows sidebar) */}
+        {currentEpisodeId ? (
           <button
             onClick={() => setTracklistOpen(!tracklistOpen)}
-            className="md:hidden flex items-center gap-2 px-3 py-2 rounded-xl bg-surface-1 hover:bg-surface-2 border border-surface-2/50 hover:border-surface-3 transition-all text-muted hover:text-white"
+            className="md:hidden flex-shrink-0 p-2 text-muted hover:text-white transition-colors z-10"
             title="Show episode tracklist"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="8" y1="6" x2="21" y2="6" />
               <line x1="8" y1="12" x2="21" y2="12" />
               <line x1="8" y1="18" x2="21" y2="18" />
@@ -611,12 +618,10 @@ function StackPageContent() {
               <line x1="3" y1="12" x2="3.01" y2="12" />
               <line x1="3" y1="18" x2="3.01" y2="18" />
             </svg>
-            <span className="text-xs truncate max-w-[120px]">
-              {currentEpisodeTitle || "Tracklist"}
-            </span>
           </button>
+        ) : (
+          <div className="w-[34px] md:hidden" />
         )}
-        {!currentEpisodeId && <div className="md:hidden" />}
       </div>
 
       {/* Desktop: tracklist always visible on left, card on right */}

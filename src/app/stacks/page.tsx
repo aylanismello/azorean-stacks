@@ -138,7 +138,15 @@ export default function StacksPage() {
         <h2 className="text-sm font-semibold text-muted uppercase tracking-wider mb-3">Seeds</h2>
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {stacks.map((seed) => (
-            <StackTile key={seed.id} seed={seed} onClick={() => router.push(`/stacks/${seed.id}`)} />
+            <StackTile key={seed.id} seed={seed} onClick={() => {
+              const params = new URLSearchParams();
+              params.set("source", "seed");
+              params.set("seed_artist", seed.artist);
+              params.set("seed_name", `${decodeEntities(seed.artist)} — ${decodeEntities(seed.title)}`);
+              params.set("from", "stacks");
+              params.set("seed_id", seed.id);
+              router.push(`/?${params.toString()}`);
+            }} />
           ))}
         </div>
       </div>

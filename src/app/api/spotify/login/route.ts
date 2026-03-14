@@ -8,6 +8,8 @@ const SCOPES = [
   "user-modify-playback-state",
   "user-read-playback-state",
   "user-read-currently-playing",
+  "playlist-modify-private",
+  "playlist-read-private",
 ].join(" ");
 
 export const dynamic = "force-dynamic";

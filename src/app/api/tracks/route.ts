@@ -15,6 +15,7 @@ export async function GET(req: NextRequest) {
   const orderBy = searchParams.get("order_by"); // "taste_score" or default
   const genre = searchParams.get("genre");
   const seedId = searchParams.get("seed_id");
+  const seedArtist = searchParams.get("seed_artist");
 
   const isPending = status === "pending";
   const orderCol = orderBy === "taste_score"
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
 
     let query = supabase
       .from("tracks")
-      .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date), seeds!track_id(id)", { count: "exact" })
+      .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date, artwork_url), seeds!track_id(id)", { count: "exact" })
       .in("id", trackIdsForEpisode);
 
     if (search) {
@@ -92,7 +93,7 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from("tracks")
-    .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date), seeds!track_id(id)", { count: "exact" });
+    .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date, artwork_url), seeds!track_id(id)", { count: "exact" });
 
   // "approved" includes "downloaded" (same logical status)
   if (status === "approved") {
@@ -118,6 +119,9 @@ export async function GET(req: NextRequest) {
   }
   if (seedId) {
     query = query.eq("seed_track_id", seedId);
+  }
+  if (seedArtist) {
+    query = query.contains("metadata", { seed_artist: seedArtist });
   }
 
   const { data, error, count } = await query;

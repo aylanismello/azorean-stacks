@@ -135,7 +135,7 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   }, [swipeX, handleVote]);
 
   const gradient = generateGradient(track.artist, track.title);
-  const coverUrl = safeCoverUrl(track.cover_art_url);
+  const coverUrl = safeCoverUrl(track.cover_art_url) || safeCoverUrl(track.episode?.artwork_url ?? null);
   const meta = track.metadata as Record<string, string | undefined>;
   const hasAudio = !!(track.audio_url || track.preview_url);
   const hasPlayableSource = hasAudio || !!track.spotify_url;
@@ -150,7 +150,7 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
       id: track.id,
       artist: track.artist,
       title: track.title,
-      coverArtUrl: safeCoverUrl(track.cover_art_url),
+      coverArtUrl: safeCoverUrl(track.cover_art_url) || safeCoverUrl(track.episode?.artwork_url ?? null),
       spotifyUrl: track.spotify_url,
       audioUrl: track.audio_url || track.preview_url || null,
       episodeId: track.episode_id,
@@ -535,6 +535,16 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
             </button>
           </div>
         </div>
+
+        {/* Progress line — thin, no interaction, just visual */}
+        {isCurrentTrack && globalPlayer.duration > 0 && (
+          <div className="absolute bottom-0 left-0 right-0 z-20 h-[2px] bg-white/10">
+            <div
+              className="h-full bg-accent/80 transition-[width] duration-500 ease-linear"
+              style={{ width: `${(globalPlayer.progress / globalPlayer.duration) * 100}%` }}
+            />
+          </div>
+        )}
 
         {/* Bottom overlay: track info + vote buttons */}
         <div className="absolute bottom-0 left-0 right-0 z-10 px-4 pb-4">

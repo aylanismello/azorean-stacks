@@ -338,7 +338,7 @@ async function crawlNTS(
           source: "nts",
           source_url: episodeUrl,
           source_context: context,
-          metadata: { seed_artist: seedArtist, discovered_by: "on-demand" },
+          metadata: { seed_artist: seedArtist, seed_title: seedTitle, discovered_by: "on-demand" },
           status: "pending",
           episode_id: episodeId,
           seed_track_id: seedTrackId || null,

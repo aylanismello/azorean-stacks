@@ -3,7 +3,7 @@ import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
-const PLAYLIST_NAME = "My Seeds \u2014 Azorean Stacks";
+const PLAYLIST_NAME = "Azorean Stacks";
 
 async function getSpotifyToken(request: NextRequest): Promise<string | null> {
   // Try reading the access token from cookies directly
@@ -162,7 +162,7 @@ export async function POST(request: NextRequest) {
         method: "POST",
         body: JSON.stringify({
           name: PLAYLIST_NAME,
-          description: "Seeds and approved tracks from Azorean Stacks",
+          description: "Approved tracks from Azorean Stacks",
           public: false,
         }),
       }
