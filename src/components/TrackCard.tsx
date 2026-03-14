@@ -205,9 +205,11 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   );
 
   // Desktop artwork block (rewind | play/pause | forward)
+  // Controls hidden when playing, shown on hover over artwork
+  const controlsHidden = isCurrentTrack && globalPlayer.playing;
   const artworkBlockDesktop = (
     <div
-      className="relative w-full h-full flex items-center justify-center"
+      className="relative w-full h-full flex items-center justify-center group/artwork"
       style={
         coverUrl
           ? { backgroundImage: `url(${coverUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
@@ -226,7 +228,11 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
         </div>
       )}
 
-      <div className="relative z-10 flex items-center gap-5">
+      <div className={`relative z-10 flex items-center gap-5 transition-opacity duration-200 ${
+        controlsHidden
+          ? "opacity-0 group-hover/artwork:opacity-100"
+          : "opacity-100"
+      } ${isCurrentTrack && globalPlayer.loading ? "!opacity-100" : ""}`}>
         {/* Rewind 30s */}
         <button
           onClick={handleRewind}
@@ -239,15 +245,8 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
         {hasPlayableSource && (
           <button
             onClick={handleArtworkPlay}
-            className="group/play"
           >
-            <span
-              className={`flex items-center justify-center w-16 h-16 rounded-full backdrop-blur-md transition-all active:scale-90 ${
-                isCurrentTrack && globalPlayer.playing
-                  ? "bg-black/40 opacity-0 group-hover/play:opacity-100"
-                  : "bg-black/30 opacity-100"
-              } ${isCurrentTrack && globalPlayer.loading ? "opacity-100" : ""}`}
-            >
+            <span className="flex items-center justify-center w-16 h-16 rounded-full backdrop-blur-md bg-black/40 transition-all active:scale-90">
               {isCurrentTrack && globalPlayer.loading ? (
                 <svg className="animate-spin" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                   <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
