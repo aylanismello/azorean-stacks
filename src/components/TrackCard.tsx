@@ -47,7 +47,6 @@ function sourceLabel(source: string): string {
 export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: TrackCardProps) {
   const [exiting, setExiting] = useState<"left" | "right" | null>(null);
   const [voting, setVoting] = useState(false);
-  const [approved, setApproved] = useState(false);
   const votingRef = useRef(false);
   const [copied, setCopied] = useState(false);
   const [seeded, setSeeded] = useState(false);
@@ -83,16 +82,8 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   }, [track.artist, track.title, seeding, seeded]);
 
   const handleVote = useCallback(
-    async (status: "approved" | "rejected", advance: boolean = true) => {
+    async (status: "approved" | "rejected") => {
       if (votingRef.current) return;
-
-      // "Keep" without advance: approve in background, stay on card
-      if (status === "approved" && !advance) {
-        setApproved(true);
-        await onVote(track.id, status, false);
-        return;
-      }
-
       votingRef.current = true;
       setVoting(true);
       setExiting(status === "approved" ? "right" : "left");
@@ -358,69 +349,42 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
               </div>
             </div>
 
-            {/* Vote buttons — Tinder-style circular buttons */}
-            <div className="flex items-center justify-center gap-5 pt-2">
+            {/* Vote buttons — clean 2-button layout */}
+            <div className="flex items-center justify-center gap-8 pt-2">
               {/* Skip (reject) */}
               <button
                 onClick={() => handleVote("rejected")}
                 disabled={voting}
-                className="flex items-center justify-center w-14 h-14 rounded-full bg-black/40 backdrop-blur-md border border-red-400/30 text-red-400/80 hover:bg-red-950/50 hover:border-red-400/60 hover:text-red-400 transition-all active:scale-90 disabled:opacity-50"
+                className="flex items-center justify-center w-16 h-16 rounded-full bg-black/40 backdrop-blur-md border-2 border-red-400/30 text-red-400/80 hover:bg-red-950/50 hover:border-red-400/60 hover:text-red-400 transition-all active:scale-90 disabled:opacity-50"
               >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
               </button>
 
-              {/* Keep (approve without advancing) */}
+              {/* Re-seed — small secondary action between the two primary buttons */}
               <button
-                onClick={() => handleVote("approved", false)}
-                disabled={voting || approved}
-                className={`flex items-center justify-center w-10 h-10 rounded-full backdrop-blur-md border transition-all active:scale-90 disabled:cursor-default ${
-                  approved
-                    ? "bg-green-500/30 border-green-400/50 text-green-400"
-                    : "bg-black/40 border-accent/30 text-accent/70 hover:bg-accent/20 hover:border-accent/60 hover:text-accent"
+                onClick={handlePlantSeed}
+                disabled={seeding || seeded}
+                className={`flex items-center justify-center w-10 h-10 rounded-full backdrop-blur-md border transition-all active:scale-90 ${
+                  seeded
+                    ? "bg-emerald-500/30 border-emerald-400/50 text-emerald-400"
+                    : seeding
+                    ? "bg-black/40 border-emerald-400/30 text-emerald-400/50 animate-pulse"
+                    : "bg-black/40 border-white/10 text-white/40 hover:border-emerald-400/40 hover:text-emerald-400/70"
                 }`}
+                title={seeded ? "Planted as seed!" : "Plant as seed for future discovery"}
               >
-                {approved ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-                  </svg>
-                )}
+                <span className="text-sm">{seeded ? "🌿" : "🌱"}</span>
               </button>
 
-              {/* Plant as seed — only visible after approval */}
-              {approved && (
-                <button
-                  onClick={handlePlantSeed}
-                  disabled={seeding || seeded}
-                  className={`flex items-center justify-center w-10 h-10 rounded-full backdrop-blur-md border transition-all active:scale-90 ${
-                    seeded
-                      ? "bg-emerald-500/30 border-emerald-400/50 text-emerald-400 scale-110"
-                      : seeding
-                      ? "bg-black/40 border-emerald-400/30 text-emerald-400/50 animate-pulse"
-                      : "bg-black/40 border-emerald-400/30 text-emerald-400/70 hover:bg-emerald-950/50 hover:border-emerald-400/60 hover:text-emerald-400"
-                  }`}
-                  title={seeded ? "Planted as seed!" : "Plant as seed for future discovery"}
-                >
-                  <span className="text-base">{seeded ? "🌿" : "🌱"}</span>
-                </button>
-              )}
-
-              {/* Keep & Next (approve and advance) */}
+              {/* Keep (approve) */}
               <button
-                onClick={() => handleVote("approved", true)}
+                onClick={() => handleVote("approved")}
                 disabled={voting}
-                className={`flex items-center justify-center w-14 h-14 rounded-full backdrop-blur-md border transition-all active:scale-90 disabled:opacity-50 ${
-                  approved
-                    ? "bg-green-500/30 border-green-400/50 text-green-400 hover:bg-green-500/40"
-                    : "bg-black/40 border-green-400/30 text-green-400/80 hover:bg-green-950/50 hover:border-green-400/60 hover:text-green-400"
-                }`}
+                className="flex items-center justify-center w-16 h-16 rounded-full bg-black/40 backdrop-blur-md border-2 border-green-400/30 text-green-400/80 hover:bg-green-950/50 hover:border-green-400/60 hover:text-green-400 transition-all active:scale-90 disabled:opacity-50"
               >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
                 </svg>
               </button>
