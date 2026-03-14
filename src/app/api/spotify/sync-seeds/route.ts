@@ -73,7 +73,8 @@ export async function POST(request: NextRequest) {
     .from("tracks")
     .select("id, spotify_url")
     .eq("status", "approved")
-    .not("spotify_url", "is", null);
+    .not("spotify_url", "is", null)
+    .neq("spotify_url", "");
 
   if (tracksError) {
     return NextResponse.json({ error: tracksError.message }, { status: 500 });
@@ -215,10 +216,13 @@ export async function POST(request: NextRequest) {
 
 function urlToUri(url: string): string | null {
   try {
+    if (!url) return null;
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);
-    if (parts.length >= 2 && parts[0] === "track") {
-      return `spotify:track:${parts[1]}`;
+    // Handle both /track/ID and /intl-xx/track/ID formats
+    const trackIdx = parts.indexOf("track");
+    if (trackIdx !== -1 && trackIdx + 1 < parts.length) {
+      return `spotify:track:${parts[trackIdx + 1]}`;
     }
     return null;
   } catch {

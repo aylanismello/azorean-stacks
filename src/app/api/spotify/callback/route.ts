@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
 
   const tokens = await tokenRes.json();
 
-  const response = NextResponse.redirect(appUrl);
+  const response = NextResponse.redirect(`${appUrl}?spotify_connected=1`);
 
   // Store refresh token in httpOnly cookie (secure)
   response.cookies.set("spotify_refresh_token", tokens.refresh_token, {

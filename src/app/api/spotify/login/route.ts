@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     scope: SCOPES,
     redirect_uri: redirectUri,
     state,
-    show_dialog: "false",
+    show_dialog: "true",
   });
 
   const response = NextResponse.redirect(`${SPOTIFY_AUTH_URL}?${params.toString()}`);

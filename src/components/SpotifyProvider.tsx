@@ -155,6 +155,23 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       if (token) {
         loadSDK();
+
+        // Auto-sync playlist after fresh Spotify connect
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("spotify_connected")) {
+          fetch("/api/spotify/sync-seeds", { method: "POST" })
+            .then((res) => res.json())
+            .then((data) => {
+              if (data.synced > 0) {
+                console.log(`Synced ${data.synced} tracks to Spotify playlist`);
+              }
+            })
+            .catch(() => {});
+          // Clean up URL param
+          const url = new URL(window.location.href);
+          url.searchParams.delete("spotify_connected");
+          window.history.replaceState({}, "", url.toString());
+        }
       }
     });
 
