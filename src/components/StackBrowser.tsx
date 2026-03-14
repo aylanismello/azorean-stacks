@@ -188,13 +188,13 @@ function EpisodeRow({
         <ProgressBar episode={episode} />
         <div className="flex items-center gap-1.5 flex-shrink-0 text-[9px] font-mono">
           {episode.approved > 0 && (
-            <span className="text-green-400/70">{episode.approved}</span>
+            <span className="text-green-400/70">{episode.approved} kept</span>
           )}
           {episode.rejected > 0 && (
-            <span className="text-red-400/40">{episode.rejected}</span>
+            <span className="text-red-400/40">{episode.rejected} skipped</span>
           )}
           {episode.pending > 0 && (
-            <span className="text-white/40">{episode.pending}</span>
+            <span className="text-white/40">{episode.pending} pending</span>
           )}
         </div>
       </div>
