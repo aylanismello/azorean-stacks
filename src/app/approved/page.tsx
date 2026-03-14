@@ -200,7 +200,7 @@ export default function TracksPage() {
         coverArtUrl: safeCoverUrl(track.cover_art_url),
         spotifyUrl: track.spotify_url,
         audioUrl: track.audio_url || track.preview_url || null,
-      });
+      }, "/approved");
     }
   }, [globalPlayer]);
 
@@ -630,16 +630,7 @@ export default function TracksPage() {
                     </button>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">{track.artist}</p>
-                      {track.episode_id ? (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleGoToStack(track); }}
-                          className="text-xs text-foreground/50 truncate hover:text-accent transition-colors text-left w-full"
-                        >
-                          {track.title}
-                        </button>
-                      ) : (
-                        <p className="text-xs text-foreground/50 truncate">{track.title}</p>
-                      )}
+                      <p className="text-xs text-foreground/50 truncate">{track.title}</p>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
                       <span className="text-[10px] text-muted/40 font-mono">

@@ -30,10 +30,12 @@ interface GlobalPlayerContextType {
   trackEndedCount: number;
   /** Whether both audio and spotify sources are available for the current track */
   canSwitchSource: boolean;
+  /** URL path where playback was initiated from */
+  playbackOrigin: string | null;
   /** Load a track into the player without starting playback */
-  loadTrack: (track: PlayerTrack) => void;
+  loadTrack: (track: PlayerTrack, origin?: string) => void;
   /** Load a track and immediately start playing */
-  play: (track: PlayerTrack) => void;
+  play: (track: PlayerTrack, origin?: string) => void;
   togglePlayPause: () => void;
   seek: (seconds: number) => void;
   stop: () => void;
@@ -51,6 +53,7 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   noSource: false,
   trackEndedCount: 0,
   canSwitchSource: false,
+  playbackOrigin: null,
   loadTrack: () => {},
   play: () => {},
   togglePlayPause: () => {},
@@ -74,6 +77,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [source, setSource] = useState<PlaybackSource>(null);
   const [trackEndedCount, setTrackEndedCount] = useState(0);
   const [noSource, setNoSource] = useState(false);
+  const [playbackOrigin, setPlaybackOrigin] = useState<string | null>(null);
 
   // Create a persistent audio element
   useEffect(() => {
@@ -157,7 +161,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     } catch {}
   }, [spotify]);
 
-  const loadTrack = useCallback((track: PlayerTrack) => {
+  const loadTrack = useCallback((track: PlayerTrack, origin?: string) => {
     // Stop whatever is currently playing
     stopAudio();
     stopSpotify();
@@ -167,6 +171,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setDuration(0);
     setPlaying(false);
     setLoading(false);
+    if (origin !== undefined) setPlaybackOrigin(origin);
 
     // Determine source but don't start playback — prefer downloaded audio over Spotify
     if (track.audioUrl) {
@@ -186,7 +191,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     }
   }, [spotify, stopAudio, stopSpotify]);
 
-  const play = useCallback((track: PlayerTrack) => {
+  const play = useCallback((track: PlayerTrack, origin?: string) => {
     // Stop whatever is currently playing
     stopAudio();
     stopSpotify();
@@ -196,6 +201,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setDuration(0);
     setNoSource(false);
     setLoading(true);
+    if (origin !== undefined) setPlaybackOrigin(origin);
 
     // Decide source: prefer downloaded audio over Spotify
     if (track.audioUrl) {
@@ -311,6 +317,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setDuration(0);
     setSource(null);
     setNoSource(false);
+    setPlaybackOrigin(null);
   }, [stopAudio, stopSpotify]);
 
   return (
@@ -325,6 +332,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         noSource,
         trackEndedCount,
         canSwitchSource,
+        playbackOrigin,
         loadTrack,
         play,
         togglePlayPause,

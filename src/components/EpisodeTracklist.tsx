@@ -103,6 +103,7 @@ export function EpisodeTracklist(props: TracklistProps) {
 
   const handlePlay = (t: TrackListItem) => {
     const audioUrl = t.audio_url || t.preview_url || null;
+    const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
     globalPlayer.play({
       id: t.id,
       artist: t.artist,
@@ -113,7 +114,7 @@ export function EpisodeTracklist(props: TracklistProps) {
       episodeId: episodeId,
       episodeTitle: episodeTitle || undefined,
       youtubeUrl: t.youtube_url,
-    });
+    }, origin);
   };
 
   const statusDot = (s: string) => {

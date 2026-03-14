@@ -377,6 +377,7 @@ function StackPageContent() {
     }
 
     // Play the card track
+    const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
     globalPlayer.play({
       id: currentTrack.id,
       artist: currentTrack.artist,
@@ -387,7 +388,7 @@ function StackPageContent() {
       episodeId: currentTrack.episode_id,
       episodeTitle: currentTrack.episode?.title,
       youtubeUrl: currentTrack.youtube_url,
-    });
+    }, origin);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrackId]);
 

@@ -189,20 +189,23 @@ export function Navigation() {
 function MobileTabBar({ pathname }: { pathname: string }) {
   const globalPlayer = useGlobalPlayer();
   const coverArt = globalPlayer.currentTrack?.coverArtUrl;
+  const playingHref = globalPlayer.playbackOrigin || "/";
 
   return (
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-surface-1/95 backdrop-blur-md border-t border-surface-3 flex justify-around py-1.5 px-1 safe-area-bottom">
         {mobileLinks.map((link) => {
-          const isActive = link.href === "/stacks"
+          const isPlayingTab = link.href === "/";
+          const actualHref = isPlayingTab ? playingHref : link.href;
+          const isActive = isPlayingTab
+            ? pathname === "/" || pathname === playingHref.split("?")[0]
+            : link.href === "/stacks"
             ? pathname.startsWith("/stacks")
-            : link.href === "/"
-            ? pathname === "/"
             : pathname === link.href;
-          const isPlaying = link.href === "/";
+          const isPlaying = isPlayingTab;
           return (
             <Link
               key={link.href}
-              href={link.href}
+              href={actualHref}
               className={`flex flex-col items-center gap-0.5 px-4 py-1 rounded-lg text-[11px] transition-colors ${
                 isActive
                   ? "text-accent"
