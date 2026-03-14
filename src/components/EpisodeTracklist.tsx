@@ -188,7 +188,7 @@ export function EpisodeTracklist({
   );
 }
 
-// Mobile bottom sheet wrapper
+// Mobile bottom sheet wrapper — liquid glass overlay
 export function TracklistSheet({
   episodeId,
   episodeTitle,
@@ -205,17 +205,12 @@ export function TracklistSheet({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 md:hidden">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/60 backdrop-enter"
-        onClick={onClose}
-      />
-      {/* Sheet */}
-      <div className="absolute inset-x-0 bottom-0 max-h-[75vh] bg-surface-1 rounded-t-2xl border-t border-surface-3 sheet-enter flex flex-col overflow-hidden">
+    <div className="fixed inset-x-0 bottom-0 top-[3rem] z-50 md:hidden sheet-enter">
+      {/* Liquid glass sheet — full coverage below top bar */}
+      <div className="absolute inset-0 liquid-glass flex flex-col overflow-hidden">
         {/* Drag handle */}
         <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
-          <div className="w-10 h-1 rounded-full bg-surface-4" />
+          <div className="w-10 h-1 rounded-full bg-white/25" />
         </div>
         <EpisodeTracklist
           episodeId={episodeId}
