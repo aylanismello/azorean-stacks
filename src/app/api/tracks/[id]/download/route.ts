@@ -52,6 +52,9 @@ export async function GET(
   );
 }
 
+// Simple in-memory lock to prevent concurrent downloads of the same track
+const activeDownloads = new Set<string>();
+
 function sanitize(s: string): string {
   return s
     .normalize("NFD")
@@ -97,6 +100,11 @@ export async function POST(
     return NextResponse.json({ error: "Track not found" }, { status: 404 });
   }
 
+  // Prevent concurrent downloads for the same track
+  if (activeDownloads.has(track.id)) {
+    return NextResponse.json({ error: "Download already in progress" }, { status: 409 });
+  }
+
   // Already has audio
   if (track.storage_path) {
     const { data: signed } = await supabase.storage
@@ -115,6 +123,7 @@ export async function POST(
   }
 
   // Attempt download
+  activeDownloads.add(track.id);
   const tmpDir = "/tmp/stacks-api";
   if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
 
@@ -195,5 +204,7 @@ export async function POST(
       { error: err instanceof Error ? err.message : "Download failed" },
       { status: 500 }
     );
+  } finally {
+    activeDownloads.delete(track.id);
   }
 }

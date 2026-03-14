@@ -29,6 +29,11 @@ interface StackSeed {
   total: number;
 }
 
+function decodeEntities(s: string): string {
+  if (!s.includes("&")) return s;
+  return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&#x27;/g, "'");
+}
+
 function hueFromString(str: string): number {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -141,8 +146,8 @@ function SeedCard({
 
         {/* Info */}
         <div className="flex-1 min-w-0 text-left">
-          <p className="text-sm font-medium text-white truncate">{seed.artist}</p>
-          <p className="text-xs text-white/50 truncate">{seed.title}</p>
+          <p className="text-sm font-medium text-white truncate">{decodeEntities(seed.artist)}</p>
+          <p className="text-xs text-white/50 truncate">{decodeEntities(seed.title)}</p>
           <p className="text-[10px] text-muted mt-0.5">
             {seed.episodes.length} episode{seed.episodes.length !== 1 ? "s" : ""}
             {" "}{expanded ? "▾" : "▸"}
@@ -293,15 +298,20 @@ export function StackBrowser({
   const [stacks, setStacks] = useState<StackSeed[]>([]);
   const [totalPending, setTotalPending] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/stacks")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`Failed to load stacks (${r.status})`);
+        return r.json();
+      })
       .then((data) => {
         setStacks(data.stacks || []);
         setTotalPending(data.total_pending || 0);
+        setError(null);
       })
-      .catch(console.error)
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load stacks"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -309,6 +319,20 @@ export function StackBrowser({
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <div className="w-8 h-8 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-6">
+        <p className="text-red-400 text-sm mb-3">{error}</p>
+        <button
+          onClick={() => { setError(null); setLoading(true); window.location.reload(); }}
+          className="text-xs text-accent hover:text-accent-bright transition-colors"
+        >
+          Retry
+        </button>
       </div>
     );
   }

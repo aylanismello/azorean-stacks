@@ -42,14 +42,22 @@ export function EpisodeTracklist({
 }: EpisodeTracklistProps) {
   const [tracks, setTracks] = useState<TrackListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const globalPlayer = useGlobalPlayer();
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetch(`/api/episodes/${episodeId}/tracks`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`Failed to load tracks (${r.status})`);
+        return r.json();
+      })
       .then((data) => setTracks(Array.isArray(data) ? data : []))
-      .catch(() => setTracks([]))
+      .catch((err) => {
+        setTracks([]);
+        setError(err instanceof Error ? err.message : "Failed to load tracklist");
+      })
       .finally(() => setLoading(false));
   }, [episodeId, refreshKey]);
 
@@ -119,6 +127,8 @@ export function EpisodeTracklist({
           <div className="flex justify-center py-8">
             <div className="w-5 h-5 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
           </div>
+        ) : error ? (
+          <p className="text-center text-red-400/70 text-xs py-8">{error}</p>
         ) : tracks.length === 0 ? (
           <p className="text-center text-muted text-xs py-8">No tracks in this episode</p>
         ) : (

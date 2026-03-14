@@ -5,6 +5,18 @@ const NTS_API = "https://www.nts.live/api/v2";
 const NTS_SEARCH_LIMIT = 30;
 const NTS_MAX_EPISODES = 3; // Keep low for Vercel timeout
 
+// Decode common HTML entities from NTS API responses
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/g, "'");
+}
+
 interface NTSSearchResult {
   path: string;
   title: string;
@@ -36,7 +48,7 @@ async function ntsSearch(query: string): Promise<NTSSearchResult[]> {
     seen.add(path);
     episodes.push({
       path,
-      title: r.article.title || "",
+      title: decodeEntities(r.article.title || ""),
       date: r.local_date || "",
     });
   }
@@ -51,10 +63,12 @@ async function ntsTracklist(episodePath: string): Promise<NTSTrack[]> {
   const data = await res.json();
   const tracks = data.results || (data as unknown as NTSTrack[]);
   if (!Array.isArray(tracks)) return [];
-  return tracks.filter(
-    (t: { artist?: string; title?: string }) =>
-      t.artist?.trim() && t.title?.trim()
-  );
+  return tracks
+    .filter((t: { artist?: string; title?: string }) => t.artist?.trim() && t.title?.trim())
+    .map((t: { artist: string; title: string }) => ({
+      artist: decodeEntities(t.artist.trim()),
+      title: decodeEntities(t.title.trim()),
+    }));
 }
 
 function isSameTrack(
@@ -260,12 +274,14 @@ async function crawlNTS(
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
 
-      // Dedup against DB
+      // Dedup against DB — escape ilike pattern characters
+      const escArtist = track.artist.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
+      const escTitle = track.title.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
       const { data: existing } = await db
         .from("tracks")
         .select("id")
-        .ilike("artist", track.artist.trim())
-        .ilike("title", track.title.trim())
+        .ilike("artist", escArtist)
+        .ilike("title", escTitle)
         .limit(1);
 
       if (existing && existing.length > 0) {

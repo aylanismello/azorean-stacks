@@ -6,6 +6,18 @@ import { SeedForm } from "@/components/SeedForm";
 import { useSpotify } from "@/components/SpotifyProvider";
 import { useAuth } from "@/components/AuthProvider";
 
+// Decode common HTML entities that may be stored in DB from NTS/external APIs
+function decodeEntities(s: string): string {
+  if (!s.includes("&")) return s;
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&#x27;/g, "'");
+}
+
 export default function SeedsPage() {
   const [seeds, setSeeds] = useState<Seed[]>([]);
   const [loading, setLoading] = useState(true);
@@ -267,7 +279,7 @@ function SeedCard({
         >
           <div className="flex items-center gap-1.5">
             <p className="text-sm font-medium text-white truncate">
-              {seed.artist}
+              {decodeEntities(seed.artist)}
             </p>
             {seed.source === "re-seed" && (
               <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20" title="Planted from discovery">
@@ -275,7 +287,7 @@ function SeedCard({
               </span>
             )}
           </div>
-          <p className="text-xs text-white/60 truncate">{seed.title}</p>
+          <p className="text-xs text-white/60 truncate">{decodeEntities(seed.title)}</p>
           {/* Episode count hint */}
           {episodes.length > 0 && (
             <p className="text-[10px] text-muted mt-0.5">

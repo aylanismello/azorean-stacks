@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
+import { supabase } from "@/lib/supabase";
 import { getServiceClient } from "@/lib/supabase";
 
 export async function GET() {
   try {
-    const supabase = getServiceClient();
+    // Use anon client for track counts (same RLS view as tracks endpoint)
+    // Service client only for discovery_runs which has no RLS equivalent
 
-    // Counts by status — efficient head-only queries
+    // Counts by status — use limit(0) with count to stay compatible with RLS
     const [pending, approved, rejected] = await Promise.all([
-      supabase.from("tracks").select("id", { count: "exact", head: true }).eq("status", "pending"),
-      supabase.from("tracks").select("id", { count: "exact", head: true }).in("status", ["approved", "downloaded"]),
-      supabase.from("tracks").select("id", { count: "exact", head: true }).eq("status", "rejected"),
+      supabase.from("tracks").select("id", { count: "exact" }).eq("status", "pending").limit(0),
+      supabase.from("tracks").select("id", { count: "exact" }).in("status", ["approved", "downloaded"]).limit(0),
+      supabase.from("tracks").select("id", { count: "exact" }).eq("status", "rejected").limit(0),
     ]);
 
     const totalApproved = approved.count || 0;
@@ -17,11 +19,12 @@ export async function GET() {
     const totalReviewed = totalApproved + totalRejected;
     const approvalRate = totalReviewed > 0 ? totalApproved / totalReviewed : 0;
 
-    // Top approved artists — fetch only artist column with limit to avoid pulling all rows
+    // Top approved artists — fetch only artist column, capped to prevent memory issues
     const { data: approvedTracks } = await supabase
       .from("tracks")
       .select("artist")
-      .in("status", ["approved", "downloaded"]);
+      .in("status", ["approved", "downloaded"])
+      .limit(5000);
 
     const artistCounts: Record<string, number> = {};
     (approvedTracks || []).forEach((t) => {
@@ -33,10 +36,11 @@ export async function GET() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
-    // Source breakdown — fetch only source column
+    // Source breakdown — fetch only source column, capped
     const { data: allSources } = await supabase
       .from("tracks")
-      .select("source");
+      .select("source")
+      .limit(10000);
 
     const sourceCounts: Record<string, number> = {};
     (allSources || []).forEach((t) => {
@@ -47,8 +51,9 @@ export async function GET() {
       .map(([source, count]) => ({ source, count }))
       .sort((a, b) => b.count - a.count);
 
-    // Recent discovery runs
-    const { data: recentRuns } = await supabase
+    // Recent discovery runs (use service client — no RLS on this table)
+    const serviceDb = getServiceClient();
+    const { data: recentRuns } = await serviceDb
       .from("discovery_runs")
       .select("*")
       .order("started_at", { ascending: false })

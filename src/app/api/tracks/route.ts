@@ -16,9 +16,16 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from("tracks")
-    .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date)", { count: "exact" })
-    .eq("status", status)
-    .order(orderCol, { ascending: isPending })
+    .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date)", { count: "exact" });
+
+  // "approved" includes "downloaded" (same logical status)
+  if (status === "approved") {
+    query = query.in("status", ["approved", "downloaded"]);
+  } else {
+    query = query.eq("status", status);
+  }
+
+  query = query.order(orderCol, { ascending: isPending })
     .range(offset, offset + limit - 1);
 
   if (episodeId) {
@@ -104,12 +111,14 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // Dedup check: artist + title
+    // Dedup check: artist + title (escape ilike pattern chars)
+    const escArt = track.artist.replace(/[%_\\]/g, (c: string) => `\\${c}`);
+    const escTtl = track.title.replace(/[%_\\]/g, (c: string) => `\\${c}`);
     const { data: existing } = await client
       .from("tracks")
       .select("id")
-      .ilike("artist", track.artist)
-      .ilike("title", track.title)
+      .ilike("artist", escArt)
+      .ilike("title", escTtl)
       .limit(1);
 
     if (existing && existing.length > 0) {

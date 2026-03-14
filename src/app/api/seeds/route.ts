@@ -212,12 +212,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Escape ilike pattern characters for safe matching
+  const escArtist = artist.replace(/[%_\\]/g, (c) => `\\${c}`);
+  const escTitle = title.replace(/[%_\\]/g, (c) => `\\${c}`);
+
   // Duplicate check
   const { data: existingSeed } = await supabase
     .from("seeds")
     .select("id")
-    .ilike("artist", artist)
-    .ilike("title", title)
+    .ilike("artist", escArtist)
+    .ilike("title", escTitle)
     .limit(1)
     .maybeSingle();
 
@@ -229,8 +233,8 @@ export async function POST(req: NextRequest) {
   const { data: existingTrack } = await supabase
     .from("tracks")
     .select("id")
-    .ilike("artist", artist)
-    .ilike("title", title)
+    .ilike("artist", escArtist)
+    .ilike("title", escTitle)
     .limit(1)
     .maybeSingle();
 
