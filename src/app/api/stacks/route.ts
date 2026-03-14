@@ -90,15 +90,32 @@ export async function GET() {
     }
   }
 
-  // 4. Build response: seeds with enriched episodes
+  // 4. Build per-episode, per-artist matched tracks for artist-only episodes
+  // Key: `${episodeId}::${artistLower}` → tracks by that artist in that episode
+  const artistTracksByEpisode: Record<string, { artist: string; title: string }[]> = {};
+  for (const t of (tracks || []) as any[]) {
+    if (!t.episode_id) continue;
+    const key = `${t.episode_id}::${(t.artist || "").toLowerCase()}`;
+    if (!artistTracksByEpisode[key]) artistTracksByEpisode[key] = [];
+    if (artistTracksByEpisode[key].length < 5) {
+      artistTracksByEpisode[key].push({ artist: t.artist, title: t.title });
+    }
+  }
+
+  // 5. Build response: seeds with enriched episodes
   let globalPending = 0;
 
   const stacks = (seeds || []).map((seed) => {
+    const seedArtistLower = (seed.artist || "").toLowerCase();
     const eps = (episodesBySeed[seed.id] || [])
       .filter((ep) => !ep.skipped)
       .map((ep) => {
         const stats = episodeStats[ep.id] || { pending: 0, approved: 0, rejected: 0, total: 0, cover_art_url: null, sample_tracks: [] };
-        return { ...ep, ...stats };
+        // For artist-only matches, show which tracks by that artist are in this episode
+        const matched_tracks = ep.match_type !== "full"
+          ? (artistTracksByEpisode[`${ep.id}::${seedArtistLower}`] || [])
+          : [];
+        return { ...ep, ...stats, matched_tracks };
       })
       .sort((a, b) => b.pending - a.pending); // pending-heavy first
 

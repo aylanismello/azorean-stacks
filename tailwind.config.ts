@@ -31,6 +31,7 @@ const config: Config = {
       },
       maxWidth: {
         card: "500px",
+        "card-lg": "600px",
       },
     },
   },

@@ -35,7 +35,7 @@ export default function EpisodesPage() {
   const hasMore = offset + limit < total;
 
   return (
-    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-2xl mx-auto pb-24">
+    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-2xl md:max-w-3xl mx-auto pb-24">
       <div className="flex items-center justify-between mb-1">
         <h1 className="text-xl font-semibold">Episodes</h1>
         <button
@@ -241,7 +241,7 @@ function EpisodeCard({ episode, onUnskip }: { episode: Episode; onUnskip?: () =>
             </a>
             {track_stats.pending > 0 && (
               <a
-                href={`/?episode_id=${episode.id}&episode_title=${encodeURIComponent(episode.title || episode.url)}`}
+                href={`/?episode_id=${episode.id}&episode_title=${encodeURIComponent(episode.title || episode.url)}&from=episodes`}
                 className="text-[11px] px-3 py-1.5 rounded-full bg-accent/15 text-accent hover:bg-accent/25 transition-colors font-medium active:scale-95"
               >
                 Swipe {track_stats.pending} pending →

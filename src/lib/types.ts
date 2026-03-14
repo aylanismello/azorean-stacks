@@ -61,6 +61,9 @@ export interface EpisodeTrack {
   spotify_url: string | null;
   youtube_url: string | null;
   storage_path: string | null;
+  cover_art_url: string | null;
+  preview_url: string | null;
+  audio_url?: string | null;
   dl_attempts: number;
   dl_failed_at: string | null;
 }
@@ -99,7 +102,7 @@ export interface Seed {
   source?: string | null;
   created_at: string;
   discovery_count?: number;
-  episodes?: Array<{ id: string; title: string | null; url: string; source: string; aired_date: string | null; match_type: string }>;
+  episodes?: Array<{ id: string; title: string | null; url: string; source: string; aired_date: string | null; match_type: string; matched_tracks?: { artist: string; title: string }[] }>;
   curated_count?: number;
   last_run?: { tracks_found: number; tracks_added: number; started_at: string } | null;
 }

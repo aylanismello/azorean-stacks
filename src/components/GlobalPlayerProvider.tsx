@@ -10,6 +10,9 @@ export interface PlayerTrack {
   coverArtUrl: string | null;
   spotifyUrl: string | null;
   audioUrl: string | null;
+  episodeId?: string | null;
+  episodeTitle?: string | null;
+  youtubeUrl?: string | null;
 }
 
 type PlaybackSource = "spotify" | "audio" | null;

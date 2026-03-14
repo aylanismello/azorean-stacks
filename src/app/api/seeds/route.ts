@@ -54,15 +54,28 @@ export async function GET() {
   const allEpisodeIds = Array.from(new Set(Object.values(episodesBySeed).flat().map((ep) => ep.id)));
   const curatedEpisodeIds = new Set<string>();
 
-  if (allEpisodeIds.length > 0) {
-    // Get episodes that still have pending tracks
-    const { data: pendingCounts } = await supabase
-      .from("tracks")
-      .select("episode_id")
-      .in("episode_id", allEpisodeIds)
-      .eq("status", "pending");
+  // Also collect artist-matched tracks for artist-only episodes
+  const artistTracksByEpisode: Record<string, { artist: string; title: string }[]> = {};
 
-    const episodesWithPending = new Set((pendingCounts || []).map((t: any) => t.episode_id));
+  if (allEpisodeIds.length > 0) {
+    // Get tracks for these episodes
+    const { data: epTracks } = await supabase
+      .from("tracks")
+      .select("episode_id, status, artist, title")
+      .in("episode_id", allEpisodeIds);
+
+    const episodesWithPending = new Set<string>();
+    for (const t of (epTracks || []) as any[]) {
+      if (t.status === "pending" && t.episode_id) episodesWithPending.add(t.episode_id);
+      // Build artist tracks index
+      if (t.episode_id && t.artist) {
+        const key = `${t.episode_id}::${(t.artist as string).toLowerCase()}`;
+        if (!artistTracksByEpisode[key]) artistTracksByEpisode[key] = [];
+        if (artistTracksByEpisode[key].length < 5) {
+          artistTracksByEpisode[key].push({ artist: t.artist, title: t.title });
+        }
+      }
+    }
 
     // An episode is curated if it has no pending tracks
     allEpisodeIds.forEach((id) => {
@@ -90,13 +103,22 @@ export async function GET() {
     }
   });
 
-  const seedsWithCounts = (data || []).map((seed) => ({
-    ...seed,
-    discovery_count: seed.track_id ? (trackCounts[seed.track_id] || 0) : 0,
-    episodes: episodesBySeed[seed.id] || [],
-    curated_count: curatedCountBySeed[seed.id] || 0,
-    last_run: lastRunBySeed[seed.id] || null,
-  }));
+  const seedsWithCounts = (data || []).map((seed) => {
+    const seedArtistLower = (seed.artist || "").toLowerCase();
+    const episodes = (episodesBySeed[seed.id] || []).map((ep) => ({
+      ...ep,
+      matched_tracks: ep.match_type !== "full"
+        ? (artistTracksByEpisode[`${ep.id}::${seedArtistLower}`] || [])
+        : [],
+    }));
+    return {
+      ...seed,
+      discovery_count: seed.track_id ? (trackCounts[seed.track_id] || 0) : 0,
+      episodes,
+      curated_count: curatedCountBySeed[seed.id] || 0,
+      last_run: lastRunBySeed[seed.id] || null,
+    };
+  });
 
   return NextResponse.json(seedsWithCounts);
 }

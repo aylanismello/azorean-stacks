@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 interface StackEpisode {
   id: string;
@@ -14,6 +14,7 @@ interface StackEpisode {
   total: number;
   cover_art_url: string | null;
   sample_tracks: { artist: string; title: string }[];
+  matched_tracks: { artist: string; title: string }[];
 }
 
 interface StackSeed {
@@ -53,41 +54,100 @@ function ProgressBar({ episode }: { episode: StackEpisode }) {
   );
 }
 
+// Vinyl disc visual element
+function VinylDisc({ hue, size = 48 }: { hue: number; size?: number }) {
+  return (
+    <div
+      className="rounded-full flex-shrink-0 relative overflow-hidden"
+      style={{
+        width: size,
+        height: size,
+        background: `radial-gradient(circle at 50% 50%,
+          hsl(${hue}, 30%, 8%) 0%,
+          hsl(${hue}, 40%, 12%) 20%,
+          hsl(${hue}, 35%, 8%) 22%,
+          hsl(${hue}, 45%, 15%) 40%,
+          hsl(${hue}, 35%, 10%) 42%,
+          hsl(${hue}, 50%, 18%) 60%,
+          hsl(${hue}, 40%, 10%) 62%,
+          hsl(${hue}, 45%, 14%) 80%,
+          hsl(${hue}, 30%, 6%) 100%)`,
+      }}
+    >
+      {/* Center label */}
+      <div
+        className="absolute rounded-full"
+        style={{
+          width: size * 0.35,
+          height: size * 0.35,
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          background: `hsl(${hue}, 50%, 40%)`,
+        }}
+      />
+      {/* Center hole */}
+      <div
+        className="absolute rounded-full bg-surface-0"
+        style={{
+          width: size * 0.08,
+          height: size * 0.08,
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+        }}
+      />
+    </div>
+  );
+}
+
 function SeedCard({
   seed,
   onSelectStack,
+  highlightEpisodeId,
 }: {
   seed: StackSeed;
   onSelectStack: (episodeId: string | null, episodeTitle: string | null) => void;
+  highlightEpisodeId?: string | null;
 }) {
-  const [expanded, setExpanded] = useState(seed.total_pending > 0);
+  const [expanded, setExpanded] = useState(
+    seed.total_pending > 0 || seed.episodes.some((ep) => ep.id === highlightEpisodeId)
+  );
   const seedHue = hueFromString(`${seed.artist}-${seed.title}`);
 
-  const pendingEpisodes = seed.episodes.filter((ep) => ep.pending > 0);
-  const doneEpisodes = seed.episodes.filter((ep) => ep.pending === 0);
+  const sortedEpisodes = [...seed.episodes].sort((a, b) => {
+    if (a.match_type === "full" && b.match_type !== "full") return -1;
+    if (a.match_type !== "full" && b.match_type === "full") return 1;
+    return b.pending - a.pending;
+  });
+  const pendingEpisodes = sortedEpisodes.filter((ep) => ep.pending > 0);
+  const doneEpisodes = sortedEpisodes.filter((ep) => ep.pending === 0);
 
   return (
-    <div className="rounded-xl bg-surface-1">
+    <div
+      className="rounded-xl overflow-hidden"
+      style={{
+        background: `linear-gradient(135deg, hsl(${seedHue}, 15%, 9%) 0%, hsl(${seedHue}, 10%, 7%) 100%)`,
+        borderLeft: `3px solid hsl(${seedHue}, 50%, 35%)`,
+      }}
+    >
       {/* Seed header row */}
-      <div className="flex items-center gap-4 p-4">
-        {/* Seed color dot */}
-        <div
-          className="w-3 h-3 rounded-full flex-shrink-0"
-          style={{ backgroundColor: `hsl(${seedHue}, 50%, 55%)` }}
-        />
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-4 p-4 hover:bg-white/[0.02] transition-colors"
+      >
+        {/* Vinyl disc */}
+        <VinylDisc hue={seedHue} size={44} />
 
-        {/* Info — clickable to expand */}
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex-1 min-w-0 text-left"
-        >
+        {/* Info */}
+        <div className="flex-1 min-w-0 text-left">
           <p className="text-sm font-medium text-white truncate">{seed.artist}</p>
-          <p className="text-xs text-white/60 truncate">{seed.title}</p>
+          <p className="text-xs text-white/50 truncate">{seed.title}</p>
           <p className="text-[10px] text-muted mt-0.5">
             {seed.episodes.length} episode{seed.episodes.length !== 1 ? "s" : ""}
             {" "}{expanded ? "▾" : "▸"}
           </p>
-        </button>
+        </div>
 
         {/* Stats */}
         <div className="text-right flex-shrink-0 flex items-center gap-4">
@@ -98,12 +158,11 @@ function SeedCard({
             <span className="text-xs font-mono text-green-400/60">{seed.total_approved} kept</span>
           )}
         </div>
-      </div>
+      </button>
 
       {/* Expanded: episode list */}
       {expanded && (
-        <div className="border-t border-surface-3 px-4 py-3 space-y-1">
-          {/* Pending episodes first */}
+        <div className="border-t border-white/5 px-4 py-3 space-y-1">
           {pendingEpisodes.length > 0 && (
             <>
               {pendingEpisodes.map((ep) => (
@@ -111,16 +170,16 @@ function SeedCard({
                   key={ep.id}
                   episode={ep}
                   onSelect={() => onSelectStack(ep.id, ep.title)}
+                  highlighted={ep.id === highlightEpisodeId}
                 />
               ))}
             </>
           )}
 
-          {/* Done episodes — dimmed */}
           {doneEpisodes.length > 0 && (
             <>
               {pendingEpisodes.length > 0 && doneEpisodes.length > 0 && (
-                <div className="border-t border-surface-3/50 my-2" />
+                <div className="border-t border-white/5 my-2" />
               )}
               {doneEpisodes.map((ep) => (
                 <EpisodeRow
@@ -128,6 +187,7 @@ function SeedCard({
                   episode={ep}
                   done
                   onSelect={() => onSelectStack(ep.id, ep.title)}
+                  highlighted={ep.id === highlightEpisodeId}
                 />
               ))}
             </>
@@ -142,14 +202,27 @@ function EpisodeRow({
   episode,
   done,
   onSelect,
+  highlighted,
 }: {
   episode: StackEpisode;
   done?: boolean;
   onSelect: () => void;
+  highlighted?: boolean;
 }) {
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (highlighted && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [highlighted]);
+
   return (
     <div
-      className={`py-2.5 ${done ? "opacity-40" : ""}`}
+      ref={rowRef}
+      className={`py-2.5 rounded-lg px-2 transition-colors ${
+        done ? "opacity-40" : ""
+      } ${highlighted ? "bg-accent/5 ring-1 ring-accent/20" : ""}`}
     >
       {/* Top line: title + dig button */}
       <div className="flex items-center gap-2 mb-1">
@@ -170,7 +243,7 @@ function EpisodeRow({
 
       {/* Bottom line: badges + stats */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-muted uppercase tracking-wider flex-shrink-0">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-muted uppercase tracking-wider flex-shrink-0">
           {episode.source}
         </span>
         <span className={`text-[9px] px-1 py-0.5 rounded flex-shrink-0 ${
@@ -182,7 +255,7 @@ function EpisodeRow({
         </span>
         {episode.aired_date && (
           <span className="text-[10px] text-muted flex-shrink-0">
-            {new Date(episode.aired_date).toLocaleDateString("en-US", { day: "2-digit", month: "short" })}
+            {new Date(episode.aired_date).toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}
           </span>
         )}
         <ProgressBar episode={episode} />
@@ -198,6 +271,12 @@ function EpisodeRow({
           )}
         </div>
       </div>
+      {/* For artist-only matches, show which tracks by this artist are in the episode */}
+      {episode.match_type !== "full" && episode.matched_tracks && episode.matched_tracks.length > 0 && (
+        <p className="text-[10px] text-amber-400/60 mt-1 truncate">
+          found: {episode.matched_tracks.map((t) => t.title).join(", ")}
+        </p>
+      )}
     </div>
   );
 }
@@ -205,9 +284,11 @@ function EpisodeRow({
 export function StackBrowser({
   onSelectStack,
   onClose,
+  scrollToEpisodeId,
 }: {
   onSelectStack: (episodeId: string | null, episodeTitle: string | null) => void;
   onClose: () => void;
+  scrollToEpisodeId?: string | null;
 }) {
   const [stacks, setStacks] = useState<StackSeed[]>([]);
   const [totalPending, setTotalPending] = useState(0);
@@ -247,7 +328,7 @@ export function StackBrowser({
   }
 
   return (
-    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-2xl mx-auto pb-24 md:pb-8 stack-browser-enter">
+    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-2xl md:max-w-3xl mx-auto pb-24 md:pb-8 stack-browser-enter">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -266,15 +347,9 @@ export function StackBrowser({
         </div>
         <button
           onClick={onClose}
-          className="text-xs text-muted hover:text-white px-3 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 transition-colors flex items-center gap-1.5"
+          className="text-xs text-muted hover:text-white px-3 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 transition-colors"
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            <line x1="8" y1="11" x2="14" y2="11" />
-            <line x1="11" y1="8" x2="11" y2="14" />
-          </svg>
-          zoom in
+          Close
         </button>
       </div>
 
@@ -298,12 +373,13 @@ export function StackBrowser({
       </button>
 
       {/* Seed cards */}
-      <div className="space-y-2">
+      <div className="space-y-3">
         {stacks.map((seed) => (
           <SeedCard
             key={seed.id}
             seed={seed}
             onSelectStack={onSelectStack}
+            highlightEpisodeId={scrollToEpisodeId}
           />
         ))}
       </div>

@@ -14,11 +14,39 @@ function safeCoverUrl(url: string | null): string | null {
   return null;
 }
 
-export default function ApprovedPage() {
-  const [tab, setTab] = useState<"approved" | "rejected">("approved");
+type Tab = "approved" | "pending" | "rejected";
+
+const TAB_CONFIG: Record<Tab, { label: string; color: string; activeBg: string; emptyMsg: string }> = {
+  approved: {
+    label: "Kept",
+    color: "text-green-400",
+    activeBg: "bg-green-400/10 text-green-400 ring-1 ring-green-400/20",
+    emptyMsg: "No kept tracks yet. Start swiping!",
+  },
+  pending: {
+    label: "Unlistened",
+    color: "text-white/60",
+    activeBg: "bg-white/5 text-white/80 ring-1 ring-white/10",
+    emptyMsg: "Queue is empty — all caught up.",
+  },
+  rejected: {
+    label: "Skipped",
+    color: "text-red-400/70",
+    activeBg: "bg-red-400/10 text-red-400 ring-1 ring-red-400/20",
+    emptyMsg: "Nothing skipped yet.",
+  },
+};
+
+export default function TracksPage() {
+  const [tab, setTab] = useState<Tab>("approved");
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
+  const [tabCounts, setTabCounts] = useState<Record<Tab, number | null>>({
+    approved: null,
+    pending: null,
+    rejected: null,
+  });
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(0);
@@ -31,6 +59,32 @@ export default function ApprovedPage() {
     debounceRef.current = setTimeout(() => setDebouncedSearch(search), 350);
     return () => clearTimeout(debounceRef.current);
   }, [search]);
+
+  // Fetch counts for all tabs (lightweight)
+  const fetchCounts = useCallback(async () => {
+    const tabs: Tab[] = ["approved", "pending", "rejected"];
+    const results = await Promise.all(
+      tabs.map(async (t) => {
+        try {
+          const res = await fetch(`/api/tracks?status=${t}&limit=0&offset=0`);
+          if (!res.ok) return null;
+          const data = await res.json();
+          return data.total ?? null;
+        } catch {
+          return null;
+        }
+      })
+    );
+    setTabCounts({
+      approved: results[0],
+      pending: results[1],
+      rejected: results[2],
+    });
+  }, []);
+
+  useEffect(() => {
+    fetchCounts();
+  }, [fetchCounts]);
 
   const fetchTracks = useCallback(async () => {
     setLoading(true);
@@ -47,6 +101,8 @@ export default function ApprovedPage() {
       const data = await res.json();
       setTracks(data.tracks || []);
       setTotal(data.total || 0);
+      // Update this tab's count without re-fetching all
+      setTabCounts((prev) => ({ ...prev, [tab]: data.total || 0 }));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tracks");
@@ -91,7 +147,6 @@ export default function ApprovedPage() {
       const res = await fetch(`/api/tracks/${track.id}/download`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
-        // Mark track locally so button disappears
         setTracks((prev) =>
           prev.map((t) =>
             t.id === track.id
@@ -102,7 +157,6 @@ export default function ApprovedPage() {
         setError(data.error || "Couldn't find audio");
         return;
       }
-      // Success — update track locally with the new audio
       setTracks((prev) =>
         prev.map((t) =>
           t.id === track.id
@@ -121,7 +175,7 @@ export default function ApprovedPage() {
     }
   };
 
-  const handleChangeStatus = async (trackId: string, newStatus: "approved" | "rejected") => {
+  const handleChangeStatus = async (trackId: string, newStatus: "approved" | "rejected" | "pending") => {
     if (updating.has(trackId)) return;
     setUpdating((prev) => new Set(prev).add(trackId));
     try {
@@ -131,9 +185,14 @@ export default function ApprovedPage() {
         body: JSON.stringify({ status: newStatus }),
       });
       if (!res.ok) throw new Error("Failed to update");
-      // Remove from current list since it changed tabs
       setTracks((prev) => prev.filter((t) => t.id !== trackId));
       setTotal((prev) => prev - 1);
+      // Update counts: decrement current tab, increment target
+      setTabCounts((prev) => ({
+        ...prev,
+        [tab]: Math.max(0, (prev[tab] ?? 1) - 1),
+        [newStatus]: (prev[newStatus as Tab] ?? 0) + 1,
+      }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update track");
     } finally {
@@ -146,72 +205,84 @@ export default function ApprovedPage() {
   };
 
   const formatDate = (d: string | null) => {
-    if (!d) return "—";
+    if (!d) return "";
     return new Date(d).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
     });
   };
 
-  const sourceLabel = (s: string) => {
-    const labels: Record<string, string> = {
-      nts: "NTS",
-      "1001tracklists": "1001TL",
-      spotify: "Spotify",
-      bandcamp: "Bandcamp",
-      manual: "Manual",
-    };
-    return labels[s] || s;
-  };
-
   const totalPages = Math.ceil(total / limit);
 
+  // Determine available move-to options based on current tab
+  const moveOptions = (trackId: string): { label: string; status: Tab; color: string }[] => {
+    const opts: { label: string; status: Tab; color: string }[] = [];
+    if (tab !== "approved") opts.push({ label: "Keep", status: "approved", color: "text-green-400 hover:bg-green-400/10" });
+    if (tab !== "pending") opts.push({ label: "Back to queue", status: "pending", color: "text-white/50 hover:bg-white/5" });
+    if (tab !== "rejected") opts.push({ label: "Skip", status: "rejected", color: "text-red-400/70 hover:bg-red-400/10" });
+    return opts;
+  };
+
   return (
-    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-4xl mx-auto">
-      {/* Tabs */}
-      <div className="flex items-center gap-1 mb-6">
-        <button
-          onClick={() => setTab("approved")}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            tab === "approved"
-              ? "bg-accent/15 text-accent"
-              : "text-muted hover:text-white"
-          }`}
-        >
-          Approved
-          {tab === "approved" && total > 0 && (
-            <span className="ml-1.5 text-xs font-normal opacity-70">{total}</span>
-          )}
-        </button>
-        <button
-          onClick={() => setTab("rejected")}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            tab === "rejected"
-              ? "bg-red-400/15 text-red-400"
-              : "text-muted hover:text-white"
-          }`}
-        >
-          Rejected
-          {tab === "rejected" && total > 0 && (
-            <span className="ml-1.5 text-xs font-normal opacity-70">{total}</span>
-          )}
-        </button>
+    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-4xl mx-auto pb-32 md:pb-8">
+      {/* Tabs — always show counts */}
+      <div className="flex items-center gap-2 mb-6">
+        {(Object.keys(TAB_CONFIG) as Tab[]).map((t) => {
+          const cfg = TAB_CONFIG[t];
+          const count = tabCounts[t];
+          const isActive = tab === t;
+          return (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                isActive ? cfg.activeBg : "text-muted hover:text-white/70 hover:bg-surface-1"
+              }`}
+            >
+              {cfg.label}
+              {count !== null && count > 0 && (
+                <span className={`ml-1.5 text-xs font-normal ${isActive ? "opacity-70" : "opacity-40"}`}>
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Search */}
-      <div className="mb-6">
-        <input
-          type="text"
-          placeholder="Search artist or title..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full px-4 py-2.5 bg-surface-1 border border-surface-3 rounded-lg text-sm text-white placeholder:text-muted focus:outline-none focus:border-accent/50 transition-colors"
-        />
+      <div className="mb-5">
+        <div className="relative">
+          <svg
+            width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none"
+          >
+            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search artist or title..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-10 pr-4 py-2.5 bg-surface-1 border border-surface-2 rounded-xl text-sm text-white placeholder:text-muted/50 focus:outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20 transition-all"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-white transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Toast-style error that doesn't block UI */}
+      {/* Error */}
       {error && (
-        <div className="mb-4 p-3 bg-red-400/10 border border-red-400/20 rounded-lg text-sm text-red-400 flex items-center justify-between">
+        <div className="mb-4 p-3 bg-red-400/10 border border-red-400/20 rounded-xl text-sm text-red-400 flex items-center justify-between">
           <span>{error}</span>
           <button onClick={() => { setError(null); fetchTracks(); }} className="ml-3 px-3 py-1 text-xs bg-red-400/10 hover:bg-red-400/20 rounded-lg transition-colors flex-shrink-0">
             Retry
@@ -225,11 +296,7 @@ export default function ApprovedPage() {
         </div>
       ) : tracks.length === 0 ? (
         <div className="text-center py-20 text-muted text-sm">
-          {search
-            ? "No tracks match your search"
-            : tab === "approved"
-            ? "No approved tracks yet. Start swiping!"
-            : "No rejected tracks"}
+          {search ? "No tracks match your search" : TAB_CONFIG[tab].emptyMsg}
         </div>
       ) : (
         <>
@@ -237,253 +304,233 @@ export default function ApprovedPage() {
           <div className="hidden md:block">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-muted text-xs border-b border-surface-2">
-                  <th className="pb-3 font-medium">Artist</th>
+                <tr className="text-left text-muted/60 text-[11px] uppercase tracking-wider border-b border-surface-2">
+                  <th className="pb-3 font-medium pl-10">Artist</th>
                   <th className="pb-3 font-medium">Title</th>
                   <th className="pb-3 font-medium">Date</th>
-                  <th className="pb-3 font-medium w-24"></th>
+                  <th className="pb-3 font-medium w-28"></th>
                 </tr>
               </thead>
               <tbody>
-                {tracks.map((track) => (
-                  <tr key={track.id} className="group">
-                    <td colSpan={5} className="p-0">
-                      <div
-                        className="flex items-center border-b border-surface-1 hover:bg-surface-1/50 transition-colors cursor-pointer"
-                        onClick={() => setExpandedTrack(expandedTrack === track.id ? null : track.id)}
-                      >
-                        <div className="py-3 pr-4 pl-1 text-white font-medium text-sm flex-[2] flex items-center gap-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handlePlay(track);
-                            }}
-                            className={`w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-full transition-colors ${
-                              globalPlayer.currentTrack?.id === track.id ? "bg-accent text-surface-0" : "bg-surface-2 text-muted group-hover:text-white hover:bg-accent hover:text-surface-0"
-                            }`}
-                          >
-                            {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? (
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-                            ) : (
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-                            )}
-                          </button>
-                          {track.artist}
-                        </div>
-                        <div className="py-3 pr-4 text-white/80 text-sm flex-[2]">
-                          {track.title}
-                        </div>
-                        <div className="py-3 pr-4 text-muted text-xs font-mono flex-1">
-                          {formatDate(track.voted_at)}
-                        </div>
-                        <div className="py-3 w-24 flex justify-end">
-                          <div className="flex items-center gap-1">
-                            {track.spotify_url && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setExpandedTrack(expandedTrack === track.id ? null : track.id);
-                                }}
-                                className={`p-1.5 rounded transition-colors ${
-                                  expandedTrack === track.id
-                                    ? "bg-green-400/15 text-green-400"
-                                    : "hover:bg-surface-2 text-green-400/60 hover:text-green-400"
-                                }`}
-                                title="Preview on Spotify"
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-                              </button>
-                            )}
-                            {track.youtube_url && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); openYouTube(track.youtube_url!); }}
-                                className="p-1.5 hover:bg-surface-2 rounded transition-colors text-red-400/60 hover:text-red-400"
-                                title="Listen on YouTube"
-                              >
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
-                              </button>
-                            )}
-                            {!track.storage_path && !track.audio_url && track.youtube_url && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleFetchAudio(track); }}
-                                className={`p-1.5 rounded transition-colors ${
-                                  track.dl_failed_at
-                                    ? "text-muted/20 cursor-not-allowed"
-                                    : downloading.has(track.id)
-                                    ? "text-muted animate-pulse"
-                                    : "text-muted hover:text-accent hover:bg-surface-2"
-                                }`}
-                                title={track.dl_failed_at ? "Audio not found" : "Fetch audio"}
-                                disabled={!!track.dl_failed_at || downloading.has(track.id)}
-                              >
-                                {downloading.has(track.id) ? (
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                                ) : (
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-                                )}
-                              </button>
-                            )}
+                {tracks.map((track) => {
+                  const isPlaying = globalPlayer.currentTrack?.id === track.id;
+                  const isExpanded = expandedTrack === track.id;
+                  return (
+                    <tr key={track.id} className="group">
+                      <td colSpan={4} className="p-0">
+                        <div
+                          className={`flex items-center border-b transition-colors cursor-pointer ${
+                            isPlaying
+                              ? "bg-accent/5 border-accent/10"
+                              : "border-surface-1 hover:bg-surface-1/50"
+                          }`}
+                          onClick={() => setExpandedTrack(isExpanded ? null : track.id)}
+                        >
+                          <div className="py-3 pr-4 pl-1 text-white font-medium text-sm flex-[2] flex items-center gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handlePlay(track);
+                              }}
+                              className={`w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-full transition-all ${
+                                isPlaying
+                                  ? "bg-accent text-surface-0 shadow-lg shadow-accent/20"
+                                  : "bg-surface-2 text-muted group-hover:text-white hover:bg-accent hover:text-surface-0"
+                              }`}
+                            >
+                              {isPlaying && globalPlayer.playing ? (
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+                              ) : (
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                              )}
+                            </button>
+                            <span className="truncate">{track.artist}</span>
+                          </div>
+                          <div className="py-3 pr-4 text-white/70 text-sm flex-[2] truncate">
+                            {track.title}
+                          </div>
+                          <div className="py-3 pr-4 text-muted/50 text-xs font-mono flex-1">
+                            {formatDate(track.voted_at || track.created_at)}
+                          </div>
+                          <div className="py-3 w-28 flex justify-end pr-2">
+                            <div className="flex items-center gap-1.5">
+                              {track.spotify_url && (
+                                <a
+                                  href={track.spotify_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="p-1 rounded hover:bg-surface-2 text-green-400/50 hover:text-green-400 transition-colors"
+                                  title="Open in Spotify"
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                                </a>
+                              )}
+                              {track.youtube_url && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openYouTube(track.youtube_url!); }}
+                                  className="p-1 rounded hover:bg-surface-2 text-red-400/50 hover:text-red-400 transition-colors"
+                                  title="Listen on YouTube"
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                                </button>
+                              )}
+                              {!track.storage_path && !track.audio_url && track.youtube_url && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleFetchAudio(track); }}
+                                  className={`p-1 rounded transition-colors ${
+                                    track.dl_failed_at
+                                      ? "text-muted/20 cursor-not-allowed"
+                                      : downloading.has(track.id)
+                                      ? "text-muted animate-pulse"
+                                      : "text-muted/40 hover:text-accent hover:bg-surface-2"
+                                  }`}
+                                  title={track.dl_failed_at ? "Audio not found" : "Fetch audio"}
+                                  disabled={!!track.dl_failed_at || downloading.has(track.id)}
+                                >
+                                  {downloading.has(track.id) ? (
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                                  ) : (
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                                  )}
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                      {/* Expandable actions */}
-                      {expandedTrack === track.id && (
-                        <div className="px-2 py-3 border-b border-surface-2 bg-surface-1/30 flex items-center justify-between">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handlePlay(track);
-                            }}
-                            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
-                          >
-                            {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? "Pause" : "Play"}
-                            {globalPlayer.currentTrack?.id === track.id && globalPlayer.source === "spotify" && " (Spotify)"}
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleChangeStatus(track.id, tab === "approved" ? "rejected" : "approved");
-                            }}
-                            disabled={updating.has(track.id)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                              tab === "approved"
-                                ? "text-muted hover:text-red-400 hover:bg-red-400/10"
-                                : "text-muted hover:text-green-400 hover:bg-green-400/10"
-                            } disabled:opacity-50`}
-                          >
-                            {tab === "approved" ? "Move to rejected" : "Move to approved"}
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        {/* Expandable actions */}
+                        {isExpanded && (
+                          <div className="px-3 py-2.5 border-b border-surface-2 bg-surface-1/30 flex items-center gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handlePlay(track);
+                              }}
+                              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+                            >
+                              {isPlaying && globalPlayer.playing ? "Pause" : "Play"}
+                              {isPlaying && globalPlayer.source === "spotify" && " via Spotify"}
+                              {isPlaying && globalPlayer.source === "audio" && " via Audio"}
+                            </button>
+                            <div className="flex-1" />
+                            {moveOptions(track.id).map((opt) => (
+                              <button
+                                key={opt.status}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleChangeStatus(track.id, opt.status);
+                                }}
+                                disabled={updating.has(track.id)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${opt.color} disabled:opacity-50`}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
           {/* Mobile: cards */}
-          <div className="md:hidden space-y-2">
-            {tracks.map((track) => (
-              <div key={track.id} className="bg-surface-1 rounded-xl overflow-hidden">
+          <div className="md:hidden space-y-1.5">
+            {tracks.map((track) => {
+              const isPlaying = globalPlayer.currentTrack?.id === track.id;
+              const isExpanded = expandedTrack === track.id;
+              return (
                 <div
-                  className="p-4 flex items-center gap-3 cursor-pointer"
-                  onClick={() => setExpandedTrack(expandedTrack === track.id ? null : track.id)}
+                  key={track.id}
+                  className={`rounded-xl overflow-hidden transition-colors ${
+                    isPlaying ? "bg-accent/5 ring-1 ring-accent/15" : "bg-surface-1"
+                  }`}
                 >
-                  {/* Cover art / play button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePlay(track);
-                    }}
-                    className="w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center"
-                    style={
-                      safeCoverUrl(track.cover_art_url)
-                        ? {
-                            backgroundImage: `url(${safeCoverUrl(track.cover_art_url)})`,
-                            backgroundSize: "cover",
-                            backgroundPosition: "center",
-                          }
-                        : {
-                            background: `linear-gradient(135deg, hsl(${(track.artist.length * 37) % 360}, 40%, 20%), hsl(${(track.title.length * 53) % 360}, 50%, 12%))`,
-                          }
-                    }
+                  <div
+                    className="p-3.5 flex items-center gap-3 cursor-pointer"
+                    onClick={() => setExpandedTrack(isExpanded ? null : track.id)}
                   >
-                    <span className={`w-6 h-6 flex items-center justify-center rounded-full backdrop-blur-sm ${
-                      globalPlayer.currentTrack?.id === track.id ? "bg-accent/90 text-surface-0" : "bg-black/40 text-white/80"
-                    }`}>
-                      {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? (
-                        <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-                      ) : (
-                        <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-                      )}
-                    </span>
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">
-                      {track.artist}
-                    </p>
-                    <p className="text-xs text-white/60 truncate">{track.title}</p>
-                    <span className="text-[10px] text-muted font-mono">
-                      {formatDate(track.voted_at)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {track.spotify_url && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setExpandedTrack(expandedTrack === track.id ? null : track.id);
-                        }}
-                        className={`p-2 rounded-lg transition-colors ${
-                          expandedTrack === track.id
-                            ? "bg-green-400/15 text-green-400"
-                            : "text-green-400/60 hover:text-green-400"
-                        }`}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-                      </button>
-                    )}
-                    {track.youtube_url && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); openYouTube(track.youtube_url!); }}
-                        className="p-2 rounded-lg text-red-400/60 hover:text-red-400"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
-                      </button>
-                    )}
-                    {!track.storage_path && !track.audio_url && track.youtube_url && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleFetchAudio(track); }}
-                        className={`p-2 rounded-lg transition-colors ${
-                          track.dl_failed_at
-                            ? "text-muted/20 cursor-not-allowed"
-                            : downloading.has(track.id)
-                            ? "text-muted animate-pulse"
-                            : "text-muted hover:text-accent"
-                        }`}
-                        title={track.dl_failed_at ? "Audio not found" : "Fetch audio"}
-                        disabled={!!track.dl_failed_at || downloading.has(track.id)}
-                      >
-                        {downloading.has(track.id) ? (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                        ) : (
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                {/* Expandable actions */}
-                {expandedTrack === track.id && (
-                  <div className="px-4 pb-4 flex items-center justify-between">
+                    {/* Cover art / play button */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         handlePlay(track);
                       }}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+                      className="w-11 h-11 rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden"
+                      style={
+                        safeCoverUrl(track.cover_art_url)
+                          ? {
+                              backgroundImage: `url(${safeCoverUrl(track.cover_art_url)})`,
+                              backgroundSize: "cover",
+                              backgroundPosition: "center",
+                            }
+                          : {
+                              background: `linear-gradient(135deg, hsl(${(track.artist.length * 37) % 360}, 40%, 20%), hsl(${(track.title.length * 53) % 360}, 50%, 12%))`,
+                            }
+                      }
                     >
-                      {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? "Pause" : "Play"}
+                      <span className={`w-7 h-7 flex items-center justify-center rounded-full backdrop-blur-sm transition-all ${
+                        isPlaying ? "bg-accent/90 text-surface-0" : "bg-black/40 text-white/80"
+                      }`}>
+                        {isPlaying && globalPlayer.playing ? (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+                        ) : (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                        )}
+                      </span>
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleChangeStatus(track.id, tab === "approved" ? "rejected" : "approved");
-                      }}
-                      disabled={updating.has(track.id)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                        tab === "approved"
-                          ? "text-muted hover:text-red-400 hover:bg-red-400/10"
-                          : "text-muted hover:text-green-400 hover:bg-green-400/10"
-                      } disabled:opacity-50`}
-                    >
-                      {tab === "approved" ? "Move to rejected" : "Move to approved"}
-                    </button>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white truncate">{track.artist}</p>
+                      <p className="text-xs text-white/50 truncate">{track.title}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <span className="text-[10px] text-muted/40 font-mono">
+                        {formatDate(track.voted_at || track.created_at)}
+                      </span>
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
+                  {/* Expandable actions */}
+                  {isExpanded && (
+                    <div className="px-3.5 pb-3 flex items-center gap-2 flex-wrap">
+                      {track.spotify_url && (
+                        <a
+                          href={track.spotify_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-2 rounded-lg text-green-400/60 hover:text-green-400 hover:bg-green-400/10 transition-colors"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                        </a>
+                      )}
+                      {track.youtube_url && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openYouTube(track.youtube_url!); }}
+                          className="p-2 rounded-lg text-red-400/60 hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+                        </button>
+                      )}
+                      <div className="flex-1" />
+                      {moveOptions(track.id).map((opt) => (
+                        <button
+                          key={opt.status}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleChangeStatus(track.id, opt.status);
+                          }}
+                          disabled={updating.has(track.id)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${opt.color} disabled:opacity-50`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* Pagination */}
@@ -492,17 +539,17 @@ export default function ApprovedPage() {
               <button
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
                 disabled={page === 0}
-                className="px-3 py-1.5 text-sm bg-surface-2 rounded-lg disabled:opacity-30 hover:bg-surface-3 transition-colors"
+                className="px-4 py-2 text-sm bg-surface-1 rounded-xl disabled:opacity-30 hover:bg-surface-2 transition-colors"
               >
                 ← Prev
               </button>
-              <span className="text-xs text-muted font-mono">
+              <span className="text-xs text-muted/50 font-mono">
                 {page + 1} / {totalPages}
               </span>
               <button
                 onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
                 disabled={page >= totalPages - 1}
-                className="px-3 py-1.5 text-sm bg-surface-2 rounded-lg disabled:opacity-30 hover:bg-surface-3 transition-colors"
+                className="px-4 py-2 text-sm bg-surface-1 rounded-xl disabled:opacity-30 hover:bg-surface-2 transition-colors"
               >
                 Next →
               </button>

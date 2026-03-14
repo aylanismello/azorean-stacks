@@ -126,7 +126,7 @@ export default function SeedsPage() {
   };
 
   return (
-    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-2xl mx-auto pb-24">
+    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-2xl md:max-w-3xl mx-auto pb-24">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-semibold">Seeds</h1>
         {spotifyConnected && (
@@ -316,42 +316,57 @@ function SeedCard({
 
       {/* Expanded: related episodes */}
       {expanded && episodes.length > 0 && (
-        <div className="border-t border-surface-3 px-4 py-3 space-y-1.5">
+        <div className="border-t border-surface-3 px-4 py-3 space-y-1">
           <p className="text-[10px] text-muted uppercase tracking-wider mb-2">Related Episodes</p>
-          {episodes.map((ep) => (
+          {[...episodes].sort((a, b) => {
+            if (a.match_type === "full" && b.match_type !== "full") return -1;
+            if (a.match_type !== "full" && b.match_type === "full") return 1;
+            return 0;
+          }).map((ep) => (
             <div
               key={ep.id}
-              className="flex items-center gap-2 py-1.5 text-sm"
+              className="py-2 space-y-1"
             >
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-muted uppercase tracking-wider flex-shrink-0">
-                {ep.source}
-              </span>
-              <span className={`text-[9px] px-1 py-0.5 rounded flex-shrink-0 ${
-                ep.match_type === "full"
-                  ? "bg-accent/15 text-accent"
-                  : "bg-amber-500/15 text-amber-400"
-              }`}>
-                {ep.match_type === "full" ? "exact" : "artist only"}
-              </span>
+              {/* Top row: badges + swipe button */}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-muted uppercase tracking-wider flex-shrink-0">
+                  {ep.source}
+                </span>
+                <span className={`text-[9px] px-1 py-0.5 rounded flex-shrink-0 ${
+                  ep.match_type === "full"
+                    ? "bg-accent/15 text-accent"
+                    : "bg-amber-500/15 text-amber-400"
+                }`}>
+                  {ep.match_type === "full" ? "exact" : "artist only"}
+                </span>
+                {ep.aired_date && (
+                  <span className="text-[10px] text-muted flex-shrink-0">
+                    {ep.aired_date}
+                  </span>
+                )}
+                <div className="flex-1" />
+                <a
+                  href={`/?episode_id=${ep.id}&episode_title=${encodeURIComponent(ep.title || ep.url)}`}
+                  className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex-shrink-0"
+                >
+                  Swipe →
+                </a>
+              </div>
+              {/* Episode title — full width, no truncation on mobile */}
               <a
                 href={ep.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-white/80 truncate flex-1 min-w-0 hover:text-white transition-colors"
+                className="block text-sm text-white/80 hover:text-white transition-colors leading-snug"
               >
                 {ep.title || ep.url}
               </a>
-              {ep.aired_date && (
-                <span className="text-[10px] text-muted flex-shrink-0">
-                  {ep.aired_date}
-                </span>
+              {/* For artist-only matches, show which tracks by this artist are in the episode */}
+              {ep.match_type !== "full" && ep.matched_tracks && ep.matched_tracks.length > 0 && (
+                <p className="text-[10px] text-amber-400/60 mt-0.5 truncate">
+                  found: {ep.matched_tracks.map((t) => t.title).join(", ")}
+                </p>
               )}
-              <a
-                href={`/?episode_id=${ep.id}&episode_title=${encodeURIComponent(ep.title || ep.url)}`}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex-shrink-0"
-              >
-                Swipe →
-              </a>
             </div>
           ))}
         </div>
