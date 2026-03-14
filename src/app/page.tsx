@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Track } from "@/lib/types";
 import { TrackCard } from "@/components/TrackCard";
@@ -227,7 +227,7 @@ function StackPageContent() {
     }
   };
 
-  // Load track into global player when top card changes (but don't auto-play)
+  // Auto-play next track when top card changes (after vote)
   const currentTopTrackId = tracks.length > 0 ? tracks[0].id : null;
   useEffect(() => {
     if (!currentTopTrackId || browsing) return;
@@ -237,7 +237,7 @@ function StackPageContent() {
     if (!hasPlayable) return;
     // Don't reload if already loaded/playing this track
     if (globalPlayer.currentTrack?.id === currentTopTrackId) return;
-    globalPlayer.loadTrack({
+    globalPlayer.play({
       id: t.id,
       artist: t.artist,
       title: t.title,
@@ -247,6 +247,22 @@ function StackPageContent() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTopTrackId, browsing]);
+
+  // Auto-advance to next track when current song ends
+  const lastEndedCount = useRef(globalPlayer.trackEndedCount);
+  useEffect(() => {
+    if (globalPlayer.trackEndedCount === lastEndedCount.current) return;
+    lastEndedCount.current = globalPlayer.trackEndedCount;
+    if (browsing || tracks.length < 2) return;
+    // Current track is tracks[0] — move it to the back and play the next one
+    const currentId = tracks[0].id;
+    if (globalPlayer.currentTrack?.id !== currentId) return;
+    setTracks((prev) => {
+      if (prev.length < 2) return prev;
+      return [...prev.slice(1), prev[0]];
+    });
+    // The top card change will trigger the auto-play effect above
+  }, [globalPlayer.trackEndedCount, browsing, tracks, globalPlayer.currentTrack?.id]);
 
   // Keyboard shortcuts
   useEffect(() => {

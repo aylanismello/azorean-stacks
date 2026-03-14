@@ -126,14 +126,19 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
     playerRef.current = player;
   }, [fetchToken]);
 
+  // Use a ref to avoid stale closure in SDK callback
+  const tokenRef = useRef<string | null>(null);
+  tokenRef.current = accessToken;
+
   // Load SDK script
   const loadSDK = useCallback(() => {
     if (document.getElementById("spotify-sdk")) return;
 
     window.onSpotifyWebPlaybackSDKReady = () => {
       // SDK is ready — if we have a token, init the player
-      if (accessToken) {
-        initPlayer(accessToken);
+      const token = tokenRef.current;
+      if (token) {
+        initPlayer(token);
       }
     };
 
@@ -142,7 +147,7 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
     script.src = "https://sdk.scdn.co/spotify-player.js";
     script.async = true;
     document.body.appendChild(script);
-  }, [accessToken, initPlayer]);
+  }, [initPlayer]);
 
   // On mount: check if Spotify is connected
   useEffect(() => {

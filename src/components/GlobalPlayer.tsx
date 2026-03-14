@@ -71,8 +71,7 @@ export function GlobalPlayer() {
       {/* Progress bar — full width at top of player, tall hit area, thin visual */}
       <div
         ref={progressRef}
-        className="group relative h-3 cursor-pointer touch-none flex items-end"
-        onClick={(e) => seekTo(e.clientX)}
+        className="group relative h-5 cursor-pointer touch-none flex items-end"
         onMouseDown={handleSeekStart}
         onTouchStart={handleTouchSeek}
       >

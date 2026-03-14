@@ -162,6 +162,14 @@ function MobileAccountButton() {
   const spotify = useSpotify();
   const [open, setOpen] = useState(false);
 
+  // Lock body scroll when bottom sheet is open
+  useEffect(() => {
+    if (open) {
+      document.body.style.overflow = "hidden";
+      return () => { document.body.style.overflow = ""; };
+    }
+  }, [open]);
+
   return (
     <>
       <button
@@ -186,9 +194,19 @@ function MobileAccountButton() {
             className="relative w-full bg-surface-1 rounded-t-2xl border-t border-surface-3 pb-safe-area-bottom"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Handle */}
-            <div className="flex justify-center py-3">
+            {/* Handle + close button */}
+            <div className="flex items-center justify-between px-4 pt-3 pb-1">
+              <div className="w-8" />
               <div className="w-10 h-1 rounded-full bg-surface-3" />
+              <button
+                onClick={() => setOpen(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-full text-muted hover:text-white hover:bg-surface-3 transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
             </div>
 
             <div className="px-4 pb-6 space-y-2">

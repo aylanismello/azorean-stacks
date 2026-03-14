@@ -44,7 +44,7 @@ export async function PATCH(
 
     // Delete audio files from bucket
     if (tracksWithAudio && tracksWithAudio.length > 0) {
-      const paths = tracksWithAudio.map((t) => t.storage_path as string);
+      const paths = tracksWithAudio.map((t: { storage_path: string }) => t.storage_path);
       const { error: storageError } = await supabase.storage
         .from("tracks")
         .remove(paths);

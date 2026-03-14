@@ -3,8 +3,6 @@
 import { useState, useCallback, useRef } from "react";
 import { Track } from "@/lib/types";
 import { openYouTube } from "@/lib/youtube";
-import { PlayerSection } from "./PlayerSection";
-import { AudioPlayerHandle } from "./AudioPlayer";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
 
 interface TrackCardProps {
@@ -51,9 +49,9 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   const [voting, setVoting] = useState(false);
   const [approved, setApproved] = useState(false);
   const votingRef = useRef(false);
-  const playerRef = useRef<AudioPlayerHandle>(null);
-  const [audioState, setAudioState] = useState({ playing: false, loading: false });
   const [copied, setCopied] = useState(false);
+  const [swipeX, setSwipeX] = useState(0);
+  const touchRef = useRef<{ startX: number; startY: number; swiping: boolean } | null>(null);
   const globalPlayer = useGlobalPlayer();
 
   const handleCopy = useCallback(async () => {
@@ -83,6 +81,34 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
     [track.id, onVote]
   );
 
+  // Touch swipe handlers
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchRef.current = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, swiping: false };
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!touchRef.current || votingRef.current) return;
+    const dx = e.touches[0].clientX - touchRef.current.startX;
+    const dy = e.touches[0].clientY - touchRef.current.startY;
+    // Only start swiping if horizontal movement > vertical (prevents scroll hijack)
+    if (!touchRef.current.swiping && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 10) {
+      touchRef.current.swiping = true;
+    }
+    if (touchRef.current.swiping) {
+      setSwipeX(dx);
+    }
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    if (!touchRef.current) return;
+    const threshold = 80;
+    if (touchRef.current.swiping && Math.abs(swipeX) > threshold) {
+      handleVote(swipeX > 0 ? "approved" : "rejected");
+    }
+    setSwipeX(0);
+    touchRef.current = null;
+  }, [swipeX, handleVote]);
+
   const gradient = generateGradient(track.artist, track.title);
   const coverUrl = safeCoverUrl(track.cover_art_url);
   const meta = track.metadata as Record<string, string | undefined>;
@@ -109,15 +135,36 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
 
   return (
     <div
-      className={`w-full max-w-card mx-auto transition-all duration-250 ${
+      className={`w-full max-w-card mx-auto ${
         exiting === "left"
           ? "card-exit-left"
           : exiting === "right"
           ? "card-exit-right"
-          : "card-enter-active"
+          : swipeX === 0
+          ? "card-enter-active"
+          : ""
       }`}
+      style={swipeX !== 0 ? {
+        transform: `translateX(${swipeX}px) rotate(${swipeX * 0.05}deg)`,
+        transition: "none",
+        opacity: Math.max(0.5, 1 - Math.abs(swipeX) / 300),
+      } : undefined}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
     >
-      <div className="rounded-2xl overflow-hidden bg-surface-1 shadow-2xl shadow-black/40">
+      <div className="rounded-2xl overflow-hidden bg-surface-1 shadow-2xl shadow-black/40 relative">
+        {/* Swipe direction indicator */}
+        {Math.abs(swipeX) > 30 && (
+          <div className={`absolute top-6 z-30 px-4 py-2 rounded-xl text-sm font-bold border-2 ${
+            swipeX > 0
+              ? "right-6 bg-green-500/20 border-green-400 text-green-400 rotate-12"
+              : "left-6 bg-red-500/20 border-red-400 text-red-400 -rotate-12"
+          }`}>
+            {swipeX > 0 ? "KEEP" : "SKIP"}
+          </div>
+        )}
+
         {/* Cover art / gradient */}
         <div
           className="relative aspect-square w-full flex items-end"

@@ -230,19 +230,19 @@ function EpisodeCard({ episode, onUnskip }: { episode: Episode; onUnskip?: () =>
       {expanded && (
         <div className="border-t border-surface-3 px-4 py-3">
           {/* Actions row */}
-          <div className="flex items-center gap-3 mb-3">
+          <div className="flex items-center gap-2 flex-wrap mb-3">
             <a
               href={episode.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[11px] text-accent hover:underline"
+              className="text-[11px] px-3 py-1.5 rounded-full bg-surface-2 text-accent hover:bg-surface-3 transition-colors"
             >
               Open on {episode.source === "nts" ? "NTS" : episode.source} ↗
             </a>
             {track_stats.pending > 0 && (
               <a
                 href={`/?episode_id=${episode.id}&episode_title=${encodeURIComponent(episode.title || episode.url)}`}
-                className="text-[11px] px-3 py-1 rounded-full bg-accent/15 text-accent hover:bg-accent/25 transition-colors font-medium"
+                className="text-[11px] px-3 py-1.5 rounded-full bg-accent/15 text-accent hover:bg-accent/25 transition-colors font-medium active:scale-95"
               >
                 Swipe {track_stats.pending} pending →
               </a>
@@ -250,7 +250,7 @@ function EpisodeCard({ episode, onUnskip }: { episode: Episode; onUnskip?: () =>
             {episode.skipped && onUnskip && (
               <button
                 onClick={onUnskip}
-                className="text-[11px] px-3 py-1 rounded-full bg-surface-2 text-muted hover:text-white transition-colors"
+                className="text-[11px] px-3 py-1.5 rounded-full bg-surface-2 text-muted hover:text-white transition-colors active:scale-95"
               >
                 Restore episode
               </button>

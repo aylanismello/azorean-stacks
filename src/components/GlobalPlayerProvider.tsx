@@ -21,6 +21,8 @@ interface GlobalPlayerContextType {
   progress: number; // seconds
   duration: number; // seconds
   source: PlaybackSource;
+  /** Increments each time the current track finishes playing */
+  trackEndedCount: number;
   /** Load a track into the player without starting playback */
   loadTrack: (track: PlayerTrack) => void;
   /** Load a track and immediately start playing */
@@ -37,6 +39,7 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   progress: 0,
   duration: 0,
   source: null,
+  trackEndedCount: 0,
   loadTrack: () => {},
   play: () => {},
   togglePlayPause: () => {},
@@ -57,6 +60,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [source, setSource] = useState<PlaybackSource>(null);
+  const [trackEndedCount, setTrackEndedCount] = useState(0);
 
   // Create a persistent audio element
   useEffect(() => {
@@ -66,7 +70,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
     const onPlay = () => { setPlaying(true); setLoading(false); };
     const onPause = () => setPlaying(false);
-    const onEnded = () => { setPlaying(false); setProgress(0); };
+    const onEnded = () => { setPlaying(false); setProgress(0); setTrackEndedCount((c) => c + 1); };
     const onWaiting = () => setLoading(true);
     const onPlaying = () => setLoading(false);
     const onCanPlay = () => setLoading(false);
@@ -95,13 +99,22 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     };
   }, []);
 
-  // Sync Spotify playback state
+  // Sync Spotify playback state + detect track end
+  const prevSpotifyPositionRef = useRef(0);
   useEffect(() => {
     if (source !== "spotify" || !spotify.playerState) return;
 
+    const pos = (spotify.playerState.position || 0) / 1000;
+    const dur = (spotify.playerState.duration || 0) / 1000;
     setPlaying(!spotify.playerState.paused);
-    setProgress((spotify.playerState.position || 0) / 1000);
-    setDuration((spotify.playerState.duration || 0) / 1000);
+    setProgress(pos);
+    setDuration(dur);
+
+    // Detect track ended: position resets to 0 and paused, after we were playing
+    if (spotify.playerState.paused && pos === 0 && prevSpotifyPositionRef.current > 0 && dur > 0) {
+      setTrackEndedCount((c) => c + 1);
+    }
+    prevSpotifyPositionRef.current = pos;
   }, [spotify.playerState, source]);
 
   // Poll Spotify progress while playing
@@ -142,7 +155,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setLoading(false);
 
     // Determine source but don't start playback
-    if (spotify.connected && spotify.deviceId && track.spotifyUrl) {
+    const canSpotify = spotify.connected && spotify.deviceId && track.spotifyUrl;
+    if (canSpotify) {
       setSource("spotify");
     } else if (track.audioUrl) {
       setSource("audio");
@@ -151,8 +165,6 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       if (audio) {
         audio.src = track.audioUrl;
       }
-    } else if (track.spotifyUrl && spotify.connected && spotify.deviceId) {
-      setSource("spotify");
     } else {
       setSource(null);
     }
@@ -266,6 +278,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         progress,
         duration,
         source,
+        trackEndedCount,
         loadTrack,
         play,
         togglePlayPause,

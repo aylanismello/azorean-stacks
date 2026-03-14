@@ -39,8 +39,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Normalize & generate fresh signed URLs for tracks with audio in storage
+  // Normalize joins & generate signed URLs in parallel
   const tracks = data || [];
+  const signPromises: Promise<void>[] = [];
+
   for (const track of tracks) {
     // Self-referential join can return [] instead of null — normalize
     if (Array.isArray(track.seed_track)) {
@@ -54,14 +56,18 @@ export async function GET(req: NextRequest) {
       track.episode = track.episode[0] || null;
     }
     if (track.storage_path) {
-      const { data: signed } = await supabase.storage
-        .from("tracks")
-        .createSignedUrl(track.storage_path, 3600); // 1 hour
-      if (signed) {
-        track.audio_url = signed.signedUrl;
-      }
+      signPromises.push(
+        supabase.storage
+          .from("tracks")
+          .createSignedUrl(track.storage_path, 3600)
+          .then(({ data: signed }) => {
+            if (signed) track.audio_url = signed.signedUrl;
+          })
+      );
     }
   }
+
+  await Promise.all(signPromises);
 
   return NextResponse.json({ tracks, total: count });
 }

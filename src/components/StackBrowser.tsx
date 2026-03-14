@@ -149,63 +149,55 @@ function EpisodeRow({
 }) {
   return (
     <div
-      className={`flex items-center gap-2 py-2 text-sm ${
-        done ? "opacity-40" : ""
-      }`}
+      className={`py-2.5 ${done ? "opacity-40" : ""}`}
     >
-      {/* Source badge */}
-      <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-muted uppercase tracking-wider flex-shrink-0">
-        {episode.source}
-      </span>
-
-      {/* Match type */}
-      <span className={`text-[9px] px-1 py-0.5 rounded flex-shrink-0 ${
-        episode.match_type === "full"
-          ? "bg-accent/15 text-accent"
-          : "bg-amber-500/15 text-amber-400"
-      }`}>
-        {episode.match_type === "full" ? "exact" : "artist only"}
-      </span>
-
-      {/* Episode title */}
-      <span className="text-white/80 truncate flex-1 min-w-0">
-        {episode.title || "Untitled"}
-      </span>
-
-      {/* Date */}
-      {episode.aired_date && (
-        <span className="text-[10px] text-muted flex-shrink-0">
-          {new Date(episode.aired_date).toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" })}
+      {/* Top line: title + dig button */}
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-white/80 truncate flex-1 min-w-0 text-sm">
+          {episode.title || "Untitled"}
         </span>
-      )}
-
-      {/* Progress bar */}
-      <ProgressBar episode={episode} />
-
-      {/* Stats pill */}
-      <div className="flex items-center gap-1.5 flex-shrink-0 text-[9px] font-mono">
-        {episode.approved > 0 && (
-          <span className="text-green-400/70">{episode.approved}</span>
-        )}
-        {episode.rejected > 0 && (
-          <span className="text-red-400/40">{episode.rejected}</span>
-        )}
-        {episode.pending > 0 && (
-          <span className="text-white/40">{episode.pending}</span>
+        {episode.pending > 0 ? (
+          <button
+            onClick={onSelect}
+            className="text-[11px] px-3 py-1 rounded-full bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex-shrink-0 active:scale-95"
+          >
+            Dig →
+          </button>
+        ) : (
+          <span className="text-[10px] text-green-400/40 flex-shrink-0">done</span>
         )}
       </div>
 
-      {/* Dig button */}
-      {episode.pending > 0 ? (
-        <button
-          onClick={onSelect}
-          className="text-[10px] px-2 py-0.5 rounded-full bg-accent/10 text-accent hover:bg-accent/20 transition-colors flex-shrink-0"
-        >
-          Dig →
-        </button>
-      ) : (
-        <span className="text-[10px] text-green-400/40 flex-shrink-0">done</span>
-      )}
+      {/* Bottom line: badges + stats */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-muted uppercase tracking-wider flex-shrink-0">
+          {episode.source}
+        </span>
+        <span className={`text-[9px] px-1 py-0.5 rounded flex-shrink-0 ${
+          episode.match_type === "full"
+            ? "bg-accent/15 text-accent"
+            : "bg-amber-500/15 text-amber-400"
+        }`}>
+          {episode.match_type === "full" ? "exact" : "artist only"}
+        </span>
+        {episode.aired_date && (
+          <span className="text-[10px] text-muted flex-shrink-0">
+            {new Date(episode.aired_date).toLocaleDateString("en-US", { day: "2-digit", month: "short" })}
+          </span>
+        )}
+        <ProgressBar episode={episode} />
+        <div className="flex items-center gap-1.5 flex-shrink-0 text-[9px] font-mono">
+          {episode.approved > 0 && (
+            <span className="text-green-400/70">{episode.approved}</span>
+          )}
+          {episode.rejected > 0 && (
+            <span className="text-red-400/40">{episode.rejected}</span>
+          )}
+          {episode.pending > 0 && (
+            <span className="text-white/40">{episode.pending}</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
