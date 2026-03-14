@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Track } from "@/lib/types";
 import { openYouTube } from "@/lib/youtube";
-import { PlayerSection } from "@/components/PlayerSection";
+import { useGlobalPlayer } from "@/components/GlobalPlayerProvider";
 
 function safeCoverUrl(url: string | null): string | null {
   if (!url) return null;
@@ -64,9 +64,25 @@ export default function ApprovedPage() {
     setPage(0);
   }, [debouncedSearch, tab]);
 
+  const globalPlayer = useGlobalPlayer();
   const [expandedTrack, setExpandedTrack] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<Set<string>>(new Set());
   const [updating, setUpdating] = useState<Set<string>>(new Set());
+
+  const handlePlay = useCallback((track: Track) => {
+    if (globalPlayer.currentTrack?.id === track.id) {
+      globalPlayer.togglePlayPause();
+    } else {
+      globalPlayer.play({
+        id: track.id,
+        artist: track.artist,
+        title: track.title,
+        coverArtUrl: safeCoverUrl(track.cover_art_url),
+        spotifyUrl: track.spotify_url,
+        audioUrl: track.audio_url || track.preview_url || null,
+      });
+    }
+  }, [globalPlayer]);
 
   const handleFetchAudio = async (track: Track) => {
     if (downloading.has(track.id)) return;
@@ -240,13 +256,17 @@ export default function ApprovedPage() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              setExpandedTrack(track.id);
+                              handlePlay(track);
                             }}
                             className={`w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-full transition-colors ${
-                              expandedTrack === track.id ? "bg-accent text-surface-0" : "bg-surface-2 text-muted group-hover:text-white hover:bg-accent hover:text-surface-0"
+                              globalPlayer.currentTrack?.id === track.id ? "bg-accent text-surface-0" : "bg-surface-2 text-muted group-hover:text-white hover:bg-accent hover:text-surface-0"
                             }`}
                           >
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                            {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? (
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+                            ) : (
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                            )}
                           </button>
                           {track.artist}
                         </div>
@@ -306,32 +326,33 @@ export default function ApprovedPage() {
                           </div>
                         </div>
                       </div>
-                      {/* Expandable player section */}
+                      {/* Expandable actions */}
                       {expandedTrack === track.id && (
-                        <div className="px-2 py-3 border-b border-surface-2 bg-surface-1/30 space-y-2">
-                          <PlayerSection
-                            spotifyUrl={track.spotify_url}
-                            audioSrc={track.audio_url || track.preview_url}
-                            compact
-                            autoPlay
-                          />
-                          {/* Move to other list */}
-                          <div className="flex justify-end pt-1">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleChangeStatus(track.id, tab === "approved" ? "rejected" : "approved");
-                              }}
-                              disabled={updating.has(track.id)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                                tab === "approved"
-                                  ? "text-muted hover:text-red-400 hover:bg-red-400/10"
-                                  : "text-muted hover:text-green-400 hover:bg-green-400/10"
-                              } disabled:opacity-50`}
-                            >
-                              {tab === "approved" ? "Move to rejected" : "Move to approved"}
-                            </button>
-                          </div>
+                        <div className="px-2 py-3 border-b border-surface-2 bg-surface-1/30 flex items-center justify-between">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePlay(track);
+                            }}
+                            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+                          >
+                            {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? "Pause" : "Play"}
+                            {globalPlayer.currentTrack?.id === track.id && globalPlayer.source === "spotify" && " (Spotify)"}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleChangeStatus(track.id, tab === "approved" ? "rejected" : "approved");
+                            }}
+                            disabled={updating.has(track.id)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                              tab === "approved"
+                                ? "text-muted hover:text-red-400 hover:bg-red-400/10"
+                                : "text-muted hover:text-green-400 hover:bg-green-400/10"
+                            } disabled:opacity-50`}
+                          >
+                            {tab === "approved" ? "Move to rejected" : "Move to approved"}
+                          </button>
                         </div>
                       )}
                     </td>
@@ -353,7 +374,7 @@ export default function ApprovedPage() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      setExpandedTrack(track.id);
+                      handlePlay(track);
                     }}
                     className="w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center"
                     style={
@@ -369,9 +390,13 @@ export default function ApprovedPage() {
                     }
                   >
                     <span className={`w-6 h-6 flex items-center justify-center rounded-full backdrop-blur-sm ${
-                      expandedTrack === track.id ? "bg-accent/90 text-surface-0" : "bg-black/40 text-white/80"
+                      globalPlayer.currentTrack?.id === track.id ? "bg-accent/90 text-surface-0" : "bg-black/40 text-white/80"
                     }`}>
-                      <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                      {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+                      ) : (
+                        <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                      )}
                     </span>
                   </button>
                   <div className="flex-1 min-w-0">
@@ -429,31 +454,32 @@ export default function ApprovedPage() {
                     )}
                   </div>
                 </div>
-                {/* Expandable player section */}
+                {/* Expandable actions */}
                 {expandedTrack === track.id && (
-                  <div className="px-4 pb-4 space-y-2">
-                    <PlayerSection
-                      spotifyUrl={track.spotify_url}
-                      audioSrc={track.audio_url || track.preview_url}
-                      compact
-                      autoPlay
-                    />
-                    <div className="flex justify-end pt-1">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleChangeStatus(track.id, tab === "approved" ? "rejected" : "approved");
-                        }}
-                        disabled={updating.has(track.id)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                          tab === "approved"
-                            ? "text-muted hover:text-red-400 hover:bg-red-400/10"
-                            : "text-muted hover:text-green-400 hover:bg-green-400/10"
-                        } disabled:opacity-50`}
-                      >
-                        {tab === "approved" ? "Move to rejected" : "Move to approved"}
-                      </button>
-                    </div>
+                  <div className="px-4 pb-4 flex items-center justify-between">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePlay(track);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+                    >
+                      {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? "Pause" : "Play"}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleChangeStatus(track.id, tab === "approved" ? "rejected" : "approved");
+                      }}
+                      disabled={updating.has(track.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        tab === "approved"
+                          ? "text-muted hover:text-red-400 hover:bg-red-400/10"
+                          : "text-muted hover:text-green-400 hover:bg-green-400/10"
+                      } disabled:opacity-50`}
+                    >
+                      {tab === "approved" ? "Move to rejected" : "Move to approved"}
+                    </button>
                   </div>
                 )}
               </div>

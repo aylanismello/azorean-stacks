@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Track } from "@/lib/types";
 import { TrackCard } from "@/components/TrackCard";
+import { StackBrowser } from "@/components/StackBrowser";
+import { useGlobalPlayer } from "@/components/GlobalPlayerProvider";
 
 export default function StackPage() {
   return (
@@ -28,13 +30,11 @@ function hueFromString(str: string): number {
   return Math.abs(hash % 360);
 }
 
-function ContextBar({ track }: { track: Track }) {
+function ContextBar({ track, total, onBrowse }: { track: Track; total: number; onBrowse: () => void }) {
   const seed = track.seed_track || (track.metadata as any)?.seed_artist
     ? { artist: track.seed_track?.artist || (track.metadata as any)?.seed_artist, title: track.seed_track?.title }
     : null;
   const episode = track.episode;
-
-  if (!seed && !episode) return null;
 
   const seedKey = seed ? `${seed.artist}-${seed.title || ""}` : "";
   const episodeKey = episode?.id || "";
@@ -42,38 +42,66 @@ function ContextBar({ track }: { track: Track }) {
   const episodeHue = episodeKey ? hueFromString(episodeKey) : 0;
 
   return (
-    <div className="max-w-card mx-auto mb-2 flex items-center gap-3 px-1 text-[11px] text-muted">
-      {seed && (
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span
-            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: `hsl(${seedHue}, 50%, 55%)` }}
-          />
-          <span className="truncate">
-            <span style={{ color: `hsl(${seedHue}, 40%, 70%)` }}>{seed.artist}</span>
-            {seed.title && <span className="text-muted/50"> · {seed.title}</span>}
-          </span>
-        </div>
-      )}
-      {seed && episode && <span className="text-muted/30">→</span>}
-      {episode && (
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span
-            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: `hsl(${episodeHue}, 45%, 50%)` }}
-          />
-          <span className="truncate" style={{ color: `hsl(${episodeHue}, 35%, 65%)` }}>
-            {episode.title || episode.source}
-          </span>
-        </div>
-      )}
-    </div>
+    <button
+      onClick={onBrowse}
+      className="max-w-card mx-auto mb-3 flex items-center gap-2.5 px-3 py-2 text-[11px] text-muted rounded-xl bg-surface-1/60 hover:bg-surface-1 border border-surface-2/50 hover:border-surface-3 transition-all group w-full"
+      title="Browse all stacks"
+    >
+      {/* Zoom-out icon */}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 text-muted/60 group-hover:text-accent transition-colors">
+        <rect x="3" y="3" width="7" height="7" rx="1" />
+        <rect x="14" y="3" width="7" height="7" rx="1" />
+        <rect x="3" y="14" width="7" height="7" rx="1" />
+        <rect x="14" y="14" width="7" height="7" rx="1" />
+      </svg>
+
+      {/* Breadcrumb trail */}
+      <div className="flex items-center gap-1.5 min-w-0 flex-1">
+        {seed && (
+          <div className="flex items-center gap-1 min-w-0">
+            <span
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: `hsl(${seedHue}, 50%, 55%)` }}
+            />
+            <span className="truncate" style={{ color: `hsl(${seedHue}, 40%, 70%)` }}>
+              {seed.artist}
+            </span>
+          </div>
+        )}
+        {seed && episode && <span className="text-muted/30 flex-shrink-0">›</span>}
+        {episode && (
+          <div className="flex items-center gap-1 min-w-0">
+            <span
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: `hsl(${episodeHue}, 45%, 50%)` }}
+            />
+            <span className="truncate" style={{ color: `hsl(${episodeHue}, 35%, 65%)` }}>
+              {episode.title || episode.source}
+            </span>
+          </div>
+        )}
+        {!seed && !episode && (
+          <span className="text-muted/60">All stacks</span>
+        )}
+      </div>
+
+      {/* Track count */}
+      <span className="text-[10px] font-mono text-muted/50 flex-shrink-0">
+        {total}
+      </span>
+
+      {/* Browse hint */}
+      <span className="flex-shrink-0 text-[10px] text-muted/40 group-hover:text-accent transition-colors">
+        All stacks
+      </span>
+    </button>
   );
 }
 
 function StackPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const globalPlayer = useGlobalPlayer();
   const episodeId = searchParams.get("episode_id");
   const episodeTitle = searchParams.get("episode_title");
 
@@ -82,6 +110,7 @@ function StackPageContent() {
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [skippingEpisode, setSkippingEpisode] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
 
   const buildUrl = useCallback((extra?: string) => {
     let url = `/api/tracks?status=pending&limit=20`;
@@ -184,10 +213,50 @@ function StackPageContent() {
     }
   };
 
+  const handleSelectStack = (stackEpisodeId: string | null, stackEpisodeTitle: string | null) => {
+    setBrowsing(false);
+    if (stackEpisodeId) {
+      // Navigate to filtered stack
+      const params = new URLSearchParams();
+      params.set("episode_id", stackEpisodeId);
+      if (stackEpisodeTitle) params.set("episode_title", stackEpisodeTitle);
+      router.push(`/?${params.toString()}`);
+    } else {
+      // "Everything" mode — clear filters
+      router.push("/");
+    }
+  };
+
+  // Load track into global player when top card changes (but don't auto-play)
+  const currentTopTrackId = tracks.length > 0 ? tracks[0].id : null;
+  useEffect(() => {
+    if (!currentTopTrackId || browsing) return;
+    const t = tracks.find((t) => t.id === currentTopTrackId);
+    if (!t) return;
+    const hasPlayable = !!(t.audio_url || t.preview_url || t.spotify_url);
+    if (!hasPlayable) return;
+    // Don't reload if already loaded/playing this track
+    if (globalPlayer.currentTrack?.id === currentTopTrackId) return;
+    globalPlayer.loadTrack({
+      id: t.id,
+      artist: t.artist,
+      title: t.title,
+      coverArtUrl: t.cover_art_url,
+      spotifyUrl: t.spotify_url,
+      audioUrl: t.audio_url || t.preview_url || null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTopTrackId, browsing]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (tracks.length === 0) return;
+      // Escape to toggle browse mode
+      if (e.key === "Escape") {
+        setBrowsing((prev) => !prev);
+        return;
+      }
+      if (browsing || tracks.length === 0) return;
       // Don't trigger shortcuts when typing in inputs
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
@@ -200,8 +269,19 @@ function StackPageContent() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks]);
+  }, [tracks, browsing]);
 
+  // ── Browse mode ──
+  if (browsing) {
+    return (
+      <StackBrowser
+        onSelectStack={handleSelectStack}
+        onClose={() => setBrowsing(false)}
+      />
+    );
+  }
+
+  // ── Loading ──
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[80vh]">
@@ -210,6 +290,7 @@ function StackPageContent() {
     );
   }
 
+  // ── Error ──
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[80vh] px-6 text-center">
@@ -224,6 +305,7 @@ function StackPageContent() {
     );
   }
 
+  // ── Empty ──
   if (tracks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[80vh] px-6 text-center">
@@ -235,12 +317,20 @@ function StackPageContent() {
             <p className="text-sm text-muted max-w-xs">
               No pending tracks left{episodeTitle ? ` in "${episodeTitle}"` : " in this episode"}.
             </p>
-            <a
-              href={episodeId ? "/episodes" : "/"}
-              className="mt-6 px-5 py-2 text-sm bg-surface-2 hover:bg-surface-3 rounded-lg text-muted hover:text-white transition-colors"
-            >
-              Back to Episodes
-            </a>
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setBrowsing(true)}
+                className="px-5 py-2 text-sm bg-accent/20 hover:bg-accent/30 text-accent rounded-lg transition-colors"
+              >
+                Browse Stacks
+              </button>
+              <a
+                href="/episodes"
+                className="px-5 py-2 text-sm bg-surface-2 hover:bg-surface-3 rounded-lg text-muted hover:text-white transition-colors"
+              >
+                Back to Episodes
+              </a>
+            </div>
           </>
         ) : (
           <>
@@ -269,31 +359,31 @@ function StackPageContent() {
     );
   }
 
+  // ── Main stack view ──
   return (
     <div className="px-4 pt-4 md:pt-8">
-      {/* Episode context header */}
+      {/* Episode filter header — shown when zoomed into a specific episode */}
       {episodeId && (
-        <div className="text-center mb-2">
-          <a href="/episodes" className="text-xs text-muted hover:text-accent transition-colors">
-            ← Back to Episodes
-          </a>
+        <div className="max-w-card mx-auto mb-2 flex items-center gap-2 px-1">
+          <button
+            onClick={() => setBrowsing(true)}
+            className="text-xs text-accent hover:text-accent-bright transition-colors flex items-center gap-1"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            All Stacks
+          </button>
           {episodeTitle && (
-            <p className="text-sm text-white/60 mt-1 truncate max-w-md mx-auto">
-              {episodeTitle}
+            <p className="text-xs text-white/40 truncate flex-1">
+              / {episodeTitle}
             </p>
           )}
         </div>
       )}
 
-      {/* Counter — hidden on mobile */}
-      <div className="hidden md:block text-center mb-6">
-        <span className="text-sm text-muted font-mono">
-          {total} track{total !== 1 ? "s" : ""} waiting
-        </span>
-      </div>
-
-      {/* Context bar — seed + episode */}
-      <ContextBar track={tracks[0]} />
+      {/* Context bar — seed + episode — clickable to browse all stacks */}
+      <ContextBar track={tracks[0]} total={total} onBrowse={() => setBrowsing(true)} />
 
       {/* Current card */}
       <TrackCard
@@ -306,8 +396,9 @@ function StackPageContent() {
 
       {/* Keyboard hint (desktop only) */}
       <div className="hidden md:flex justify-center gap-6 mt-6 text-xs text-muted">
-        <span>← / j to skip</span>
-        <span>→ / k to keep</span>
+        <span>← / j skip</span>
+        <span>→ / k keep</span>
+        <span>esc all stacks</span>
       </div>
 
     </div>

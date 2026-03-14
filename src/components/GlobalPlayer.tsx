@@ -1,0 +1,164 @@
+"use client";
+
+import { useRef, useState, useCallback } from "react";
+import { useGlobalPlayer } from "./GlobalPlayerProvider";
+
+function fmt(s: number): string {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+function generateGradient(artist: string, title: string): string {
+  let hash = 0;
+  const str = artist + title;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const h1 = Math.abs(hash % 360);
+  return `hsl(${h1}, 40%, 20%)`;
+}
+
+export function GlobalPlayer() {
+  const { currentTrack, playing, loading, progress, duration, source, togglePlayPause, seek, stop } = useGlobalPlayer();
+  const progressRef = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const pct = duration > 0 ? (progress / duration) * 100 : 0;
+
+  const seekTo = useCallback((clientX: number) => {
+    if (!duration || !progressRef.current) return;
+    const rect = progressRef.current.getBoundingClientRect();
+    const p = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    seek(p * duration);
+  }, [duration, seek]);
+
+  const handleSeekStart = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    setDragging(true);
+    seekTo(e.clientX);
+    const handleMove = (ev: MouseEvent) => seekTo(ev.clientX);
+    const handleUp = () => {
+      setDragging(false);
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+  }, [seekTo]);
+
+  const handleTouchSeek = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+    setDragging(true);
+    seekTo(e.touches[0].clientX);
+    const handleMove = (ev: TouchEvent) => {
+      ev.preventDefault();
+      seekTo(ev.touches[0].clientX);
+    };
+    const handleEnd = () => {
+      setDragging(false);
+      window.removeEventListener("touchmove", handleMove);
+      window.removeEventListener("touchend", handleEnd);
+    };
+    window.addEventListener("touchmove", handleMove, { passive: false });
+    window.addEventListener("touchend", handleEnd);
+  }, [seekTo]);
+
+  if (!currentTrack) return null;
+
+  const bgColor = currentTrack.coverArtUrl ? undefined : generateGradient(currentTrack.artist, currentTrack.title);
+
+  return (
+    <div className="global-player fixed left-0 right-0 z-40 bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px))] md:bottom-0">
+      {/* Progress bar — full width at top of player, tall hit area, thin visual */}
+      <div
+        ref={progressRef}
+        className="group relative h-3 cursor-pointer touch-none flex items-end"
+        onClick={(e) => seekTo(e.clientX)}
+        onMouseDown={handleSeekStart}
+        onTouchStart={handleTouchSeek}
+      >
+        <div className="relative w-full h-1 bg-surface-3 group-hover:h-1.5 transition-all">
+          <div
+            className="absolute inset-y-0 left-0 bg-accent transition-[width] duration-75"
+            style={{ width: `${pct}%` }}
+          />
+          <div
+            className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 bg-accent rounded-full shadow-lg shadow-black/50 transition-all ${
+              dragging ? "scale-125 opacity-100" : "scale-0 group-hover:scale-100 opacity-0 group-hover:opacity-100"
+            }`}
+            style={{ left: `${pct}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Player bar */}
+      <div className="bg-surface-1/95 backdrop-blur-xl border-t border-surface-2 px-3 py-2 flex items-center gap-3">
+        {/* Album art / gradient */}
+        <div
+          className="w-10 h-10 rounded-md flex-shrink-0 overflow-hidden"
+          style={
+            currentTrack.coverArtUrl
+              ? { backgroundImage: `url(${currentTrack.coverArtUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
+              : { backgroundColor: bgColor }
+          }
+        />
+
+        {/* Track info */}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-white truncate leading-tight">
+            {currentTrack.title}
+          </p>
+          <p className="text-xs text-muted truncate leading-tight">
+            {currentTrack.artist}
+          </p>
+        </div>
+
+        {/* Source indicator */}
+        {source === "spotify" && (
+          <div className="flex-shrink-0" title="Playing via Spotify">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#1DB954">
+              <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
+            </svg>
+          </div>
+        )}
+
+        {/* Time */}
+        <span className="text-[10px] text-muted font-mono flex-shrink-0 hidden sm:block">
+          {duration > 0 ? `${fmt(progress)} / ${fmt(duration)}` : ""}
+        </span>
+
+        {/* Play/pause */}
+        <button
+          onClick={togglePlayPause}
+          className="w-9 h-9 flex items-center justify-center rounded-full bg-white text-black hover:scale-105 transition-transform active:scale-95 flex-shrink-0"
+        >
+          {loading ? (
+            <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+            </svg>
+          ) : playing ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="4" width="4" height="16" rx="1" />
+              <rect x="14" y="4" width="4" height="16" rx="1" />
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+        </button>
+
+        {/* Close */}
+        <button
+          onClick={stop}
+          className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-white hover:bg-surface-3 transition-all flex-shrink-0"
+          title="Close player"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}

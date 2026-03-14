@@ -69,7 +69,55 @@ body {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* Hide scrollbar for horizontal crate scroll */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Stack browser zoom-out entrance */
+@keyframes stack-browser-in {
+  0% {
+    opacity: 0;
+    transform: scale(1.08);
+    filter: blur(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+.stack-browser-enter {
+  animation: stack-browser-in 300ms ease-out both;
+}
+
 /* Audio player styling */
 audio::-webkit-media-controls-panel {
   background: #1a1a1a;
 }
+
+/* Global player slide-up entrance */
+@keyframes global-player-in {
+  0% {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.global-player {
+  animation: global-player-in 300ms ease-out both;
+}
+
+/* Equalizer bounce for "now playing" indicator */
+@keyframes eq-bounce {
+  0%, 100% { height: 30%; }
+  50% { height: 100%; }
+}
+

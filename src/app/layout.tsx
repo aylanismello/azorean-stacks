@@ -2,6 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Navigation } from "@/components/Navigation";
 import { AuthProvider } from "@/components/AuthProvider";
+import { SpotifyProvider } from "@/components/SpotifyProvider";
+import { GlobalPlayerProvider } from "@/components/GlobalPlayerProvider";
+import { GlobalPlayer } from "@/components/GlobalPlayer";
 
 export const metadata: Metadata = {
   title: "The Stacks",
@@ -23,8 +26,13 @@ export default function RootLayout({
     <html lang="en">
       <body className="font-sans min-h-screen">
         <AuthProvider>
-          <Navigation />
-          <main className="pb-20 md:pb-8">{children}</main>
+          <SpotifyProvider>
+            <GlobalPlayerProvider>
+              <Navigation />
+              <main className="pb-32 md:pb-20">{children}</main>
+              <GlobalPlayer />
+            </GlobalPlayerProvider>
+          </SpotifyProvider>
         </AuthProvider>
       </body>
     </html>

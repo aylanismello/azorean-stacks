@@ -5,6 +5,7 @@ import { Track } from "@/lib/types";
 import { openYouTube } from "@/lib/youtube";
 import { PlayerSection } from "./PlayerSection";
 import { AudioPlayerHandle } from "./AudioPlayer";
+import { useGlobalPlayer } from "./GlobalPlayerProvider";
 
 interface TrackCardProps {
   track: Track;
@@ -53,6 +54,7 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   const playerRef = useRef<AudioPlayerHandle>(null);
   const [audioState, setAudioState] = useState({ playing: false, loading: false });
   const [copied, setCopied] = useState(false);
+  const globalPlayer = useGlobalPlayer();
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(`${track.artist} - ${track.title}`);
@@ -85,10 +87,25 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
   const coverUrl = safeCoverUrl(track.cover_art_url);
   const meta = track.metadata as Record<string, string | undefined>;
   const hasAudio = !!(track.audio_url || track.preview_url);
+  const hasPlayableSource = hasAudio || !!track.spotify_url;
+  const isCurrentTrack = globalPlayer.currentTrack?.id === track.id;
 
   const handleArtworkPlay = useCallback(() => {
-    playerRef.current?.toggle();
-  }, []);
+    // If this track is already playing in global player, toggle play/pause
+    if (isCurrentTrack) {
+      globalPlayer.togglePlayPause();
+      return;
+    }
+    // Play in global player
+    globalPlayer.play({
+      id: track.id,
+      artist: track.artist,
+      title: track.title,
+      coverArtUrl: safeCoverUrl(track.cover_art_url),
+      spotifyUrl: track.spotify_url,
+      audioUrl: track.audio_url || track.preview_url || null,
+    });
+  }, [track, isCurrentTrack, globalPlayer]);
 
   return (
     <div
@@ -114,23 +131,23 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
 
           {/* Play/pause overlay on artwork */}
-          {hasAudio && (
+          {hasPlayableSource && (
             <button
               onClick={handleArtworkPlay}
               className="absolute inset-0 z-10 flex items-center justify-center group/play"
             >
               <span
                 className={`flex items-center justify-center w-14 h-14 rounded-full backdrop-blur-md transition-all active:scale-90 ${
-                  audioState.playing
+                  isCurrentTrack && globalPlayer.playing
                     ? "bg-black/50 opacity-0 group-hover/play:opacity-100"
                     : "bg-black/40 opacity-100"
-                } ${audioState.loading ? "opacity-100" : ""}`}
+                } ${isCurrentTrack && globalPlayer.loading ? "opacity-100" : ""}`}
               >
-                {audioState.loading ? (
+                {isCurrentTrack && globalPlayer.loading ? (
                   <svg className="animate-spin" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                     <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
                   </svg>
-                ) : audioState.playing ? (
+                ) : isCurrentTrack && globalPlayer.playing ? (
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
                     <rect x="6" y="4" width="4" height="16" rx="1" />
                     <rect x="14" y="4" width="4" height="16" rx="1" />
@@ -229,16 +246,20 @@ export function TrackCard({ track, onVote, onSkipEpisode, skippingEpisode }: Tra
             )
           )}
 
-          {/* Player — progress bar + controls, play button is on artwork */}
-          <PlayerSection
-            ref={playerRef}
-            spotifyUrl={track.spotify_url}
-            audioSrc={track.audio_url || track.preview_url}
-            compact
-            autoPlay
-            externalPlayButton={hasAudio}
-            onStateChange={setAudioState}
-          />
+          {/* Now playing indicator — playback is in global player */}
+          {isCurrentTrack && (
+            <div className="flex items-center gap-2 py-2 px-3 bg-surface-2 rounded-xl text-xs">
+              <span className="flex gap-0.5 items-end h-3">
+                <span className={`w-0.5 bg-accent rounded-full ${globalPlayer.playing ? "animate-bounce" : ""}`} style={{ height: "40%", animationDelay: "0ms" }} />
+                <span className={`w-0.5 bg-accent rounded-full ${globalPlayer.playing ? "animate-bounce" : ""}`} style={{ height: "70%", animationDelay: "150ms" }} />
+                <span className={`w-0.5 bg-accent rounded-full ${globalPlayer.playing ? "animate-bounce" : ""}`} style={{ height: "50%", animationDelay: "300ms" }} />
+              </span>
+              <span className="text-accent">
+                {globalPlayer.playing ? "Now playing" : "Paused"}
+                {globalPlayer.source === "spotify" && " via Spotify"}
+              </span>
+            </div>
+          )}
 
           {/* YouTube link — shown separately if available */}
           {track.youtube_url && (
