@@ -376,7 +376,7 @@ function StackPageContent() {
       return;
     }
 
-    // Play the card track
+    // Play the card track — set origin to current URL so Playing tab returns here
     const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
     globalPlayer.play({
       id: currentTrack.id,
