@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# env files (secrets)
+.env
+.env.local
+.env*.local
+
+# build artifacts
+*.tsbuildinfo
+next-env.d.ts
+
+# os
+.DS_Store
+
+# vercel
+.vercel
+
+# playwright screenshots/logs
+.playwright-mcp/
+
+# screenshots (use .playwright-mcp/ or external storage)
+*.png
+
+# claude
+.claude/

@@ -1,0 +1,15 @@
+{
+  "name": "azorean-stacks",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/client",
+    "apps/engine"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/client",
+    "build": "npm run build --workspace=apps/client",
+    "dev:engine": "npm run watcher --workspace=apps/engine",
+    "dev:all": "npm run dev --workspace=apps/client & npm run watcher --workspace=apps/engine"
+  }
+}
