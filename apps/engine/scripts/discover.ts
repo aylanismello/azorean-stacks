@@ -293,23 +293,27 @@ async function discoverFromSource(
 
     const rawTracks = await source.getTracklist(episodeUrl);
 
-    const hasFullMatch = rawTracks.some((t) => isSameTrack(t, { artist: seedArtist, title: seedTitle }));
-    const hasArtistMatch = !hasFullMatch && rawTracks.some(
-      (t) => t.artist.toLowerCase().trim() === seedArtist.toLowerCase().trim()
-    );
-    const matchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : "artist";
-
-    await db.from("episode_seeds").upsert(
-      { episode_id: episodeId, seed_id: seedId, match_type: matchType },
-      { onConflict: "episode_id,seed_id" }
-    );
-
     if (rawTracks.length === 0) {
       stats.emptyTracklists++;
       stats.failedEpisodes.push(context);
       log("fail", `EMPTY TRACKLIST: ${context} — ${episodeUrl}`);
       continue;
     }
+
+    const hasFullMatch = rawTracks.some((t) => isSameTrack(t, { artist: seedArtist, title: seedTitle }));
+    const hasArtistMatch = !hasFullMatch && rawTracks.some(
+      (t) => t.artist.toLowerCase().trim() === seedArtist.toLowerCase().trim()
+    );
+    const matchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : null;
+    if (!matchType) {
+      log("skip", `No match found for seed "${seedArtist} - ${seedTitle}" in ${context} — skipping`);
+      continue;
+    }
+
+    await db.from("episode_seeds").upsert(
+      { episode_id: episodeId, seed_id: seedId, match_type: matchType },
+      { onConflict: "episode_id,seed_id" }
+    );
 
     log("info", `Match type: ${matchType} for ${context}`);
 
