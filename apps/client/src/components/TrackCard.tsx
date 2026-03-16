@@ -92,6 +92,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     if (superLiking || votingRef.current) return;
     setSuperLiking(true);
     setSuperLiked(true);
+    setKept(true); // super like implies approval — mark heart as done too
     try {
       if (onSuperLike) {
         await onSuperLike(track.id);
@@ -107,6 +108,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     async (status: "approved" | "rejected" | "skipped", advance: boolean = true) => {
       if (votingRef.current) return;
       if (!advance) {
+        if (superLiked) return; // already super-liked, don't double-approve
         setKept(true);
         await onVote(track.id, status, false);
         return;
