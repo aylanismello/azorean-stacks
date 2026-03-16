@@ -2,8 +2,9 @@
 import { getSupabase } from "../lib/supabase";
 
 interface SignalAccumulator {
-  approvals: number;
-  rejections: number;
+  positive: number;
+  negative: number;
+  samples: number;
 }
 
 async function main() {
@@ -16,7 +17,7 @@ async function main() {
   const { data: tracks, error } = await db
     .from("tracks")
     .select("id, artist, title, status, metadata, episode_id, seed_track_id")
-    .in("status", ["approved", "rejected"]);
+    .in("status", ["approved", "rejected", "skipped"]);
 
   if (error) {
     console.error(`Failed to fetch tracks: ${error.message}`);
@@ -30,25 +31,40 @@ async function main() {
 
   console.log(`Processing ${tracks.length} voted tracks`);
 
+  // Fetch super-liked track IDs
+  const { data: superLikedRows } = await db
+    .from("user_tracks")
+    .select("track_id")
+    .eq("super_liked", true);
+  const superLikedSet = new Set((superLikedRows || []).map((r: any) => r.track_id as string));
+
   const signals = new Map<string, SignalAccumulator>();
 
-  function addSignal(type: string, value: string, approved: boolean) {
+  function addSignal(type: string, value: string, weight: number) {
     const key = `${type}::${value.toLowerCase().trim()}`;
-    const existing = signals.get(key) || { approvals: 0, rejections: 0 };
-    if (approved) {
-      existing.approvals++;
+    const existing = signals.get(key) || { positive: 0, negative: 0, samples: 0 };
+    if (weight > 0) {
+      existing.positive += weight;
     } else {
-      existing.rejections++;
+      existing.negative += Math.abs(weight);
     }
+    existing.samples++;
     signals.set(key, existing);
   }
 
+  function trackWeight(track: any): number {
+    if (superLikedSet.has(track.id)) return 3.0;
+    if (track.status === "approved") return 1.0;
+    if (track.status === "skipped") return -0.3;
+    return -1.0; // rejected
+  }
+
   for (const track of tracks) {
-    const approved = track.status === "approved";
+    const weight = trackWeight(track);
 
     // Artist signal (improved: stronger negative for heavy rejecters)
     if (track.artist) {
-      addSignal("artist", track.artist, approved);
+      addSignal("artist", track.artist, weight);
     }
 
     // Extract signals from metadata
@@ -56,7 +72,7 @@ async function main() {
 
     if (Array.isArray(meta.genres)) {
       for (const g of meta.genres) {
-        if (typeof g === "string") addSignal("genre", g, approved);
+        if (typeof g === "string") addSignal("genre", g, weight);
       }
     }
 
@@ -73,8 +89,8 @@ async function main() {
     .eq("active", true);
 
   if (seeds && seeds.length > 0) {
-    // Get per-seed track stats
-    const tracksBySeed = new Map<string, { approvals: number; rejections: number }>();
+    // Get per-seed weighted track stats
+    const tracksBySeed = new Map<string, { positive: number; negative: number; samples: number }>();
 
     for (const track of tracks) {
       const meta = (track.metadata || {}) as Record<string, unknown>;
@@ -82,22 +98,25 @@ async function main() {
       const seedId = (meta.seed_id as string) || null;
       if (!seedId) continue;
 
-      const acc = tracksBySeed.get(seedId) || { approvals: 0, rejections: 0 };
-      if (track.status === "approved") acc.approvals++;
-      else acc.rejections++;
+      const w = trackWeight(track);
+      const acc = tracksBySeed.get(seedId) || { positive: 0, negative: 0, samples: 0 };
+      if (w > 0) acc.positive += w;
+      else acc.negative += Math.abs(w);
+      acc.samples++;
       tracksBySeed.set(seedId, acc);
     }
 
     for (const seed of seeds) {
       const acc = tracksBySeed.get(seed.id);
       if (!acc) continue;
-      const total = acc.approvals + acc.rejections;
-      if (total < 3) continue; // need enough data
+      if (acc.samples < 3) continue; // need enough data
 
-      const rate = acc.approvals / total;
-      // >50% approval → positive boost, <20% → negative signal
-      if (rate > 0.5 || rate < 0.2) {
-        addSignal("seed_affinity", seed.id, rate > 0.5);
+      const totalWeight = acc.positive + acc.negative;
+      if (totalWeight === 0) continue;
+      const normalizedWeight = (acc.positive - acc.negative) / totalWeight;
+      // Only add signal if there's a meaningful skew
+      if (normalizedWeight > 0 || normalizedWeight < -0.1) {
+        addSignal("seed_affinity", seed.id, normalizedWeight);
       }
     }
   }
@@ -132,15 +151,17 @@ async function main() {
         if (ep.curator_id) episodeToCurator.set(ep.id, ep.curator_id);
       }
 
-      // Accumulate approval stats per curator from voted tracks
-      const curatorStats = new Map<string, { approvals: number; rejections: number }>();
+      // Accumulate weighted stats per curator from voted tracks
+      const curatorStats = new Map<string, { positive: number; negative: number; samples: number }>();
       for (const track of tracks) {
         if (!track.episode_id) continue;
         const curatorId = episodeToCurator.get(track.episode_id);
         if (!curatorId) continue;
-        const acc = curatorStats.get(curatorId) || { approvals: 0, rejections: 0 };
-        if (track.status === "approved") acc.approvals++;
-        else acc.rejections++;
+        const w = trackWeight(track);
+        const acc = curatorStats.get(curatorId) || { positive: 0, negative: 0, samples: 0 };
+        if (w > 0) acc.positive += w;
+        else acc.negative += Math.abs(w);
+        acc.samples++;
         curatorStats.set(curatorId, acc);
       }
 
@@ -148,12 +169,13 @@ async function main() {
       const curatorSlugMap = new Map(curators.map((c: any) => [c.id, c.slug]));
 
       for (const [curatorId, acc] of curatorStats) {
-        const total = acc.approvals + acc.rejections;
-        if (total < 3) continue; // need enough data
+        if (acc.samples < 3) continue; // need enough data
         const slug = curatorSlugMap.get(curatorId);
         if (!slug) continue;
-        const approved = acc.approvals / total > 0.5;
-        addSignal("curator", slug, approved);
+        const totalWeight = acc.positive + acc.negative;
+        if (totalWeight === 0) continue;
+        const normalizedWeight = (acc.positive - acc.negative) / totalWeight;
+        addSignal("curator", slug, normalizedWeight);
       }
     }
   }
@@ -162,31 +184,34 @@ async function main() {
   // Episodes with multiple approved tracks → boost remaining pending tracks
   console.log(`Computing episode density signals...`);
 
-  const episodeApprovals = new Map<string, number>();
+  const episodePositiveWeight = new Map<string, number>();
   for (const track of tracks) {
-    if (track.status !== "approved" || !track.episode_id) continue;
-    episodeApprovals.set(track.episode_id, (episodeApprovals.get(track.episode_id) || 0) + 1);
+    if (!track.episode_id) continue;
+    const w = trackWeight(track);
+    if (w > 0) {
+      episodePositiveWeight.set(track.episode_id, (episodePositiveWeight.get(track.episode_id) || 0) + w);
+    }
   }
 
-  for (const [episodeId, count] of episodeApprovals) {
-    if (count >= 2) {
-      // Multiple approved tracks from same episode → strong positive signal
-      addSignal("episode_density", episodeId, true);
+  for (const [episodeId, totalWeight] of episodePositiveWeight) {
+    if (totalWeight >= 2) {
+      // Multiple approved/super-liked tracks from same episode → strong positive signal
+      addSignal("episode_density", episodeId, 1.0);
     }
   }
 
   console.log(`Computed ${signals.size} unique signals`);
 
   // ─── ARTIST NEGATIVE SIGNAL IMPROVEMENT ───────────────────
-  // Artists with >3 rejections and <25% approval get extra negative weight
-  // We do this by adding extra rejection entries to their signal accumulator
+  // Artists with >3 negative weight and <25% positive rate get extra negative weight
+  // We do this by boosting the negative accumulator
   for (const [key, acc] of signals) {
     if (!key.startsWith("artist::")) continue;
-    const total = acc.approvals + acc.rejections;
-    const rate = total > 0 ? acc.approvals / total : 0;
-    if (acc.rejections > 3 && rate < 0.25) {
-      // Add extra rejection weight — effectively doubles the negative signal
-      acc.rejections = Math.round(acc.rejections * 1.5);
+    const total = acc.positive + acc.negative;
+    const rate = total > 0 ? acc.positive / total : 0;
+    if (acc.negative > 3 && rate < 0.25) {
+      // Add extra negative weight — effectively increases the negative signal
+      acc.negative = Math.round(acc.negative * 1.5);
       signals.set(key, acc);
     }
   }
@@ -197,8 +222,8 @@ async function main() {
 
   for (const [key, acc] of signals) {
     const [signalType, value] = key.split("::");
-    const total = acc.approvals + acc.rejections;
-    const weight = total > 0 ? (acc.approvals - acc.rejections) / total : 0;
+    const totalWeight = acc.positive + acc.negative;
+    const weight = totalWeight > 0 ? (acc.positive - acc.negative) / totalWeight : 0;
 
     const { error: upsertError } = await db.from("taste_signals").upsert(
       {
@@ -206,7 +231,7 @@ async function main() {
         signal_type: signalType,
         value,
         weight: Math.round(weight * 1000) / 1000,
-        sample_count: total,
+        sample_count: acc.samples,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "user_id,signal_type,value" }
@@ -409,7 +434,8 @@ async function main() {
   console.log(`Distribution: +${scoreDist.positive} positive, ${scoreDist.zero} neutral, -${scoreDist.negative} negative`);
 
   // ─── AUTO-SKIP STRONGLY NEGATIVE TRACKS ───────────────────
-  // Tracks with taste_score < -0.5 AND ≥4 negative signal matches → auto-skip
+  // Tracks with taste_score < -0.5 AND ≥3 negative signal matches → auto-skip
+  // Note: signal weights now reflect super-like (+3), like (+1), skip (-0.3), reject (-1)
   console.log(`\n=== Auto-skip Strongly Negative Tracks ===`);
 
   const stronglyNegative = updates.filter((u) => u.taste_score < -0.5);
