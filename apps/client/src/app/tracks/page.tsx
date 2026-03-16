@@ -144,6 +144,7 @@ export default function TracksPage() {
   const { connected: spotifyConnected } = useSpotify();
   const [expandedTrack, setExpandedTrack] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<Set<string>>(new Set());
+  const [superLiking, setSuperLiking] = useState<Set<string>>(new Set());
   const [updating, setUpdating] = useState<Set<string>>(new Set());
   const [seeding, setSeeding] = useState<Set<string>>(new Set());
   const [syncing, setSyncing] = useState(false);
@@ -209,7 +210,7 @@ export default function TracksPage() {
         coverArtUrl: safeCoverUrl(track.cover_art_url),
         spotifyUrl: track.spotify_url,
         audioUrl: track.audio_url || track.preview_url || null,
-      }, "/approved");
+      }, "/tracks");
     }
   }, [globalPlayer]);
 
@@ -241,6 +242,35 @@ export default function TracksPage() {
       setError(err instanceof Error ? err.message : "Download failed");
     } finally {
       setDownloading((prev) => {
+        const next = new Set(prev);
+        next.delete(track.id);
+        return next;
+      });
+    }
+  };
+
+  const handleSuperLike = async (track: Track) => {
+    if (superLiking.has(track.id) || track.super_liked) return;
+    setSuperLiking((prev) => new Set(prev).add(track.id));
+    try {
+      const res = await fetch(`/api/tracks/${track.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ super_liked: true }),
+      });
+      if (!res.ok) throw new Error("Failed to super like");
+      setTracks((prev) =>
+        prev.map((t) => t.id === track.id ? { ...t, super_liked: true, status: "approved" } : t)
+      );
+      // Update tab counts
+      setTabCounts((prev) => ({
+        ...prev,
+        super_liked: (prev.super_liked ?? 0) + 1,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to super like");
+    } finally {
+      setSuperLiking((prev) => {
         const next = new Set(prev);
         next.delete(track.id);
         return next;
@@ -568,6 +598,16 @@ export default function TracksPage() {
                             >
                               {seeding.has(track.id) ? "..." : track.seed_id ? "Seeded" : "Seed"}
                             </button>
+                            {!track.super_liked && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleSuperLike(track); }}
+                                disabled={superLiking.has(track.id)}
+                                className="px-3 py-1.5 rounded-lg text-xs font-medium text-yellow-400 hover:bg-yellow-400/10 transition-colors disabled:opacity-50"
+                                title="Super Like — download to PicoDrops"
+                              >
+                                {superLiking.has(track.id) ? "..." : "⭐ Super Like"}
+                              </button>
+                            )}
                             <div className="flex-1" />
                             {moveOptions(track.id).map((opt) => (
                               <button
@@ -680,6 +720,16 @@ export default function TracksPage() {
                       >
                         {seeding.has(track.id) ? "..." : track.seed_id ? "Seeded" : "Seed"}
                       </button>
+                      {!track.super_liked && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleSuperLike(track); }}
+                          disabled={superLiking.has(track.id)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium text-yellow-400 hover:bg-yellow-400/10 transition-colors disabled:opacity-50"
+                          title="Super Like — download to PicoDrops"
+                        >
+                          {superLiking.has(track.id) ? "..." : "⭐ Super Like"}
+                        </button>
+                      )}
                       <div className="flex-1" />
                       {moveOptions(track.id).map((opt) => (
                         <button

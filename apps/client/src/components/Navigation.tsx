@@ -10,7 +10,7 @@ import { useGlobalPlayer } from "./GlobalPlayerProvider";
 
 const links = [
   { href: "/stacks", label: "Stacks", icon: "◉" },
-  { href: "/approved", label: "Tracks", icon: "✓" },
+  { href: "/tracks", label: "Tracks", icon: "✓" },
   { href: "/seeds", label: "Seeds", icon: "◎" },
   { href: "/episodes", label: "Episodes", icon: "▶" },
   { href: "/curators", label: "Curators", icon: "♫" },
@@ -21,7 +21,7 @@ const links = [
 const mobileLinks = [
   { href: "/", label: "Playing", icon: "▶" },
   { href: "/stacks", label: "Stacks", icon: "◉" },
-  { href: "/approved", label: "Tracks", icon: "✓" },
+  { href: "/tracks", label: "Tracks", icon: "✓" },
   { href: "/seeds", label: "Seeds", icon: "◎" },
 ];
 
