@@ -322,7 +322,7 @@ export default function TracksPage() {
   const totalPages = Math.ceil(total / limit);
 
   // Determine available move-to options based on current tab
-  const moveOptions = (trackId: string): { label: string; status: Tab; color: string }[] => {
+  const moveOptions = (trackId: string): { label: string; status: "pending" | "approved" | "rejected" | "skipped"; color: string }[] => {
     const opts: { label: string; status: Tab; color: string }[] = [];
     if (tab !== "approved" && tab !== "super_liked") opts.push({ label: "Keep", status: "approved", color: "text-green-400 hover:bg-green-400/10" });
     if (tab !== "pending") opts.push({ label: "Back to queue", status: "pending", color: "text-foreground/50 hover:bg-foreground/5" });
