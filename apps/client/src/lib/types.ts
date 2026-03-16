@@ -37,6 +37,9 @@ export interface Track {
 
   // Joined from user_tracks when querying for a specific user
   user_track?: UserTrack | null;
+
+  // Convenience alias — true when this user has super-liked the track
+  super_liked?: boolean;
 }
 
 export interface Episode {
@@ -93,6 +96,7 @@ export interface UserTrack {
   voted_at: string | null;
   downloaded_at: string | null;
   created_at: string;
+  super_liked?: boolean;
 }
 
 export interface Seed {

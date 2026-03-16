@@ -272,6 +272,80 @@ function StackPageContent() {
     }
   }, [router, episodeId]);
 
+  const handleSuperLike = async (id: string) => {
+    userHasInteracted.current = true;
+    try {
+      const res = await fetch(`/api/tracks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ super_liked: true }),
+      });
+      if (!res.ok) throw new Error(`Super like failed (${res.status})`);
+
+      // Auto-sync Spotify playlist when a track is super-liked (it becomes approved)
+      if (spotifyConnected) {
+        fetch("/api/spotify/sync-seeds", { method: "POST" }).catch(() => {});
+      }
+
+      // Update local state — super-liked tracks are approved
+      setTracks((prev) =>
+        prev.map((t) => t.id === id ? { ...t, status: "approved", super_liked: true, voted_at: new Date().toISOString() } : t)
+      );
+      setSessionTracks((prev) =>
+        prev.map((t) => t.id === id ? { ...t, status: "approved", super_liked: true, voted_at: new Date().toISOString() } : t)
+      );
+
+      setVoteCount((c) => c + 1);
+
+      // Advance to next track
+      if (hasEpisodeTracks) {
+        const remainingPending = tracks.filter((t) => t.id !== id && t.status === "pending");
+        if (remainingPending.length === 0) {
+          advanceToNextEpisode();
+          return;
+        }
+        setEpisodePos((prev) => {
+          for (let i = prev + 1; i < tracks.length; i++) {
+            if (tracks[i].id !== id && tracks[i].status === "pending") return i;
+          }
+          for (let i = 0; i < prev; i++) {
+            if (tracks[i].id !== id && tracks[i].status === "pending") return i;
+          }
+          return prev;
+        });
+      } else {
+        setTracks((prev) => {
+          const remaining = prev.filter((t) => t.id !== id);
+          if (remaining.length <= 3) {
+            const existingIds = new Set(remaining.map((t) => t.id));
+            fetch(buildUrl())
+              .then((r) => r.ok ? r.json() : null)
+              .then((data) => {
+                if (!data) return;
+                const newTracks = (data.tracks || []).filter(
+                  (t: Track) => t.id !== id && !existingIds.has(t.id)
+                );
+                if (newTracks.length > 0) {
+                  setTracks((curr) => {
+                    const currIds = new Set(curr.map((t: Track) => t.id));
+                    const fresh = newTracks.filter((t: Track) => !currIds.has(t.id));
+                    return [...curr, ...fresh];
+                  });
+                  setSessionTracks((curr) => mergeTrackSession(curr, newTracks));
+                }
+                setTotal(data.total || 0);
+              });
+          }
+          return remaining;
+        });
+        setTotal((prev) => prev - 1);
+      }
+    } catch (err) {
+      console.error("Super like error:", err);
+      setError("Failed to super like. Please try again.");
+    }
+  };
+
   const handleVote = async (id: string, status: "approved" | "rejected" | "skipped", advance: boolean = true) => {
     userHasInteracted.current = true;
     try {
@@ -778,6 +852,7 @@ function StackPageContent() {
             key={currentTrack.id}
             track={currentTrack}
             onVote={handleVote}
+            onSuperLike={handleSuperLike}
             onSkipEpisode={currentEpisodeId ? handleSkipEpisode : undefined}
             skippingEpisode={skippingEpisode}
           />

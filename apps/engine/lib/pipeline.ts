@@ -498,6 +498,10 @@ export type EngineEventType =
   | "discover_completed"
   | "enrich_started"
   | "enrich_completed"
+  | "repair_started"
+  | "repair_completed"
+  | "super_like_detected"
+  | "super_like_completed"
   | "error"
   | "watcher_connected"
   | "watcher_disconnected";

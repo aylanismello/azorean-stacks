@@ -10,7 +10,34 @@ export async function PATCH(
 ) {
   const supabase = getServiceClient();
   const body = await req.json();
-  const { status } = body;
+  const { status, super_liked } = body;
+
+  // Super Like: set super_liked=true, approve, and stamp voted_at
+  if (super_liked === true) {
+    const updates: Record<string, unknown> = {
+      status: "approved",
+      voted_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("tracks")
+      .update(updates)
+      .eq("id", params.id)
+      .select()
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Also update user_tracks if the row exists (best-effort; engine uses service role)
+    await supabase
+      .from("user_tracks")
+      .update({ super_liked: true, status: "approved", voted_at: updates.voted_at })
+      .eq("track_id", params.id);
+
+    return NextResponse.json({ ...data, super_liked: true });
+  }
 
   if (!status || !["approved", "rejected", "pending", "skipped"].includes(status)) {
     return NextResponse.json(

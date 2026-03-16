@@ -17,7 +17,7 @@ import {
   spotifyLookup,
   logEngineEvent,
 } from "../lib/pipeline";
-import { writeFileSync, readFileSync, existsSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 
 const db = getSupabase();
 const STATUS_FILE = `${process.env.HOME}/.openclaw/data/azorean-engine-status.json`;
@@ -395,6 +395,14 @@ async function processTrack(trackId: string) {
   }
 
   log("info", `Repairing track: ${label}`);
+  await logEngineEvent("repair_started", "started", {
+    message: label,
+    metadata: {
+      track_id: trackId,
+      should_enrich: shouldEnrich,
+      can_download: canDownload,
+    },
+  });
 
   if (shouldEnrich) {
     await enrichTrack(track);
@@ -414,14 +422,147 @@ async function processTrack(trackId: string) {
   ) {
     const ok = await downloadTrack(refreshed);
     log(ok ? "ok" : "fail", `Repair DL: ${label}`);
+    await logEngineEvent(ok ? "repair_completed" : "error", ok ? "completed" : "failed", {
+      message: ok ? label : `Repair download failed: ${label}`,
+      metadata: {
+        track_id: trackId,
+        downloaded: ok,
+      },
+    });
+    return;
   }
+
+  await logEngineEvent("repair_completed", "completed", {
+    message: label,
+    metadata: {
+      track_id: trackId,
+      downloaded: false,
+    },
+  });
+}
+
+// ─── SUPER LIKE PIPELINE ────────────────────────────────────
+
+const SUPER_LIKE_DIR = `${process.env.HOME}/Music/PicoDrops`;
+
+function sanitizeFilename(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s\-.,()&+]/g, "").replace(/\s+/g, " ").trim().slice(0, 100) || "unknown";
+}
+
+async function processSuperLike(trackId: string) {
+  const { data: track, error } = await db.from("tracks")
+    .select("*")
+    .eq("id", trackId)
+    .single();
+
+  if (error || !track) {
+    log("fail", `Super Like: could not read track ${trackId}: ${error?.message ?? "not found"}`);
+    await logEngineEvent("error", "failed", {
+      message: `Super Like: could not read track: ${error?.message ?? "not found"}`,
+      metadata: { track_id: trackId },
+    });
+    return;
+  }
+
+  const label = `${track.artist} – ${track.title}`;
+  console.log(`\n━━━ SUPER LIKE: Local download triggered ━━━`);
+  console.log(`  ${label}`);
+
+  await logEngineEvent("super_like_detected", "started", {
+    message: label,
+    metadata: { track_id: trackId },
+  });
+
+  // Ensure YouTube URL is available — enrich first if needed
+  let ytUrl = track.youtube_url;
+  if (!ytUrl) {
+    log("info", `Super Like: no YouTube URL yet, enriching ${label}`);
+    await enrichTrack(track);
+    const { data: refreshed } = await db.from("tracks").select("*").eq("id", trackId).single();
+    ytUrl = refreshed?.youtube_url ?? null;
+  }
+
+  if (!ytUrl) {
+    log("warn", `Super Like: no YouTube URL found for ${label} — skipping local download`);
+    await logEngineEvent("error", "failed", {
+      message: `Super Like: no YouTube URL for ${label}`,
+      metadata: { track_id: trackId },
+    });
+    return;
+  }
+
+  // Ensure output directory exists
+  if (!existsSync(SUPER_LIKE_DIR)) {
+    mkdirSync(SUPER_LIKE_DIR, { recursive: true });
+    log("info", `Created PicoDrops dir: ${SUPER_LIKE_DIR}`);
+  }
+
+  const safeArtist = sanitizeFilename(track.artist);
+  const safeTitle = sanitizeFilename(track.title);
+  const outFilename = `${safeArtist} - ${safeTitle}.mp3`;
+  const outPath = `${SUPER_LIKE_DIR}/${outFilename}`;
+  const outTemplate = `${SUPER_LIKE_DIR}/${safeArtist} - ${safeTitle}.%(ext)s`;
+
+  const YT_DLP_BIN =
+    process.env.YT_DLP_BIN ||
+    Bun.which("yt-dlp") ||
+    "/opt/homebrew/bin/yt-dlp";
+
+  log("info", `Super Like: downloading "${outFilename}" via yt-dlp`);
+
+  const dlProc = Bun.spawn(
+    [YT_DLP_BIN, "-x", "--audio-format", "mp3", "--audio-quality", "0",
+     "--no-playlist", "--no-warnings", "-o", outTemplate, ytUrl],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+
+  let exitCode: number;
+  try {
+    exitCode = await Promise.race([
+      dlProc.exited,
+      new Promise<number>((_, reject) =>
+        setTimeout(() => reject(new Error("Timeout after 120s")), 120_000)
+      ),
+    ]);
+  } catch (err) {
+    log("fail", `Super Like: yt-dlp timed out for ${label}`);
+    await logEngineEvent("error", "failed", {
+      message: `Super Like: download timeout for ${label}`,
+      metadata: { track_id: trackId },
+    });
+    return;
+  }
+
+  if (exitCode !== 0) {
+    log("fail", `Super Like: yt-dlp exited with ${exitCode} for ${label}`);
+    await logEngineEvent("error", "failed", {
+      message: `Super Like: yt-dlp failed (exit ${exitCode}) for ${label}`,
+      metadata: { track_id: trackId },
+    });
+    return;
+  }
+
+  log("ok", `Super Like: downloaded → ${outPath}`);
+  await logEngineEvent("super_like_completed", "completed", {
+    message: `${label} → ${outFilename}`,
+    metadata: { track_id: trackId, path: outPath },
+  });
+}
+
+const superLikeQueue: string[] = [];
+
+function enqueueSuperLike(trackId: string) {
+  if (!trackId) return;
+  if (superLikeQueue.includes(trackId)) return;
+  superLikeQueue.push(trackId);
 }
 
 async function processQueue() {
   if (processing) return;
   processing = true;
 
-  while (seedQueue.length > 0 || trackQueue.length > 0) {
+  while (seedQueue.length > 0 || trackQueue.length > 0 || superLikeQueue.length > 0) {
     lastEventAt = new Date().toISOString();
     updateStatusFile();
 
@@ -434,6 +575,20 @@ async function processQueue() {
         await logEngineEvent("error", "failed", {
           seedId,
           message: `Pipeline error: ${err instanceof Error ? err.message : err}`,
+        });
+      }
+      continue;
+    }
+
+    if (superLikeQueue.length > 0) {
+      const trackId = superLikeQueue.shift()!;
+      try {
+        await processSuperLike(trackId);
+      } catch (err) {
+        log("fail", `Super Like error for track ${trackId}: ${err instanceof Error ? err.message : err}`);
+        await logEngineEvent("error", "failed", {
+          message: `Super Like error: ${err instanceof Error ? err.message : err}`,
+          metadata: { track_id: trackId },
         });
       }
       continue;
@@ -479,6 +634,20 @@ function startWatcher() {
         }
         log("ok", `user_track INSERT detected for track ${trackId}`);
         enqueueTrack(trackId);
+        processQueue();
+      },
+    )
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "user_tracks", filter: "super_liked=eq.true" },
+      (payload) => {
+        const trackId = payload.new?.track_id;
+        if (!trackId) {
+          log("warn", "Received super_liked UPDATE without track_id");
+          return;
+        }
+        log("ok", `Super Like detected for track ${trackId} — queuing local download`);
+        enqueueSuperLike(trackId);
         processQueue();
       },
     )

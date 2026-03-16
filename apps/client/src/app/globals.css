@@ -185,6 +185,26 @@ audio::-webkit-media-controls-panel {
   animation: approve-glow 500ms ease-out both;
 }
 
+/* Super Like pop + glow */
+@keyframes super-like-pop {
+  0% { opacity: 0.7; transform: scale(0.85); }
+  40% { transform: scale(1.25); }
+  70% { transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.super-like-pop {
+  animation: super-like-pop 400ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes super-like-glow {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.5); }
+  40% { transform: scale(1.18); box-shadow: 0 0 28px 10px rgba(250, 204, 21, 0.35); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(250, 204, 21, 0); }
+}
+.super-like-glow {
+  animation: super-like-glow 600ms ease-out both;
+}
+
 /* Re-seed sprout */
 @keyframes seed-sprout {
   0% { transform: scale(0.6) rotate(-15deg); opacity: 0; }
