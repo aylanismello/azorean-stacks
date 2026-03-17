@@ -60,6 +60,8 @@ function diversifyTracks(tracks: any[]): any[] {
 }
 
 // GET /api/tracks?status=pending&limit=20
+// TODO(user-isolation): When multi-user taste scoring is implemented, add per-user filtering
+// here so that status, taste_score, and super_liked queries are scoped to the authenticated user.
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const status = searchParams.get("status") || "pending";

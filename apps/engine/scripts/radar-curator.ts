@@ -86,16 +86,58 @@ async function fetchShowEpisodes(showSlug: string, limit: number): Promise<NtsAp
 
 // ─── STEP 1: COMPUTE CURATOR AFFINITY SCORES ────────────────
 
-async function computeCuratorAffinities(): Promise<CuratorAffinity[]> {
+async function computeCuratorAffinities(userId: string | null = null): Promise<CuratorAffinity[]> {
   log("info", "Computing curator affinity scores from voting history...");
 
-  // Get all reviewed tracks from curator-trackable sources (nts, lotradio)
-  // Use the explicit FK hint to avoid ambiguity (tracks has both episode_id FK and episode_tracks junction)
-  const { data: reviewedTracks, error } = await db
-    .from("tracks")
-    .select("episode_id, status, episode:episodes!episode_id(url, title, source)")
-    .in("status", ["approved", "rejected"])
-    .not("episode_id", "is", null);
+  // Get reviewed tracks. When userId is provided, filter through user_tracks to get
+  // only that user's votes — ensuring curator affinity is per-user.
+  let reviewedTracks: any[] | null = null;
+  let error: any = null;
+
+  if (userId) {
+    // Fetch user's approved/rejected votes, then join to tracks+episodes
+    const { data: userVotes, error: uvError } = await db
+      .from("user_tracks")
+      .select("track_id, status")
+      .eq("user_id", userId)
+      .in("status", ["approved", "rejected"]);
+
+    if (uvError) {
+      log("fail", `Failed to fetch user votes: ${uvError.message}`);
+      return [];
+    }
+
+    if (!userVotes || userVotes.length === 0) {
+      log("info", "No votes found for this user — skipping curator affinity");
+      return [];
+    }
+
+    const votedTrackIds = userVotes.map((v: any) => v.track_id);
+    const userVoteMap = new Map(userVotes.map((v: any) => [v.track_id, v.status]));
+
+    const { data: trackData, error: trackError } = await db
+      .from("tracks")
+      .select("id, episode_id, status, episode:episodes!episode_id(url, title, source)")
+      .in("id", votedTrackIds)
+      .not("episode_id", "is", null);
+
+    error = trackError;
+    // Merge user vote status onto track records
+    reviewedTracks = (trackData || []).map((t: any) => ({
+      ...t,
+      status: userVoteMap.get(t.id) ?? t.status,
+    }));
+  } else {
+    // Use tracks.status directly (backward compat / all-user mode)
+    // Use the explicit FK hint to avoid ambiguity (tracks has both episode_id FK and episode_tracks junction)
+    const result = await db
+      .from("tracks")
+      .select("episode_id, status, episode:episodes!episode_id(url, title, source)")
+      .in("status", ["approved", "rejected"])
+      .not("episode_id", "is", null);
+    reviewedTracks = result.data;
+    error = result.error;
+  }
 
   if (error) {
     log("fail", `Failed to fetch reviewed tracks: ${error.message}`);
@@ -415,19 +457,20 @@ async function processShow(affinity: CuratorAffinity): Promise<{ episodesChecked
 
 // ─── MAIN EXPORT ─────────────────────────────────────────────
 
-export async function runCuratorRadar(): Promise<void> {
+export async function runCuratorRadar(userId: string | null = null): Promise<void> {
   const t0 = Date.now();
   console.log(`\n━━━ CURATOR RADAR: Starting run ━━━`);
   console.log(`  ${new Date().toISOString()}\n`);
+  if (userId) console.log(`  User: ${userId}`);
 
   await logEngineEvent("discover_started", "started", {
     message: "Curator radar run started",
-    metadata: { trigger: "radar_curator_run" },
+    metadata: { trigger: "radar_curator_run", user_id: userId },
   });
 
   try {
-    // Step 1: Compute affinity scores
-    const affinities = await computeCuratorAffinities();
+    // Step 1: Compute affinity scores (scoped to userId when provided)
+    const affinities = await computeCuratorAffinities(userId);
 
     if (affinities.length === 0) {
       log("info", "No curators meet affinity thresholds — nothing to do");
