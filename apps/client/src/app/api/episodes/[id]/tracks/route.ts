@@ -30,35 +30,25 @@ export async function GET(
   // Look up which seeds are connected to this episode
   const { data: episodeSeedRows } = await db
     .from("episode_seeds")
-    .select("seed_id, match_type, seeds(id, artist, title, track_id)")
+    .select("seed_id, match_type, seeds(id, artist, title, source)")
     .eq("episode_id", params.id);
 
-  // Build a set of seed track IDs (the actual track that is a seed)
-  // and a map of seed_track_id → seed info for re-seeds
-  const seedTrackIds = new Set<string>();
-  const reSeedTrackIds = new Set<string>(); // tracks that are seeds via re-seed (source = 're-seed')
+  // Build sets of artist+title pairs (lowercased) for seed and re-seed matching
+  const seedPairs = new Set<string>();
+  const reSeedPairs = new Set<string>();
   for (const row of (episodeSeedRows || []) as any[]) {
     const seed = Array.isArray(row.seeds) ? row.seeds[0] : row.seeds;
-    if (seed?.track_id) {
-      seedTrackIds.add(seed.track_id);
-    }
-  }
-
-  // Check which tracks have been re-seeded (are seeds themselves)
-  const trackIds = data.map((t: any) => t.id);
-  if (trackIds.length > 0) {
-    const { data: seedRows } = await db
-      .from("seeds")
-      .select("track_id, source")
-      .in("track_id", trackIds);
-    for (const s of (seedRows || []) as any[]) {
-      if (s.source === "re-seed") {
-        reSeedTrackIds.add(s.track_id);
+    if (seed?.artist && seed?.title) {
+      const key = `${seed.artist.toLowerCase().trim()}::${seed.title.toLowerCase().trim()}`;
+      if (seed.source === "re-seed") {
+        reSeedPairs.add(key);
       } else {
-        seedTrackIds.add(s.track_id);
+        seedPairs.add(key);
       }
     }
   }
+
+  const trackIds = data.map((t: any) => t.id);
 
   // Get super_liked status from user_tracks (try to get authed user)
   const superLikedIds = new Set<string>();
@@ -92,9 +82,10 @@ export async function GET(
   const signPromises: Promise<void>[] = [];
 
   for (const track of tracks) {
-    // Add seed/re-seed/super_liked flags
-    (track as any).is_seed = seedTrackIds.has(track.id);
-    (track as any).is_re_seed = reSeedTrackIds.has(track.id);
+    // Add seed/re-seed/super_liked flags (match by artist+title, not ID)
+    const trackKey = `${track.artist.toLowerCase().trim()}::${track.title.toLowerCase().trim()}`;
+    (track as any).is_seed = seedPairs.has(trackKey);
+    (track as any).is_re_seed = reSeedPairs.has(trackKey);
     (track as any).super_liked = superLikedIds.has(track.id);
 
     if (track.storage_path) {
