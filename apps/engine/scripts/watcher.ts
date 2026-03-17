@@ -172,10 +172,6 @@ async function processSeed(seedId: string) {
 
       if (existingEp) {
         episodeId = existingEp.id;
-        await db.from("episode_seeds").upsert(
-          { episode_id: episodeId, seed_id: seedId },
-          { onConflict: "episode_id,seed_id" },
-        );
 
         const { count } = await db.from("tracks")
           .select("*", { count: "exact", head: true })
@@ -202,16 +198,31 @@ async function processSeed(seedId: string) {
         episodeId = newEp.id;
       }
 
-      await db.from("episode_seeds").upsert(
-        { episode_id: episodeId, seed_id: seedId },
-        { onConflict: "episode_id,seed_id" },
-      );
-
       const rawTracks = await source.getTracklist(episodeUrl);
       if (rawTracks.length === 0) {
         log("fail", `Empty tracklist: ${context}`);
         continue;
       }
+
+      // Verify the seed track actually appears in this episode's tracklist before
+      // treating it as a valid co-occurrence source. Without this check, NTS full-text
+      // search can return false-positive episodes (matching tags/descriptions) whose
+      // tracklists have no relation to the seed — producing tracks with no meaningful
+      // artist/title connection to the seed.
+      const hasFullMatch = rawTracks.some((t) => isSameTrack(t, { artist: seed.artist, title: seed.title }));
+      const hasArtistMatch = !hasFullMatch && rawTracks.some(
+        (t) => t.artist.toLowerCase().trim() === seed.artist.toLowerCase().trim()
+      );
+      const matchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : null;
+      if (!matchType) {
+        log("skip", `No match for seed "${seed.artist} - ${seed.title}" in ${context} — skipping`);
+        continue;
+      }
+
+      await db.from("episode_seeds").upsert(
+        { episode_id: episodeId, seed_id: seedId, match_type: matchType },
+        { onConflict: "episode_id,seed_id" },
+      );
 
       // Insert candidate tracks from this episode
       const insertedTracks: any[] = [];
