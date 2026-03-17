@@ -56,6 +56,25 @@ function updateStatusFile() {
   }
 }
 
+// ─── USER HELPERS ────────────────────────────────────────────
+
+// Returns the first user ID found in user_tracks — used to scope engine runs
+// to the primary user in single-user setups. Returns null if no users found.
+async function getPrimaryUserId(): Promise<string | null> {
+  try {
+    const { data } = await db
+      .from("user_tracks")
+      .select("user_id")
+      .not("user_id", "is", null)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    return data?.user_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── SEED PIPELINE ──────────────────────────────────────────
 
 async function processSeed(seedId: string) {
@@ -1136,9 +1155,10 @@ function startWatcher() {
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "user_tracks" },
-      (payload) => {
+      async (payload) => {
         lastRealtimeEventAt = new Date().toISOString();
         const trackId = payload.new?.track_id;
+        const userId = payload.new?.user_id;
         if (!trackId) {
           log("warn", "Received user_track INSERT without track_id");
           return;
@@ -1146,6 +1166,50 @@ function startWatcher() {
         log("ok", `user_track INSERT detected for track ${trackId}`);
         enqueueTrack(trackId);
         processRepairQueue();
+
+        // Re-seed: when a track is approved, auto-create a seed for it so
+        // the pipeline discovers co-occurring tracks. The seed is scoped to
+        // the approving user so results stay isolated per-user.
+        if (payload.new?.status === "approved" && userId) {
+          try {
+            const { data: track } = await db
+              .from("tracks")
+              .select("artist, title")
+              .eq("id", trackId)
+              .maybeSingle();
+
+            if (track?.artist && track?.title) {
+              // Only create seed if one doesn't already exist for this user + track
+              const { data: existingSeed } = await db
+                .from("seeds")
+                .select("id")
+                .or(`user_id.eq.${userId},user_id.is.null`)
+                .ilike("artist", track.artist.replace(/[%_\\]/g, (c: string) => `\\${c}`))
+                .ilike("title", track.title.replace(/[%_\\]/g, (c: string) => `\\${c}`))
+                .limit(1)
+                .maybeSingle();
+
+              if (!existingSeed) {
+                const now = new Date();
+                const timeStr = now.toTimeString().slice(0, 8);
+                await db.from("seeds").insert({
+                  artist: track.artist,
+                  title: track.title,
+                  user_id: userId,
+                  source: "auto:approved",
+                  pipeline_status: {
+                    state: "queued",
+                    started_at: now.toISOString(),
+                    log: [{ t: timeStr, msg: "seed auto-created from approved track" }],
+                  },
+                });
+                log("ok", `Re-seed queued for approved track: ${track.artist} – ${track.title} (user: ${userId})`);
+              }
+            }
+          } catch (err) {
+            log("fail", `Re-seed on approve failed for track ${trackId}: ${err instanceof Error ? err.message : err}`);
+          }
+        }
       },
     )
     .on(
@@ -1215,7 +1279,9 @@ function startWatcher() {
               message: "Scheduled curator radar run",
             });
             try {
-              await runCuratorRadar();
+              // Pass primary user ID so curator affinity scores are user-scoped
+              const primaryUserId = await getPrimaryUserId();
+              await runCuratorRadar(primaryUserId);
               await logEngineEvent("radar_curator_run", "completed", {
                 message: "Scheduled curator radar run complete",
               });
