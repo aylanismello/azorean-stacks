@@ -18,7 +18,7 @@ async function main() {
 
   const { data: unknowns, error } = await db
     .from("episode_seeds")
-    .select("id, episode_id, seed_id, match_type")
+    .select("episode_id, seed_id, match_type")
     .eq("match_type", "unknown");
 
   if (error) {
@@ -100,7 +100,8 @@ async function main() {
     const { error: updateErr } = await db
       .from("episode_seeds")
       .update({ match_type: newMatchType })
-      .eq("id", row.id);
+      .eq("episode_id", row.episode_id)
+      .eq("seed_id", row.seed_id);
 
     if (updateErr) {
       console.error(`  [error] Failed to update row ${row.id}: ${updateErr.message}`);
