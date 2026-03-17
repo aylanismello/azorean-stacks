@@ -354,7 +354,7 @@ export default function TracksPage() {
   }, [router]);
 
   return (
-    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-4xl mx-auto pb-32 md:pb-8">
+    <div className="px-4 md:px-6 pt-4 md:pt-8 max-w-4xl mx-auto pb-32 md:pb-8 overflow-x-hidden">
       {/* Sync to Spotify + result banner */}
       <div className="flex items-center justify-between mb-4">
         <div />
@@ -392,7 +392,7 @@ export default function TracksPage() {
       )}
 
       {/* Tabs — always show counts */}
-      <div className="flex items-center gap-1.5 mb-6 overflow-x-auto no-scrollbar pb-0.5">
+      <div className="flex items-center gap-1.5 mb-6 overflow-x-auto scrollbar-hide pb-0.5">
         {(Object.keys(TAB_CONFIG) as Tab[]).map((t) => {
           const cfg = TAB_CONFIG[t];
           const count = tabCounts[t];
@@ -633,7 +633,7 @@ export default function TracksPage() {
           </div>
 
           {/* Mobile: cards */}
-          <div className="md:hidden space-y-1.5">
+          <div className="md:hidden space-y-1.5 overflow-hidden">
             {tracks.map((track) => {
               const isPlaying = globalPlayer.currentTrack?.id === track.id;
               const isExpanded = expandedTrack === track.id;
