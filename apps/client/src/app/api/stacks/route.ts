@@ -1,16 +1,39 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/stacks — seeds with their episodes and per-episode track stats
-export async function GET() {
+export async function GET(req: NextRequest) {
   const supabase = getServiceClient();
+  const auth = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return req.cookies.getAll();
+        },
+        setAll() {
+          // Read-only access to auth cookies in route handlers.
+        },
+      },
+    }
+  );
+  const {
+    data: { user },
+  } = await auth.auth.getUser();
 
-  // 1. Get all seeds
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // 1. Get seeds for the authenticated user (including legacy null-user seeds)
   const { data: seeds, error: seedErr } = await supabase
     .from("seeds")
     .select("id, artist, title, active, cover_art_url")
+    .or(`user_id.eq.${user.id},user_id.is.null`)
     .order("created_at", { ascending: false });
 
   if (seedErr) {

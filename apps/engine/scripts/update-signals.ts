@@ -13,7 +13,75 @@ async function main() {
 
   const db = getSupabase();
 
-  // Fetch all voted tracks
+  // Parse --user-id CLI arg, e.g.: bun run update-signals --user-id <uuid>
+  // If not provided, default to the first user in user_tracks (backward compat for single-user setup).
+  let userId: string | null = null;
+  const userIdArgIdx = process.argv.indexOf("--user-id");
+  if (userIdArgIdx !== -1 && process.argv[userIdArgIdx + 1]) {
+    userId = process.argv[userIdArgIdx + 1];
+    console.log(`User filter: ${userId}`);
+  } else {
+    // Default: detect first user from user_tracks for backward compatibility
+    const { data: firstUserRow } = await db
+      .from("user_tracks")
+      .select("user_id")
+      .not("user_id", "is", null)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    userId = firstUserRow?.user_id ?? null;
+    if (userId) {
+      console.log(`No --user-id provided, defaulting to first user: ${userId}`);
+    } else {
+      console.log("No --user-id provided and no user_tracks found — computing signals from all votes (legacy mode)");
+    }
+  }
+
+  // Fetch voted tracks. When userId is set, only use votes from that user via user_tracks.
+  // This ensures taste signals are per-user and don't bleed across accounts.
+  let tracksQuery;
+  if (userId) {
+    // Join tracks with user_tracks to filter by user's votes
+    const { data: userVotes, error: uvError } = await db
+      .from("user_tracks")
+      .select("track_id, status, super_liked")
+      .eq("user_id", userId)
+      .in("status", ["approved", "rejected", "skipped"]);
+
+    if (uvError) {
+      console.error(`Failed to fetch user votes: ${uvError.message}`);
+      process.exit(1);
+    }
+
+    if (!userVotes || userVotes.length === 0) {
+      console.log("No votes found for this user.");
+      return;
+    }
+
+    const votedTrackIds = userVotes.map((v: any) => v.track_id);
+    const userVoteMap = new Map(userVotes.map((v: any) => [v.track_id, { status: v.status, super_liked: v.super_liked }]));
+
+    const { data: tracksData, error: tracksError } = await db
+      .from("tracks")
+      .select("id, artist, title, status, metadata, episode_id, seed_track_id")
+      .in("id", votedTrackIds);
+
+    if (tracksError) {
+      console.error(`Failed to fetch tracks: ${tracksError.message}`);
+      process.exit(1);
+    }
+
+    // Merge user vote status onto track records so downstream logic sees the user's actual vote
+    const tracks = (tracksData || []).map((t: any) => {
+      const vote = userVoteMap.get(t.id);
+      return { ...t, status: vote?.status ?? t.status, _super_liked: vote?.super_liked ?? false };
+    });
+
+    await computeAndUpsertSignals(db, tracks, userId);
+    return;
+  }
+
+  // Legacy path: no user_id filter — use tracks.status directly
   const { data: tracks, error } = await db
     .from("tracks")
     .select("id, artist, title, status, metadata, episode_id, seed_track_id")
@@ -29,13 +97,20 @@ async function main() {
     return;
   }
 
+  await computeAndUpsertSignals(db, tracks, null);
+}
+
+// ─── CORE SIGNAL COMPUTATION ──────────────────────────────────────────────────
+// Computes taste signals from the given voted tracks and upserts them into
+// taste_signals scoped to the given userId (null = legacy global signals).
+
+async function computeAndUpsertSignals(db: any, tracks: any[], userId: string | null) {
   console.log(`Processing ${tracks.length} voted tracks`);
 
-  // Fetch super-liked track IDs
-  const { data: superLikedRows } = await db
-    .from("user_tracks")
-    .select("track_id")
-    .eq("super_liked", true);
+  // Fetch super-liked track IDs (scoped to user when userId is set)
+  let superLikedQuery = db.from("user_tracks").select("track_id").eq("super_liked", true);
+  if (userId) superLikedQuery = (superLikedQuery as any).eq("user_id", userId);
+  const { data: superLikedRows } = await superLikedQuery;
   const superLikedSet = new Set((superLikedRows || []).map((r: any) => r.track_id as string));
 
   const signals = new Map<string, SignalAccumulator>();
@@ -53,7 +128,8 @@ async function main() {
   }
 
   function trackWeight(track: any): number {
-    if (superLikedSet.has(track.id)) return 3.0;
+    // For user-path tracks, _super_liked flag is already merged in
+    if (track._super_liked || superLikedSet.has(track.id)) return 3.0;
     if (track.status === "approved") return 1.0;
     if (track.status === "skipped") return -0.3;
     return -1.0; // rejected
@@ -227,7 +303,7 @@ async function main() {
 
     const { error: upsertError } = await db.from("taste_signals").upsert(
       {
-        user_id: null,
+        user_id: userId,
         signal_type: signalType,
         value,
         weight: Math.round(weight * 1000) / 1000,
@@ -249,13 +325,19 @@ async function main() {
   console.log(`Signals upserted: ${upserted}`);
   console.log(`Errors: ${errors}`);
 
-  // Show top positive signals
-  const { data: topSignals } = await db
+  // Show top positive signals (scoped to this user)
+  let topSignalsQuery = db
     .from("taste_signals")
     .select("*")
     .gt("weight", 0)
     .order("weight", { ascending: false })
     .limit(10);
+  if (userId) {
+    topSignalsQuery = (topSignalsQuery as any).eq("user_id", userId);
+  } else {
+    topSignalsQuery = (topSignalsQuery as any).is("user_id", null);
+  }
+  const { data: topSignals } = await topSignalsQuery;
 
   if (topSignals && topSignals.length > 0) {
     console.log(`\nTop positive signals:`);
@@ -281,9 +363,16 @@ async function main() {
   // With prior=3: 1 sample → 25%, 3 → 50%, 6 → 67%, 10 → 77%, 20 → 87%
   const CONFIDENCE_PRIOR = 3;
 
-  const { data: allSignals } = await db
+  // Load signals scoped to this user (or null for legacy global signals)
+  let allSignalsQuery = db
     .from("taste_signals")
     .select("signal_type, value, weight, sample_count");
+  if (userId) {
+    allSignalsQuery = (allSignalsQuery as any).eq("user_id", userId);
+  } else {
+    allSignalsQuery = (allSignalsQuery as any).is("user_id", null);
+  }
+  const { data: allSignals } = await allSignalsQuery;
 
   const signalMap = new Map<string, number>();
   for (const s of allSignals || []) {
