@@ -491,7 +491,7 @@ export async function enrichTrack(track: any): Promise<boolean> {
 import { existsSync, mkdirSync, readFileSync, unlinkSync, readdirSync } from "fs";
 
 const TMP_DIR = "/tmp/stacks";
-const DL_TIMEOUT = 90_000;
+const DL_TIMEOUT = 45_000;
 
 function sanitize(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
