@@ -284,7 +284,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
           controlsHidden
             ? "opacity-0 group-hover/artwork:opacity-100"
             : "opacity-100"
-        } ${isCurrentTrack && globalPlayer.loading ? "!opacity-100" : ""}`}>
+        } ${isCurrentTrack && (globalPlayer.loading || globalPlayer.buffering) ? "!opacity-100" : ""}`}>
           {/* Rewind 30s */}
           <button
             onClick={handleRewind}
@@ -302,7 +302,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
             aria-label={isCurrentTrack && globalPlayer.playing ? "Pause track" : "Play track"}
           >
             <span className="flex items-center justify-center w-16 h-16 rounded-full backdrop-blur-md bg-black/40 transition-all active:scale-90">
-              {isCurrentTrack && globalPlayer.loading ? (
+              {isCurrentTrack && (globalPlayer.loading || globalPlayer.buffering) ? (
                 <svg className="animate-spin" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                   <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
                 </svg>
@@ -344,8 +344,15 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     </div>
   );
 
-  // Equalizer bars shown next to active source
-  const eqBars = (
+  // Equalizer bars shown next to active source — pulsing when buffering
+  const isBuffering = isCurrentTrack && globalPlayer.buffering;
+  const eqBars = isBuffering ? (
+    <span className="flex gap-0.5 items-end h-2.5 animate-pulse">
+      <span className="w-0.5 bg-current rounded-full opacity-40" style={{ height: "50%" }} />
+      <span className="w-0.5 bg-current rounded-full opacity-40" style={{ height: "50%" }} />
+      <span className="w-0.5 bg-current rounded-full opacity-40" style={{ height: "50%" }} />
+    </span>
+  ) : (
     <span className="flex gap-0.5 items-end h-2.5">
       <span className={`w-0.5 bg-current rounded-full ${globalPlayer.playing ? "animate-bounce" : ""}`} style={{ height: "40%", animationDelay: "0ms" }} />
       <span className={`w-0.5 bg-current rounded-full ${globalPlayer.playing ? "animate-bounce" : ""}`} style={{ height: "70%", animationDelay: "150ms" }} />
@@ -630,10 +637,10 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
               >
                 <span
                   className={`flex items-center justify-center w-16 h-16 rounded-full backdrop-blur-md transition-all active:scale-90 bg-black/30 ${
-                    isCurrentTrack && globalPlayer.loading ? "opacity-100" : ""
+                    isCurrentTrack && (globalPlayer.loading || globalPlayer.buffering) ? "opacity-100" : ""
                   }`}
                 >
-                  {isCurrentTrack && globalPlayer.loading ? (
+                  {isCurrentTrack && (globalPlayer.loading || globalPlayer.buffering) ? (
                     <svg className="animate-spin" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                       <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
                     </svg>

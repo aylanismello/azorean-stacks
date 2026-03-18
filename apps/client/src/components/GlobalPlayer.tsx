@@ -22,8 +22,27 @@ function generateGradient(artist: string, title: string): string {
   return `hsl(${h1}, 40%, 20%)`;
 }
 
+/** Tiny connection quality icon */
+function ConnectionIcon({ quality }: { quality: "good" | "recovering" | "stalled" }) {
+  const color = quality === "good" ? "#22c55e" : quality === "recovering" ? "#eab308" : "#ef4444";
+  const label = quality === "good" ? "Connection stable" : quality === "recovering" ? "Recovering from stall" : "Connection stalled";
+  return (
+    <span className="flex-shrink-0" aria-label={label}>
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M1 1l22 22" opacity={quality === "stalled" ? 1 : 0} />
+        <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" opacity={quality === "good" ? 1 : 0.25} />
+        <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" opacity={quality === "good" ? 1 : 0.25} />
+        <path d="M10.71 5.05A16 16 0 0 1 22.56 9" opacity={quality === "good" ? 1 : 0.2} />
+        <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" opacity={quality === "good" ? 1 : 0.2} />
+        <path d="M8.53 16.11a6 6 0 0 1 6.95 0" opacity={quality !== "stalled" ? 1 : 0.3} />
+        <line x1="12" y1="20" x2="12.01" y2="20" />
+      </svg>
+    </span>
+  );
+}
+
 export function GlobalPlayer() {
-  const { currentTrack, playing, loading, progress, duration, source, noSource, togglePlayPause, seek, stop, playbackOrigin } = useGlobalPlayer();
+  const { currentTrack, playing, loading, buffering, progress, duration, source, noSource, togglePlayPause, seek, stop, playbackOrigin, connectionQuality, toast } = useGlobalPlayer();
   const router = useRouter();
   const progressRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -83,9 +102,16 @@ export function GlobalPlayer() {
   if (!currentTrack) return null;
 
   const bgColor = currentTrack.coverArtUrl ? undefined : generateGradient(currentTrack.artist, currentTrack.title);
+  const showBuffering = loading || buffering;
 
   return (
     <div className="global-player fixed left-0 right-0 bottom-0 z-40">
+      {/* Toast notification */}
+      {toast && (
+        <div className="absolute -top-10 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-surface-2 border border-surface-3 text-xs text-foreground/80 shadow-lg backdrop-enter whitespace-nowrap z-50">
+          {toast.message}
+        </div>
+      )}
       {/* Player bar */}
       <div className="global-player-shell border-t border-surface-3 px-3 py-2">
         {/* Progress bar */}
@@ -97,7 +123,7 @@ export function GlobalPlayer() {
         >
           <div className="relative h-1.5 w-full overflow-visible rounded-full bg-surface-3/80 transition-all group-hover:bg-surface-3">
             <div
-              className="absolute inset-y-0 left-0 rounded-full bg-accent transition-[width] duration-75"
+              className={`absolute inset-y-0 left-0 rounded-full bg-accent transition-[width] duration-75 ${buffering ? "animate-pulse" : ""}`}
               style={{ width: `${pct}%` }}
             />
             <div
@@ -179,9 +205,10 @@ export function GlobalPlayer() {
           </span>
         ) : (
           <>
-            {/* Time */}
-            <span className="text-[10px] text-muted font-mono flex-shrink-0 hidden sm:block">
+            {/* Time + connection quality */}
+            <span className="flex items-center gap-1.5 text-[10px] text-muted font-mono flex-shrink-0 hidden sm:flex">
               {duration > 0 ? `${fmt(progress)} / ${fmt(duration)}` : ""}
+              {source === "audio" && <ConnectionIcon quality={connectionQuality} />}
             </span>
 
             {/* Restart */}
@@ -196,14 +223,14 @@ export function GlobalPlayer() {
               </svg>
             </button>
 
-            {/* Play/pause */}
+            {/* Play/pause — shows spinner when buffering */}
             <button
               onClick={togglePlayPause}
               className="w-9 h-9 flex items-center justify-center rounded-full bg-foreground text-surface-0 hover:scale-105 transition-transform active:scale-95 flex-shrink-0"
-              title={playing ? "Pause track" : "Play track"}
-              aria-label={playing ? "Pause track" : "Play track"}
+              title={showBuffering ? "Buffering…" : playing ? "Pause track" : "Play track"}
+              aria-label={showBuffering ? "Buffering" : playing ? "Pause track" : "Play track"}
             >
-              {loading ? (
+              {showBuffering ? (
                 <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
                 </svg>
