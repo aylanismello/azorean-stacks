@@ -107,8 +107,12 @@ function StackPageContent() {
 
   // Position index into the tracks array (used when we have an episode context)
   const [episodePos, setEpisodePos] = useState(0);
+  const episodePosRef = useRef(0);
+  // Keep ref in sync — used by auto-advance to avoid stale closures
+  useEffect(() => { episodePosRef.current = episodePos; }, [episodePos]);
   useEffect(() => {
     setEpisodePos(0);
+    episodePosRef.current = 0;
     setAdvancingEpisode(false);
   }, [episodeId]);
 
@@ -164,6 +168,30 @@ function StackPageContent() {
     }
     return [...front, ...rest];
   }, []);
+
+  // Helper: play a track from the local tracks array via the global player.
+  // Called directly during auto-advance and vote-advance so the bottom bar
+  // updates atomically with the card — no 1-render lag.
+  const playTrackDirectly = useCallback((track: Track) => {
+    const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
+    const payload = {
+      id: track.id,
+      artist: track.artist,
+      title: track.title,
+      coverArtUrl: track.cover_art_url || track.episode?.artwork_url || null,
+      spotifyUrl: track.spotify_url,
+      audioUrl: track.audio_url || track.preview_url || null,
+      episodeId: track.episode_id,
+      episodeTitle: track.episode?.title,
+      youtubeUrl: track.youtube_url,
+    };
+    const hasPlayable = !!(track.audio_url || track.preview_url || track.spotify_url);
+    if (hasPlayable) {
+      globalPlayer.play(payload, origin);
+    } else {
+      globalPlayer.loadTrack(payload, origin);
+    }
+  }, [globalPlayer]);
 
   const buildUrl = useCallback((_extra?: string) => {
     // Episode mode: fetch ALL tracks in episode order (not just pending)
@@ -426,17 +454,24 @@ function StackPageContent() {
           advanceToNextEpisode();
           return;
         }
-        // Advance to next pending track
-        setEpisodePos((prev) => {
-          for (let i = prev + 1; i < tracks.length; i++) {
-            if (tracks[i].id !== id && tracks[i].status === "pending") return i;
-          }
+        // Advance to next pending track — compute position and play directly
+        // so global player + card update atomically (no 1-render desync).
+        const curPos = episodePosRef.current;
+        let nextPos = -1;
+        for (let i = curPos + 1; i < tracks.length; i++) {
+          if (tracks[i].id !== id && tracks[i].status === "pending") { nextPos = i; break; }
+        }
+        if (nextPos < 0) {
           // Wrap around — find first pending before current
-          for (let i = 0; i < prev; i++) {
-            if (tracks[i].id !== id && tracks[i].status === "pending") return i;
+          for (let i = 0; i < curPos; i++) {
+            if (tracks[i].id !== id && tracks[i].status === "pending") { nextPos = i; break; }
           }
-          return prev;
-        });
+        }
+        if (nextPos >= 0) {
+          setEpisodePos(nextPos);
+          episodePosRef.current = nextPos;
+          playTrackDirectly(tracks[nextPos]);
+        }
       } else {
         // All-pending mode: update momentum refs then remove voted track + reorder
         if (isTasteMode) {
@@ -663,16 +698,26 @@ function StackPageContent() {
     lastEndedCount.current = globalPlayer.trackEndedCount;
 
     if (hasEpisodeTracks) {
-      // Episode mode: advance to next track by position that has audio — never go backwards
-      setEpisodePos((prev) => {
-        for (let i = prev + 1; i < tracks.length; i++) {
-          const t = tracks[i];
-          if (t.audio_url || t.preview_url || t.storage_path || t.spotify_url) return i;
+      // Episode mode: advance to next track by position that has audio — never go backwards.
+      // Compute next position from ref (latest value) and play directly so the
+      // global player + card update atomically — no 1-render desync.
+      const curPos = episodePosRef.current;
+      let nextPos = -1;
+      for (let i = curPos + 1; i < tracks.length; i++) {
+        const t = tracks[i];
+        if (t.audio_url || t.preview_url || t.storage_path || t.spotify_url) {
+          nextPos = i;
+          break;
         }
+      }
+      if (nextPos >= 0) {
+        setEpisodePos(nextPos);
+        episodePosRef.current = nextPos;
+        playTrackDirectly(tracks[nextPos]);
+      } else {
         // No playable tracks ahead — advance to next episode
         advanceToNextEpisode();
-        return prev;
-      });
+      }
       return;
     }
 
@@ -711,7 +756,7 @@ function StackPageContent() {
       }
       return remaining;
     });
-  }, [globalPlayer.trackEndedCount, tracks, globalPlayer.currentTrack?.id, buildUrl, hasEpisodeTracks, isRankedMode]);
+  }, [globalPlayer.trackEndedCount, tracks, globalPlayer.currentTrack?.id, buildUrl, hasEpisodeTracks, isRankedMode, playTrackDirectly, advanceToNextEpisode]);
 
   // Preload next track's audio when current track reaches 75% completion
   const preloadTriggeredRef = useRef<string | null>(null);
