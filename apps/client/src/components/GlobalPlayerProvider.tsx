@@ -17,10 +17,21 @@ export interface PlayerTrack {
 
 type PlaybackSource = "spotify" | "audio" | null;
 
+/** Connection quality based on recent stall history */
+export type ConnectionQuality = "good" | "recovering" | "stalled";
+
+/** Toast message displayed briefly in the player bar */
+export interface PlayerToast {
+  message: string;
+  id: number;
+}
+
 interface GlobalPlayerContextType {
   currentTrack: PlayerTrack | null;
   playing: boolean;
   loading: boolean;
+  /** True when the audio source is buffering (waiting/stalled events, or stall detected) */
+  buffering: boolean;
   progress: number; // seconds
   duration: number; // seconds
   source: PlaybackSource;
@@ -34,6 +45,10 @@ interface GlobalPlayerContextType {
   playbackOrigin: string | null;
   /** Unix ms timestamp when the current track started playing (for engagement tracking) */
   trackStartedAt: number | null;
+  /** Connection quality indicator */
+  connectionQuality: ConnectionQuality;
+  /** Brief toast messages from the player (e.g. "Skipped — couldn't load") */
+  toast: PlayerToast | null;
   /** Load a track into the player without starting playback */
   loadTrack: (track: PlayerTrack, origin?: string) => void;
   /** Load a track and immediately start playing */
@@ -43,12 +58,15 @@ interface GlobalPlayerContextType {
   stop: () => void;
   /** Switch playback source (audio <-> spotify) while keeping playback going */
   switchSource: (to: "audio" | "spotify") => void;
+  /** Preload next track's audio in background */
+  preloadTrack: (track: PlayerTrack) => void;
 }
 
 const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   currentTrack: null,
   playing: false,
   loading: false,
+  buffering: false,
   progress: 0,
   duration: 0,
   source: null,
@@ -57,16 +75,33 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   canSwitchSource: false,
   playbackOrigin: null,
   trackStartedAt: null,
+  connectionQuality: "good",
+  toast: null,
   loadTrack: () => {},
   play: () => {},
   togglePlayPause: () => {},
   seek: () => {},
   stop: () => {},
   switchSource: () => {},
+  preloadTrack: () => {},
 });
 
 export function useGlobalPlayer() {
   return useContext(GlobalPlayerContext);
+}
+
+/** Re-fetch a fresh signed URL for a track from the episodes API */
+async function refreshSignedUrl(track: PlayerTrack): Promise<string | null> {
+  if (!track.episodeId) return null;
+  try {
+    const res = await fetch(`/api/episodes/${track.episodeId}/tracks`);
+    if (!res.ok) return null;
+    const tracks: Array<{ id: string; audio_url?: string }> = await res.json();
+    const match = tracks.find((t) => t.id === track.id);
+    return match?.audio_url || null;
+  } catch {
+    return null;
+  }
 }
 
 export function GlobalPlayerProvider({ children }: { children: React.ReactNode }) {
@@ -75,6 +110,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [currentTrack, setCurrentTrack] = useState<PlayerTrack | null>(null);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [buffering, setBuffering] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [source, setSource] = useState<PlaybackSource>(null);
@@ -82,8 +118,46 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [noSource, setNoSource] = useState(false);
   const [playbackOrigin, setPlaybackOrigin] = useState<string | null>(null);
   const [trackStartedAt, setTrackStartedAt] = useState<number | null>(null);
+  const [connectionQuality, setConnectionQuality] = useState<ConnectionQuality>("good");
+  const [toast, setToast] = useState<PlayerToast | null>(null);
   // Tracks whether we've already fired the 'listened' mark for the current track session
   const listenedFiredRef = useRef(false);
+
+  // Stall detection refs
+  const lastProgressTimeRef = useRef(0); // last audio.currentTime we saw
+  const lastProgressCheckRef = useRef(0); // Date.now() when we last saw progress change
+  const stallRetryCountRef = useRef(0);
+  const stallRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isRecoveringRef = useRef(false);
+
+  // Connection quality tracking
+  const lastStallAtRef = useRef(0);
+
+  // Preload ref for next track
+  const preloadAudioRef = useRef<HTMLAudioElement | null>(null);
+  const preloadedTrackIdRef = useRef<string | null>(null);
+
+  // Signed URL expiry tracking: store when each URL was obtained
+  const urlObtainedAtRef = useRef<Map<string, number>>(new Map());
+
+  // Toast ID counter
+  const toastIdRef = useRef(0);
+
+  const showToast = useCallback((message: string) => {
+    const id = ++toastIdRef.current;
+    setToast({ message, id });
+    setTimeout(() => {
+      setToast((prev) => (prev?.id === id ? null : prev));
+    }, 3000);
+  }, []);
+
+  // Track the current track ref for use in stall recovery (avoids stale closures)
+  const currentTrackRef = useRef<PlayerTrack | null>(null);
+  useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
+  const sourceRef = useRef<PlaybackSource>(null);
+  useEffect(() => { sourceRef.current = source; }, [source]);
+  const playingRef = useRef(false);
+  useEffect(() => { playingRef.current = playing; }, [playing]);
 
   // Create a persistent audio element
   useEffect(() => {
@@ -91,23 +165,33 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     audio.preload = "metadata";
     audioRef.current = audio;
 
-    const onPlay = () => { setPlaying(true); setLoading(false); };
+    const onPlay = () => { setPlaying(true); setLoading(false); setBuffering(false); };
     const onPause = () => setPlaying(false);
     const onEnded = () => { setPlaying(false); setProgress(0); setTrackEndedCount((c) => c + 1); };
-    const onWaiting = () => setLoading(true);
-    const onPlaying = () => setLoading(false);
-    const onCanPlay = () => setLoading(false);
+    const onWaiting = () => { setLoading(true); setBuffering(true); };
+    const onStalled = () => { setBuffering(true); };
+    const onPlaying = () => { setLoading(false); setBuffering(false); isRecoveringRef.current = false; };
+    const onCanPlay = () => { setLoading(false); };
     const onTimeUpdate = () => setProgress(audio.currentTime);
     const onLoadedMetadata = () => setDuration(audio.duration);
+    const onError = () => {
+      // Audio element error — could be expired URL or network issue
+      // Only trigger recovery if we were supposed to be playing
+      if (!audio.paused || isRecoveringRef.current) {
+        setBuffering(true);
+      }
+    };
 
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("waiting", onWaiting);
+    audio.addEventListener("stalled", onStalled);
     audio.addEventListener("playing", onPlaying);
     audio.addEventListener("canplay", onCanPlay);
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("loadedmetadata", onLoadedMetadata);
+    audio.addEventListener("error", onError);
 
     return () => {
       audio.pause();
@@ -115,12 +199,126 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("waiting", onWaiting);
+      audio.removeEventListener("stalled", onStalled);
       audio.removeEventListener("playing", onPlaying);
       audio.removeEventListener("canplay", onCanPlay);
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("loadedmetadata", onLoadedMetadata);
+      audio.removeEventListener("error", onError);
     };
   }, []);
+
+  // ── Stall detection: poll every second to check if currentTime is progressing ──
+  useEffect(() => {
+    if (source !== "audio") return;
+
+    const interval = setInterval(() => {
+      const audio = audioRef.current;
+      const track = currentTrackRef.current;
+      if (!audio || !track || audio.paused || isRecoveringRef.current) return;
+
+      const now = Date.now();
+      const currentTime = audio.currentTime;
+
+      if (Math.abs(currentTime - lastProgressTimeRef.current) > 0.1) {
+        // Progress is moving — all good
+        lastProgressTimeRef.current = currentTime;
+        lastProgressCheckRef.current = now;
+        return;
+      }
+
+      // currentTime hasn't changed — check if 3 seconds have elapsed
+      if (lastProgressCheckRef.current > 0 && now - lastProgressCheckRef.current >= 3000) {
+        // Stall detected
+        setBuffering(true);
+        setConnectionQuality("stalled");
+        lastStallAtRef.current = now;
+        attemptRecovery(audio, track, currentTime);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [source]);
+
+  // Update connection quality based on time since last stall
+  useEffect(() => {
+    if (source !== "audio" || !playing) return;
+
+    const interval = setInterval(() => {
+      const since = Date.now() - lastStallAtRef.current;
+      if (lastStallAtRef.current === 0 || since >= 60000) {
+        setConnectionQuality("good");
+      } else if (since >= 5000) {
+        setConnectionQuality("recovering");
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [source, playing]);
+
+  /** Attempt recovery from a stall with escalating strategies */
+  const attemptRecovery = useCallback(async (audio: HTMLAudioElement, track: PlayerTrack, position: number) => {
+    if (isRecoveringRef.current) return;
+    isRecoveringRef.current = true;
+    const retryCount = stallRetryCountRef.current;
+
+    if (retryCount >= 2) {
+      // Max retries reached — auto-advance
+      isRecoveringRef.current = false;
+      stallRetryCountRef.current = 0;
+      showToast("Skipped — couldn't load");
+      setBuffering(false);
+      setTrackEndedCount((c) => c + 1);
+      return;
+    }
+
+    stallRetryCountRef.current = retryCount + 1;
+
+    if (retryCount === 0) {
+      // First attempt: reload from same position
+      try {
+        audio.load();
+        audio.currentTime = position;
+        await audio.play();
+        // If we get here, recovery succeeded
+        setBuffering(false);
+        isRecoveringRef.current = false;
+        return;
+      } catch {
+        // Fall through to URL refresh after timeout
+      }
+    }
+
+    // Second attempt: try re-fetching the signed URL (it may have expired)
+    const freshUrl = await refreshSignedUrl(track);
+    if (freshUrl && freshUrl !== audio.src) {
+      audio.src = freshUrl;
+      audio.currentTime = position;
+      // Update track's audioUrl so future operations use the fresh URL
+      if (currentTrackRef.current?.id === track.id) {
+        setCurrentTrack((prev) => prev ? { ...prev, audioUrl: freshUrl } : prev);
+        urlObtainedAtRef.current.set(track.id, Date.now());
+      }
+      try {
+        await audio.play();
+        setBuffering(false);
+        isRecoveringRef.current = false;
+        setConnectionQuality("recovering");
+        return;
+      } catch {
+        // Failed — fall through
+      }
+    }
+
+    // All retries failed — set a timeout, then auto-advance
+    stallRecoveryTimerRef.current = setTimeout(() => {
+      isRecoveringRef.current = false;
+      stallRetryCountRef.current = 0;
+      showToast("Skipped — couldn't load");
+      setBuffering(false);
+      setTrackEndedCount((c) => c + 1);
+    }, 5000);
+  }, [showToast]);
 
   // Sync Spotify playback state + detect track end
   const prevSpotifyPositionRef = useRef(0);
@@ -157,6 +355,19 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     listenedFiredRef.current = false;
   }, [currentTrack?.id]);
 
+  // Reset stall tracking when track changes
+  useEffect(() => {
+    stallRetryCountRef.current = 0;
+    lastProgressTimeRef.current = 0;
+    lastProgressCheckRef.current = 0;
+    isRecoveringRef.current = false;
+    setBuffering(false);
+    if (stallRecoveryTimerRef.current) {
+      clearTimeout(stallRecoveryTimerRef.current);
+      stallRecoveryTimerRef.current = null;
+    }
+  }, [currentTrack?.id]);
+
   // Auto-skip tracks with no playable source — fire trackEnded so the page
   // auto-advances to the next track in the queue.
   useEffect(() => {
@@ -184,6 +395,45 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     }).catch(() => {});
   }, [progress, duration, currentTrack?.id]);
 
+  // ── Proactive signed URL refresh ──
+  // Supabase signed URLs expire after 1 hour. Refresh at ~50 minutes to avoid mid-playback expiry.
+  useEffect(() => {
+    if (source !== "audio" || !currentTrack?.audioUrl || !currentTrack.episodeId) return;
+
+    // Track when URL was obtained
+    if (!urlObtainedAtRef.current.has(currentTrack.id)) {
+      urlObtainedAtRef.current.set(currentTrack.id, Date.now());
+    }
+
+    const interval = setInterval(async () => {
+      const obtainedAt = urlObtainedAtRef.current.get(currentTrack.id) || 0;
+      const age = Date.now() - obtainedAt;
+      // Refresh if URL is older than 50 minutes (3_000_000 ms)
+      if (age < 3_000_000) return;
+
+      const freshUrl = await refreshSignedUrl(currentTrack);
+      if (freshUrl && currentTrackRef.current?.id === currentTrack.id) {
+        const audio = audioRef.current;
+        const wasPlaying = audio && !audio.paused;
+        const pos = audio?.currentTime || 0;
+
+        setCurrentTrack((prev) => prev ? { ...prev, audioUrl: freshUrl } : prev);
+        urlObtainedAtRef.current.set(currentTrack.id, Date.now());
+
+        // Only swap the active src if audio element is using the old URL
+        if (audio && sourceRef.current === "audio") {
+          audio.src = freshUrl;
+          audio.currentTime = pos;
+          if (wasPlaying) {
+            audio.play().catch(() => {});
+          }
+        }
+      }
+    }, 60_000); // Check every minute
+
+    return () => clearInterval(interval);
+  }, [source, currentTrack?.id, currentTrack?.audioUrl, currentTrack?.episodeId]);
+
   const stopAudio = useCallback(() => {
     const audio = audioRef.current;
     if (audio) {
@@ -209,6 +459,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setDuration(0);
     setPlaying(false);
     setLoading(false);
+    setBuffering(false);
     setTrackStartedAt(null);
     if (origin !== undefined) setPlaybackOrigin(origin);
 
@@ -216,10 +467,16 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (track.audioUrl) {
       setSource("audio");
       setNoSource(false);
-      // Preload metadata so we have duration
+      urlObtainedAtRef.current.set(track.id, Date.now());
+      // Check if we have this track preloaded
       const audio = audioRef.current;
       if (audio) {
-        audio.src = track.audioUrl;
+        if (preloadedTrackIdRef.current === track.id && preloadAudioRef.current) {
+          // Use preloaded data — swap src
+          audio.src = preloadAudioRef.current.src;
+        } else {
+          audio.src = track.audioUrl;
+        }
       }
     } else if (spotify.connected && spotify.deviceId && track.spotifyUrl) {
       setSource("spotify");
@@ -240,6 +497,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setDuration(0);
     setNoSource(false);
     setLoading(true);
+    setBuffering(false);
     setTrackStartedAt(Date.now());
     // Always update playbackOrigin when play() is called — use provided origin or
     // fall back to the current page URL so the now-playing button always returns
@@ -252,9 +510,15 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     // Decide source: prefer downloaded audio over Spotify
     if (track.audioUrl) {
       setSource("audio");
+      urlObtainedAtRef.current.set(track.id, Date.now());
       const audio = audioRef.current;
       if (audio) {
-        audio.src = track.audioUrl;
+        // Use preloaded audio if available
+        if (preloadedTrackIdRef.current === track.id && preloadAudioRef.current) {
+          audio.src = preloadAudioRef.current.src;
+        } else {
+          audio.src = track.audioUrl;
+        }
         audio.play().catch(() => setLoading(false));
       }
     } else if (spotify.connected && spotify.deviceId && track.spotifyUrl) {
@@ -279,6 +543,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       if (audio.paused) {
         // If we have a src loaded but never played, start it
         if (audio.src) {
+          setBuffering(false);
           audio.play().catch(() => {});
         } else if (currentTrack.audioUrl) {
           audio.src = currentTrack.audioUrl;
@@ -286,6 +551,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         }
       } else {
         audio.pause();
+        setBuffering(false);
       }
     } else if (source === "spotify") {
       if (playing) {
@@ -311,6 +577,9 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       if (!audio) return;
       audio.currentTime = Math.max(0, Math.min(audio.duration || 0, seconds));
       setProgress(audio.currentTime);
+      // Reset stall detection after seek
+      lastProgressTimeRef.current = audio.currentTime;
+      lastProgressCheckRef.current = Date.now();
     } else if (source === "spotify") {
       spotify.seek(seconds * 1000);
       setProgress(seconds);
@@ -334,6 +603,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       setSource("audio");
       setProgress(0);
       setDuration(0);
+      setBuffering(false);
       const audio = audioRef.current;
       if (audio) {
         audio.src = currentTrack.audioUrl;
@@ -347,6 +617,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       setSource("spotify");
       setProgress(0);
       setDuration(0);
+      setBuffering(false);
       if (wasPlaying) {
         setLoading(true);
         spotify.playUri(currentTrack.spotifyUrl).catch(() => setLoading(false));
@@ -360,13 +631,44 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setCurrentTrack(null);
     setPlaying(false);
     setLoading(false);
+    setBuffering(false);
     setProgress(0);
     setDuration(0);
     setSource(null);
     setNoSource(false);
     setPlaybackOrigin(null);
     setTrackStartedAt(null);
+    setConnectionQuality("good");
+    // Clean up preload
+    if (preloadAudioRef.current) {
+      preloadAudioRef.current.src = "";
+      preloadAudioRef.current = null;
+      preloadedTrackIdRef.current = null;
+    }
   }, [stopAudio, stopSpotify]);
+
+  /** Preload a track's audio in the background for instant transitions */
+  const preloadTrack = useCallback((track: PlayerTrack) => {
+    if (!track.audioUrl) return;
+    if (preloadedTrackIdRef.current === track.id) return; // Already preloading this one
+
+    // Clean up previous preload
+    if (preloadAudioRef.current) {
+      preloadAudioRef.current.src = "";
+    }
+
+    const preloadEl = new Audio();
+    preloadEl.preload = "auto";
+    preloadEl.src = track.audioUrl;
+    preloadEl.load();
+    preloadAudioRef.current = preloadEl;
+    preloadedTrackIdRef.current = track.id;
+    urlObtainedAtRef.current.set(track.id, Date.now());
+  }, []);
+
+  // ── Auto-preload next track at 75% completion ──
+  // This is triggered from the page level via the preloadTrack function
+  // (the provider doesn't know about the queue, so the page calls preloadTrack)
 
   return (
     <GlobalPlayerContext.Provider
@@ -374,6 +676,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         currentTrack,
         playing,
         loading,
+        buffering,
         progress,
         duration,
         source,
@@ -382,12 +685,15 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         canSwitchSource,
         playbackOrigin,
         trackStartedAt,
+        connectionQuality,
+        toast,
         loadTrack,
         play,
         togglePlayPause,
         seek,
         stop,
         switchSource,
+        preloadTrack,
       }}
     >
       {children}

@@ -720,6 +720,40 @@ function StackPageContent() {
     });
   }, [globalPlayer.trackEndedCount, tracks, globalPlayer.currentTrack?.id, buildUrl, hasEpisodeTracks, isRankedMode]);
 
+  // Preload next track's audio when current track reaches 75% completion
+  const preloadTriggeredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!globalPlayer.currentTrack || globalPlayer.duration <= 0 || globalPlayer.progress <= 0) return;
+    if (globalPlayer.progress / globalPlayer.duration < 0.75) return;
+    // Only trigger once per track
+    if (preloadTriggeredRef.current === globalPlayer.currentTrack.id) return;
+    preloadTriggeredRef.current = globalPlayer.currentTrack.id;
+
+    // Find the next track in queue
+    let nextTrack: Track | undefined;
+    if (hasEpisodeTracks) {
+      for (let i = episodePos + 1; i < tracks.length; i++) {
+        if (tracks[i].status === "pending") { nextTrack = tracks[i]; break; }
+      }
+    } else if (tracks.length > 1) {
+      nextTrack = tracks[1];
+    }
+
+    if (nextTrack && (nextTrack.audio_url || nextTrack.preview_url)) {
+      globalPlayer.preloadTrack({
+        id: nextTrack.id,
+        artist: nextTrack.artist,
+        title: nextTrack.title,
+        coverArtUrl: nextTrack.cover_art_url || nextTrack.episode?.artwork_url || null,
+        spotifyUrl: nextTrack.spotify_url,
+        audioUrl: nextTrack.audio_url || nextTrack.preview_url || null,
+        episodeId: nextTrack.episode_id,
+        episodeTitle: nextTrack.episode?.title,
+        youtubeUrl: nextTrack.youtube_url,
+      });
+    }
+  }, [globalPlayer.progress, globalPlayer.duration, globalPlayer.currentTrack?.id, tracks, hasEpisodeTracks]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
