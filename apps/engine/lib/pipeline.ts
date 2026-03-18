@@ -136,9 +136,9 @@ async function spotifySearch(query: string, token: string, artist: string, title
       log("fail", `Spotify rate-limited 3 times — giving up for "${query}"`);
       return [];
     }
-    const rawWait = parseInt(res.headers.get("Retry-After") || "5", 10);
-    const waitSec = Math.min(rawWait, 30); // Cap at 30s — never trust insane Retry-After values
-    log("wait", `Spotify rate-limited — waiting ${waitSec}s${rawWait > 30 ? ` (capped from ${rawWait}s)` : ""} (retry ${retries + 1}/3)`);
+    const rawWait = parseInt(res.headers.get("Retry-After") || "2", 10);
+    const waitSec = Math.min(rawWait, 5); // Cap at 5s — fail fast, YouTube is the priority
+    log("wait", `Spotify rate-limited — waiting ${waitSec}s (retry ${retries + 1}/3)`);
     await sleep(waitSec * 1000);
     return spotifySearch(query, token, artist, title, retries + 1);
   }
@@ -316,10 +316,11 @@ export async function enrichTrack(track: any): Promise<boolean> {
   let ytFound = !!track.youtube_url;
 
   // Run Spotify and YouTube lookups in PARALLEL — YouTube is never blocked by Spotify rate limits
+  // Spotify has a 15s timeout — if rate limited, we don't block YouTube
   const [spotResult, ytResult] = await Promise.allSettled([
-    // Spotify lookup (best-effort — rate limited, non-critical)
+    // Spotify lookup (best-effort — rate limited, non-critical, 15s max)
     !track.spotify_url
-      ? spotifyLookup(track.artist, track.title).then(async (spot) => {
+      ? withTimeout(spotifyLookup(track.artist, track.title).then(async (spot) => {
           if (spot) {
             spotFound = true;
             updates.spotify_url = spot.spotify_url;
@@ -338,7 +339,7 @@ export async function enrichTrack(track: any): Promise<boolean> {
           } else {
             updates.spotify_url = "";
           }
-        }).catch((err) => {
+        }), 15_000, `spotify:${label}`).catch((err) => {
           log("fail", `Spotify error for ${label}: ${err instanceof Error ? err.message : err}`);
           updates.spotify_url = "";
         })
