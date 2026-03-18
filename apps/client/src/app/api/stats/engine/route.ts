@@ -60,15 +60,17 @@ export async function GET() {
     const pct = (n: number) =>
       totalCount > 0 ? Math.round((n / totalCount) * 1000) / 10 : 0;
 
-    // Watcher: last watcher_connected event — ONLINE if within last 10 min
+    // Watcher: last watcher_connected OR watcher_reconnect event — ONLINE if within last 10 min
+    // watcher_reconnect is emitted after reconnects and replaces watcher_connected in that scenario
     const { data: watcherEvents } = await db
       .from("engine_events")
-      .select("created_at")
-      .eq("type", "watcher_connected")
+      .select("created_at, type")
+      .in("type", ["watcher_connected", "watcher_reconnect"])
       .order("created_at", { ascending: false })
       .limit(1);
 
-    const connectedAt = watcherEvents?.[0]?.created_at ?? null;
+    const lastWatcherEvent = watcherEvents?.[0] ?? null;
+    const connectedAt = lastWatcherEvent?.created_at ?? null;
     const online =
       connectedAt != null &&
       Date.now() - new Date(connectedAt).getTime() < 10 * 60 * 1000;
@@ -107,6 +109,7 @@ export async function GET() {
       watcher: {
         online,
         connected_at: connectedAt,
+        event_type: lastWatcherEvent?.type ?? null,
       },
       last_discover: lastDiscover
         ? {
