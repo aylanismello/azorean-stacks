@@ -152,11 +152,12 @@ export async function PATCH(
   }
 
   // Record vote in user_tracks for all voted statuses (enables weight tuning + engagement analytics)
+  // Reset super_liked when changing vote — handles re-votes from super-like to regular vote
   if (user && (status === "approved" || status === "rejected" || status === "skipped")) {
     await supabase
       .from("user_tracks")
       .upsert(
-        { user_id: user.id, track_id: params.id, status, voted_at: updates.voted_at },
+        { user_id: user.id, track_id: params.id, status, super_liked: false, voted_at: updates.voted_at },
         { onConflict: "user_id,track_id", ignoreDuplicates: false }
       );
   }
