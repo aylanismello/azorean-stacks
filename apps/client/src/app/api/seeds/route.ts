@@ -87,11 +87,21 @@ export async function GET(req: NextRequest) {
 
   if (allEpisodeIds.length > 0) {
     // Get tracks for these episodes via junction table
-    const { data: etLinks } = await supabase
-      .from("episode_tracks")
-      .select("episode_id, tracks(status, artist, title, storage_path, spotify_url, youtube_url)")
-      .in("episode_id", allEpisodeIds)
-      .limit(10000);
+    // Paginate past Supabase's 1000-row default cap
+    const allEtLinks: any[] = [];
+    let etPage = 0;
+    while (true) {
+      const { data: batch } = await supabase
+        .from("episode_tracks")
+        .select("episode_id, tracks(status, artist, title, storage_path, spotify_url, youtube_url)")
+        .in("episode_id", allEpisodeIds)
+        .range(etPage * 1000, (etPage + 1) * 1000 - 1);
+      if (!batch || batch.length === 0) break;
+      allEtLinks.push(...batch);
+      if (batch.length < 1000) break;
+      etPage++;
+    }
+    const etLinks = allEtLinks;
 
     // Flatten junction rows into a tracks-like array
     const epTracks = (etLinks || []).map((row: any) => ({
