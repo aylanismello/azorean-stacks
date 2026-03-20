@@ -86,48 +86,78 @@ export async function GET(req: NextRequest) {
   const episodeTrackStats: Record<string, { total: number; with_audio: number; enriched: number }> = {};
 
   if (allEpisodeIds.length > 0) {
-    // Get tracks for these episodes via junction table
-    const { data: etLinks } = await supabase
-      .from("episode_tracks")
-      .select("episode_id, tracks(status, artist, title, storage_path, spotify_url, youtube_url)")
-      .in("episode_id", allEpisodeIds)
-      .limit(10000);
-
-    // Flatten junction rows into a tracks-like array
-    const epTracks = (etLinks || []).map((row: any) => ({
-      episode_id: row.episode_id,
-      status: row.tracks?.status,
-      artist: row.tracks?.artist,
-      title: row.tracks?.title,
-      storage_path: row.tracks?.storage_path,
-      spotify_url: row.tracks?.spotify_url,
-      youtube_url: row.tracks?.youtube_url,
-    })).filter((t: any) => t.status);
+    // Paginated stats query — only the columns needed for counting (no artist/title)
+    const allStatsRows: { episode_id: string; status: string | null; storage_path: string | null; spotify_url: string | null; youtube_url: string | null }[] = [];
+    let statsPage = 0;
+    while (true) {
+      const { data: batch } = await supabase
+        .from("episode_tracks")
+        .select("episode_id, tracks(status, storage_path, spotify_url, youtube_url)")
+        .in("episode_id", allEpisodeIds)
+        .range(statsPage * 1000, (statsPage + 1) * 1000 - 1);
+      if (!batch || batch.length === 0) break;
+      for (const row of batch as any[]) {
+        allStatsRows.push({
+          episode_id: row.episode_id,
+          status: row.tracks?.status ?? null,
+          storage_path: row.tracks?.storage_path ?? null,
+          spotify_url: row.tracks?.spotify_url ?? null,
+          youtube_url: row.tracks?.youtube_url ?? null,
+        });
+      }
+      if (batch.length < 1000) break;
+      statsPage++;
+    }
 
     const episodesWithPending = new Set<string>();
-    for (const t of (epTracks || []) as any[]) {
-      if (t.status === "pending" && t.episode_id) episodesWithPending.add(t.episode_id);
-      // Build artist tracks index
-      if (t.episode_id && t.artist) {
-        const key = `${t.episode_id}::${(t.artist as string).toLowerCase()}`;
-        if (!artistTracksByEpisode[key]) artistTracksByEpisode[key] = [];
-        if (artistTracksByEpisode[key].length < 5) {
-          artistTracksByEpisode[key].push({ artist: t.artist, title: t.title });
-        }
-      }
-      // Track enrichment stats per episode
-      if (t.episode_id) {
-        if (!episodeTrackStats[t.episode_id]) episodeTrackStats[t.episode_id] = { total: 0, with_audio: 0, enriched: 0 };
-        episodeTrackStats[t.episode_id].total++;
-        if (t.storage_path) episodeTrackStats[t.episode_id].with_audio++;
-        if (t.spotify_url || t.youtube_url) episodeTrackStats[t.episode_id].enriched++;
-      }
+    for (const t of allStatsRows) {
+      if (!t.episode_id || !t.status) continue;
+      if (t.status === "pending") episodesWithPending.add(t.episode_id);
+      if (!episodeTrackStats[t.episode_id]) episodeTrackStats[t.episode_id] = { total: 0, with_audio: 0, enriched: 0 };
+      episodeTrackStats[t.episode_id].total++;
+      if (t.storage_path) episodeTrackStats[t.episode_id].with_audio++;
+      if (t.spotify_url || t.youtube_url) episodeTrackStats[t.episode_id].enriched++;
     }
 
     // An episode is curated if it has no pending tracks
     allEpisodeIds.forEach((id) => {
       if (!episodesWithPending.has(id)) curatedEpisodeIds.add(id);
     });
+
+    // Artist-match tracks: only fetch artist+title for non-"full" match episodes
+    const artistMatchEpisodes: { episodeId: string; seedArtist: string }[] = [];
+    for (const [seedId, eps] of Object.entries(episodesBySeed)) {
+      const seed = (data || []).find((s) => s.id === seedId);
+      if (!seed) continue;
+      for (const ep of eps) {
+        if (ep.match_type !== "full") {
+          artistMatchEpisodes.push({ episodeId: ep.id, seedArtist: (seed.artist || "").toLowerCase() });
+        }
+      }
+    }
+
+    if (artistMatchEpisodes.length > 0) {
+      const artistEpIds = Array.from(new Set(artistMatchEpisodes.map((a) => a.episodeId)));
+      const { data: artistTracks } = await supabase
+        .from("episode_tracks")
+        .select("episode_id, tracks(artist, title)")
+        .in("episode_id", artistEpIds)
+        .limit(5000);
+
+      for (const row of (artistTracks || []) as any[]) {
+        if (!row.tracks?.artist) continue;
+        const rowArtistLower = (row.tracks.artist as string).toLowerCase();
+        for (const am of artistMatchEpisodes) {
+          if (row.episode_id === am.episodeId && rowArtistLower === am.seedArtist) {
+            const key = `${row.episode_id}::${am.seedArtist}`;
+            if (!artistTracksByEpisode[key]) artistTracksByEpisode[key] = [];
+            if (artistTracksByEpisode[key].length < 5) {
+              artistTracksByEpisode[key].push({ artist: row.tracks.artist, title: row.tracks.title });
+            }
+          }
+        }
+      }
+    }
   }
 
   const curatedCountBySeed: Record<string, number> = {};
