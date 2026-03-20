@@ -175,24 +175,42 @@ export async function GET(req: NextRequest) {
     // For each seed, count approved/rejected tracks from its episodes (via user_tracks)
     const allEpIds = Array.from(new Set((epSeedLinks || []).map((l: any) => l.episode_id)));
     if (allEpIds.length > 0) {
-      // Get all tracks from these episodes with user's vote status
-      const { data: epTracks } = await db
-        .from("tracks")
-        .select("id, episode_id")
-        .in("episode_id", allEpIds);
+      // Get all tracks from these episodes with user's vote status (paginated)
+      const epTracks: any[] = [];
+      let epTrackPage = 0;
+      while (true) {
+        const { data: batch } = await db
+          .from("tracks")
+          .select("id, episode_id")
+          .in("episode_id", allEpIds)
+          .range(epTrackPage * 1000, (epTrackPage + 1) * 1000 - 1);
+        if (!batch || batch.length === 0) break;
+        epTracks.push(...batch);
+        if (batch.length < 1000) break;
+        epTrackPage++;
+      }
 
-      const epTrackIds = (epTracks || []).map((t: any) => t.id);
-      const epIdByTrack = new Map((epTracks || []).map((t: any) => [t.id, t.episode_id]));
+      const epTrackIds = epTracks.map((t: any) => t.id);
+      const epIdByTrack = new Map(epTracks.map((t: any) => [t.id, t.episode_id]));
 
       let votedStats: any[] = [];
       if (epTrackIds.length > 0) {
-        const { data: voted } = await db
-          .from("user_tracks")
-          .select("track_id, status")
-          .eq("user_id", user.id)
-          .in("track_id", epTrackIds)
-          .in("status", ["approved", "rejected", "skipped"]);
-        votedStats = (voted || []) as any[];
+        const allVoted: any[] = [];
+        let votedPage = 0;
+        while (true) {
+          const { data: batch } = await db
+            .from("user_tracks")
+            .select("track_id, status")
+            .eq("user_id", user.id)
+            .in("track_id", epTrackIds)
+            .in("status", ["approved", "rejected", "skipped"])
+            .range(votedPage * 1000, (votedPage + 1) * 1000 - 1);
+          if (!batch || batch.length === 0) break;
+          allVoted.push(...batch);
+          if (batch.length < 1000) break;
+          votedPage++;
+        }
+        votedStats = allVoted;
       }
 
       // Roll up per episode

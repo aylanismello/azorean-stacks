@@ -47,12 +47,21 @@ export async function GET(req: NextRequest) {
   let trackCounts: Record<string, number> = {};
 
   if (seedTrackIds.length > 0) {
-    const { data: tracks } = await supabase
-      .from("tracks")
-      .select("seed_track_id")
-      .in("seed_track_id", seedTrackIds);
+    const allSeedTracks: { seed_track_id: string | null }[] = [];
+    let seedTrackPage = 0;
+    while (true) {
+      const { data: batch } = await supabase
+        .from("tracks")
+        .select("seed_track_id")
+        .in("seed_track_id", seedTrackIds)
+        .range(seedTrackPage * 1000, (seedTrackPage + 1) * 1000 - 1);
+      if (!batch || batch.length === 0) break;
+      allSeedTracks.push(...(batch as { seed_track_id: string | null }[]));
+      if (batch.length < 1000) break;
+      seedTrackPage++;
+    }
 
-    (tracks || []).forEach((t) => {
+    allSeedTracks.forEach((t) => {
       if (t.seed_track_id) {
         trackCounts[t.seed_track_id] = (trackCounts[t.seed_track_id] || 0) + 1;
       }
@@ -138,13 +147,21 @@ export async function GET(req: NextRequest) {
 
     if (artistMatchEpisodes.length > 0) {
       const artistEpIds = Array.from(new Set(artistMatchEpisodes.map((a) => a.episodeId)));
-      const { data: artistTracks } = await supabase
-        .from("episode_tracks")
-        .select("episode_id, tracks(artist, title)")
-        .in("episode_id", artistEpIds)
-        .limit(5000);
+      const artistTracks: any[] = [];
+      let artistPage = 0;
+      while (true) {
+        const { data: batch } = await supabase
+          .from("episode_tracks")
+          .select("episode_id, tracks(artist, title)")
+          .in("episode_id", artistEpIds)
+          .range(artistPage * 1000, (artistPage + 1) * 1000 - 1);
+        if (!batch || batch.length === 0) break;
+        artistTracks.push(...batch);
+        if (batch.length < 1000) break;
+        artistPage++;
+      }
 
-      for (const row of (artistTracks || []) as any[]) {
+      for (const row of artistTracks as any[]) {
         if (!row.tracks?.artist) continue;
         const rowArtistLower = (row.tracks.artist as string).toLowerCase();
         for (const am of artistMatchEpisodes) {
