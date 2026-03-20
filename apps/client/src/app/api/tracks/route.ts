@@ -228,7 +228,7 @@ export async function GET(req: NextRequest) {
   // Get all track_ids this user has voted on (any non-pending status)
   let excludedTrackIds = new Set<string>();
   if (user && isPending) {
-    const votedIds = await getUserTrackIds(db, user.id, ["approved", "rejected", "skipped", "listened"]);
+    const votedIds = await getUserTrackIds(db, user.id, ["approved", "rejected", "skipped", "listened", "bad_source"]);
     excludedTrackIds = new Set(votedIds);
   }
 
