@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
       .from("user_tracks")
       .select("id", { count: "exact", head: true })
       .eq("user_id", user.id)
-      .in("status", ["approved", "rejected", "skipped", "listened"]);
+      .in("status", ["approved", "rejected", "skipped", "listened", "bad_source"]);
 
     const totalPending = Math.max(0, (totalPipelinePending || 0) - (userVotedCount || 0));
 
