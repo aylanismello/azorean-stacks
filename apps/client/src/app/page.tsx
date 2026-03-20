@@ -468,12 +468,13 @@ function StackPageContent() {
       }
 
       // Update the track's status locally so the UI reflects the vote
-      // Clear super_liked when changing vote (e.g. super-like → rejected)
+      // Preserve super_liked when re-approving (e.g. advance after super-like)
+      // Clear it only when changing to a non-approved status
       setTracks((prev) =>
-        prev.map((t) => t.id === id ? { ...t, status, vote_status: status, super_liked: false, voted_at: new Date().toISOString() } as any : t)
+        prev.map((t) => t.id === id ? { ...t, status, vote_status: status, super_liked: status === "approved" ? (t as any).super_liked || false : false, voted_at: new Date().toISOString() } as any : t)
       );
       setSessionTracks((prev) =>
-        prev.map((t) => t.id === id ? { ...t, status, vote_status: status, super_liked: false, voted_at: new Date().toISOString() } as any : t)
+        prev.map((t) => t.id === id ? { ...t, status, vote_status: status, super_liked: status === "approved" ? (t as any).super_liked || false : false, voted_at: new Date().toISOString() } as any : t)
       );
 
       setVoteCount((c) => c + 1);
@@ -520,17 +521,30 @@ function StackPageContent() {
           }
         }
         setTracks((prev) => {
-          const remaining = prev.filter((t) => t.id !== id);
-          let ordered = remaining;
+          // DON'T remove voted tracks — keep them for tracklist click-back with vote state
+          // Just find the next unvoted playable track to advance to
+          const currentIdx = prev.findIndex((t) => t.id === id);
+          const pending = prev.filter((t) => t.id !== id && t.status === "pending" && isTrackPlayable(t));
+          let ordered = pending;
           // In ranked mode, preserve server-side ordering — no client reordering
           if (isTasteMode && !isRankedMode) {
             ordered = reorderByMomentum(ordered);
             ordered = boostByChain(ordered);
           }
-          // Sync queue to provider and play next track
-          globalPlayer.setQueue(ordered.map(toPlayerTrack), 0);
-          if (ordered.length > 0) {
-            globalPlayer.playFromQueue(0);
+          // Sync queue to provider with ALL tracks (including voted) and advance to next pending
+          const allUpdated = prev.map((t) => t.id === id ? { ...t, status, vote_status: status } as any : t);
+          globalPlayer.setQueue(allUpdated.map(toPlayerTrack));
+          // Find next pending track after current position
+          let nextIdx = -1;
+          for (let i = currentIdx + 1; i < allUpdated.length; i++) {
+            if (allUpdated[i].status === "pending" && isTrackPlayable(allUpdated[i])) { nextIdx = i; break; }
+          }
+          if (nextIdx < 0 && ordered.length > 0) {
+            // Fallback: play first pending track
+            nextIdx = allUpdated.findIndex((t: any) => t.id === ordered[0].id);
+          }
+          if (nextIdx >= 0) {
+            globalPlayer.playFromQueue(nextIdx);
           }
           // Ranked mode: full queue is loaded upfront, no refetch needed
           if (!isRankedMode && ordered.length <= 3) {
@@ -561,7 +575,7 @@ function StackPageContent() {
                 setTotal(data.total || 0);
               });
           }
-          return ordered;
+          return allUpdated;
         });
         setTotal((prev) => prev - 1);
       }
