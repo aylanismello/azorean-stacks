@@ -27,15 +27,24 @@ export async function GET(
 
   const episodeIds = episodes.map((e) => e.id);
 
-  // Get seed links for these episodes
-  const { data: seedLinks } = await db
-    .from("episode_seeds")
-    .select("episode_id, match_type, seeds(id, artist, title)")
-    .in("episode_id", episodeIds);
+  // Get seed links for these episodes (paginated)
+  const seedLinks: any[] = [];
+  let seedPage = 0;
+  while (true) {
+    const { data: batch } = await db
+      .from("episode_seeds")
+      .select("episode_id, match_type, seeds(id, artist, title)")
+      .in("episode_id", episodeIds)
+      .range(seedPage * 1000, (seedPage + 1) * 1000 - 1);
+    if (!batch || batch.length === 0) break;
+    seedLinks.push(...batch);
+    if (batch.length < 1000) break;
+    seedPage++;
+  }
 
   // Build seed info per episode
   const seedsByEpisode: Record<string, Array<{ seed_id: string; artist: string; title: string; match_type: string }>> = {};
-  for (const link of (seedLinks || []) as any[]) {
+  for (const link of seedLinks as any[]) {
     if (!link.seeds) continue;
     if (!seedsByEpisode[link.episode_id]) seedsByEpisode[link.episode_id] = [];
     seedsByEpisode[link.episode_id].push({
@@ -46,14 +55,23 @@ export async function GET(
     });
   }
 
-  // Get track stats per episode via episode_tracks
-  const { data: trackRows } = await db
-    .from("episode_tracks")
-    .select("episode_id, tracks(status)")
-    .in("episode_id", episodeIds);
+  // Get track stats per episode via episode_tracks (paginated)
+  const trackRows: any[] = [];
+  let trackPage = 0;
+  while (true) {
+    const { data: batch } = await db
+      .from("episode_tracks")
+      .select("episode_id, tracks(status)")
+      .in("episode_id", episodeIds)
+      .range(trackPage * 1000, (trackPage + 1) * 1000 - 1);
+    if (!batch || batch.length === 0) break;
+    trackRows.push(...batch);
+    if (batch.length < 1000) break;
+    trackPage++;
+  }
 
   const statsByEpisode: Record<string, { total: number; pending: number; approved: number; rejected: number }> = {};
-  for (const row of (trackRows || []) as any[]) {
+  for (const row of trackRows as any[]) {
     const eid = row.episode_id;
     if (!statsByEpisode[eid]) statsByEpisode[eid] = { total: 0, pending: 0, approved: 0, rejected: 0 };
     statsByEpisode[eid].total++;

@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
   // 1. Load the seed
   const { data: seed, error: seedErr } = await db
     .from("seeds")
-    .select("*")
+    .select("id, artist, title, track_id")
     .eq("id", seed_id)
     .single();
 
@@ -122,11 +122,20 @@ export async function POST(req: NextRequest) {
   let existingTrackIds: string[] = [];
 
   if (episodeIds.length > 0) {
-    const { data: etLinks } = await db
-      .from("episode_tracks")
-      .select("track_id")
-      .in("episode_id", episodeIds);
-    existingTrackIds = (etLinks || []).map((t: { track_id: string }) => t.track_id);
+    const etLinks: { track_id: string }[] = [];
+    let etPage = 0;
+    while (true) {
+      const { data: batch } = await db
+        .from("episode_tracks")
+        .select("track_id")
+        .in("episode_id", episodeIds)
+        .range(etPage * 1000, (etPage + 1) * 1000 - 1);
+      if (!batch || batch.length === 0) break;
+      etLinks.push(...(batch as { track_id: string }[]));
+      if (batch.length < 1000) break;
+      etPage++;
+    }
+    existingTrackIds = etLinks.map((t) => t.track_id);
   }
 
   // Also check tracks linked via seed_track_id
@@ -544,15 +553,24 @@ async function createUserTracks(
 ): Promise<number> {
   if (trackIds.length === 0) return 0;
 
-  // Check which user_tracks already exist
-  const { data: existing } = await db
-    .from("user_tracks")
-    .select("track_id")
-    .eq("user_id", userId)
-    .in("track_id", trackIds);
+  // Check which user_tracks already exist (paginated)
+  const existing: { track_id: string }[] = [];
+  let utPage = 0;
+  while (true) {
+    const { data: batch } = await db
+      .from("user_tracks")
+      .select("track_id")
+      .eq("user_id", userId)
+      .in("track_id", trackIds)
+      .range(utPage * 1000, (utPage + 1) * 1000 - 1);
+    if (!batch || batch.length === 0) break;
+    existing.push(...(batch as { track_id: string }[]));
+    if (batch.length < 1000) break;
+    utPage++;
+  }
 
   const existingSet = new Set(
-    (existing || []).map((ut: { track_id: string }) => ut.track_id)
+    existing.map((ut) => ut.track_id)
   );
   const toCreate = trackIds.filter((id) => !existingSet.has(id));
 

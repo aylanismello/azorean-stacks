@@ -21,15 +21,23 @@ export async function GET() {
     const totalReviewed = totalApproved + totalRejected;
     const approvalRate = totalReviewed > 0 ? totalApproved / totalReviewed : 0;
 
-    // Top approved artists — fetch only artist column, capped to prevent memory issues
-    const { data: approvedTracks } = await supabase
-      .from("tracks")
-      .select("artist")
-      .eq("status", "approved")
-      .limit(5000);
+    // Top approved artists — paginated fetch of artist column
+    const approvedTracks: { artist: string }[] = [];
+    let artistPage = 0;
+    while (true) {
+      const { data: batch } = await supabase
+        .from("tracks")
+        .select("artist")
+        .eq("status", "approved")
+        .range(artistPage * 1000, (artistPage + 1) * 1000 - 1);
+      if (!batch || batch.length === 0) break;
+      approvedTracks.push(...(batch as { artist: string }[]));
+      if (batch.length < 1000) break;
+      artistPage++;
+    }
 
     const artistCounts: Record<string, number> = {};
-    (approvedTracks || []).forEach((t) => {
+    approvedTracks.forEach((t) => {
       artistCounts[t.artist] = (artistCounts[t.artist] || 0) + 1;
     });
 
@@ -38,14 +46,22 @@ export async function GET() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
-    // Source breakdown — fetch only source column, capped
-    const { data: allSources } = await supabase
-      .from("tracks")
-      .select("source")
-      .limit(10000);
+    // Source breakdown — paginated fetch of source column
+    const allSources: { source: string }[] = [];
+    let sourcePage = 0;
+    while (true) {
+      const { data: batch } = await supabase
+        .from("tracks")
+        .select("source")
+        .range(sourcePage * 1000, (sourcePage + 1) * 1000 - 1);
+      if (!batch || batch.length === 0) break;
+      allSources.push(...(batch as { source: string }[]));
+      if (batch.length < 1000) break;
+      sourcePage++;
+    }
 
     const sourceCounts: Record<string, number> = {};
-    (allSources || []).forEach((t) => {
+    allSources.forEach((t) => {
       sourceCounts[t.source] = (sourceCounts[t.source] || 0) + 1;
     });
 
@@ -57,7 +73,7 @@ export async function GET() {
     const serviceDb = getServiceClient();
     const { data: recentRuns } = await serviceDb
       .from("discovery_runs")
-      .select("*")
+      .select("id, seed_id, seed_track_id, sources_searched, tracks_found, tracks_added, started_at, completed_at, notes")
       .order("started_at", { ascending: false })
       .limit(10);
 

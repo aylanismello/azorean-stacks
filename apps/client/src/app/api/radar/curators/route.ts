@@ -91,15 +91,23 @@ export async function GET(req: NextRequest) {
   const votedTrackIds = userVotes.map((v: any) => v.track_id);
   const userVoteMap = new Map(userVotes.map((v: any) => [v.track_id, v.status]));
 
-  // 2. Get tracks with their episodes
-  const { data: trackData, error: trackError } = await db
-    .from("tracks")
-    .select("id, episode_id, episode:episodes!episode_id(id, url, title, source, aired_date, artwork_url)")
-    .in("id", votedTrackIds)
-    .not("episode_id", "is", null);
-
-  if (trackError) {
-    return NextResponse.json({ error: trackError.message }, { status: 500 });
+  // 2. Get tracks with their episodes (paginated)
+  const trackData: any[] = [];
+  let trackDataPage = 0;
+  while (true) {
+    const { data: batch, error: trackError } = await db
+      .from("tracks")
+      .select("id, episode_id, episode:episodes!episode_id(id, url, title, source, aired_date, artwork_url)")
+      .in("id", votedTrackIds)
+      .not("episode_id", "is", null)
+      .range(trackDataPage * 1000, (trackDataPage + 1) * 1000 - 1);
+    if (trackError) {
+      return NextResponse.json({ error: trackError.message }, { status: 500 });
+    }
+    if (!batch || batch.length === 0) break;
+    trackData.push(...batch);
+    if (batch.length < 1000) break;
+    trackDataPage++;
   }
 
   // 3. Group by curator key and compute affinity
@@ -111,7 +119,7 @@ export async function GET(req: NextRequest) {
     episodeIds: Set<string>;
   }>();
 
-  for (const track of (trackData || []) as any[]) {
+  for (const track of trackData as any[]) {
     const ep = Array.isArray(track.episode) ? track.episode[0] : track.episode;
     if (!ep?.url) continue;
     if (ep.source !== "nts" && ep.source !== "lotradio") continue;
@@ -205,18 +213,26 @@ export async function GET(req: NextRequest) {
 
     if (allEpisodes.length === 0) continue;
 
-    // Get track stats for these episodes
+    // Get track stats for these episodes (paginated)
     const episodeIds = allEpisodes.map((e: any) => e.id);
 
-    const { data: etLinks } = await db
-      .from("episode_tracks")
-      .select("episode_id, tracks(status, storage_path, spotify_url, youtube_url, metadata)")
-      .in("episode_id", episodeIds)
-      .limit(10000);
+    const etLinks: any[] = [];
+    let etPage = 0;
+    while (true) {
+      const { data: batch } = await db
+        .from("episode_tracks")
+        .select("episode_id, tracks(status, storage_path, spotify_url, youtube_url, metadata)")
+        .in("episode_id", episodeIds)
+        .range(etPage * 1000, (etPage + 1) * 1000 - 1);
+      if (!batch || batch.length === 0) break;
+      etLinks.push(...batch);
+      if (batch.length < 1000) break;
+      etPage++;
+    }
 
     const epStats = new Map<string, { total: number; enriched: number; downloaded: number; pending: number; hasRadarTracks: boolean }>();
 
-    for (const row of (etLinks || []) as any[]) {
+    for (const row of etLinks as any[]) {
       const t = row.tracks;
       if (!t) continue;
       const epId = row.episode_id;
