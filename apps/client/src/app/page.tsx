@@ -196,17 +196,13 @@ function StackPageContent() {
     if (episodeId) {
       return `/api/tracks?episode_id=${encodeURIComponent(episodeId)}&limit=100`;
     }
-    // Ranked mode: call the seed's ranked queue endpoint (returns all pending, taste-weighted)
-    if (isRankedMode && fromSeedId) {
-      return `/api/stacks/${encodeURIComponent(fromSeedId)}/queue`;
-    }
-    // Taste/genre/seed mode: fetch pending tracks ranked by taste_score
-    let url = `/api/tracks?status=pending&limit=20`;
-    if (isTasteMode) {
-      url += `&order_by=taste_score`;
-    }
-    if (isTasteMode && hideLowScored) {
+    // Unified FYP endpoint for taste/genre/seed/ranked modes
+    let url = `/api/fyp?limit=20`;
+    if (hideLowScored) {
       url += `&hide_low=true`;
+    }
+    if (fromSeedId) {
+      url += `&seed_id=${encodeURIComponent(fromSeedId)}`;
     }
     if (genreFilter) {
       url += `&genre=${encodeURIComponent(genreFilter)}`;
@@ -215,7 +211,7 @@ function StackPageContent() {
       url += `&seed_artist=${encodeURIComponent(seedFilter)}`;
     }
     return url;
-  }, [episodeId, isRankedMode, fromSeedId, isTasteMode, hideLowScored, genreFilter, seedFilter]);
+  }, [episodeId, hideLowScored, fromSeedId, genreFilter, seedFilter]);
 
   const fetchTracks = useCallback(async () => {
     try {
@@ -377,9 +373,9 @@ function StackPageContent() {
           globalPlayer.playFromQueue(nextPos);
         }
 
-        // Batch loading: if running low on pending tracks, fetch more — retry once if still low
+        // Batch loading: if running low on pending tracks, fetch more
         const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
-        if (!isRankedMode && pendingAhead.length <= 3) {
+        if (pendingAhead.length <= 3) {
           fetch(buildUrl())
             .then((r) => r.ok ? r.json() : null)
             .then((data) => {
@@ -389,25 +385,6 @@ function StackPageContent() {
                 globalPlayer.appendToQueue(newTracks.map(toPlayerTrack));
               }
               setTotal(data.total || 0);
-
-              // Retry once if we still don't have enough playable tracks
-              const updatedQueue = globalPlayer.queue;
-              const updatedCurPos = globalPlayer.currentIndex;
-              const stillPending = updatedQueue.slice(updatedCurPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
-              if (stillPending.length <= 3 && (data.total || 0) > updatedQueue.length) {
-                setTimeout(() => {
-                  fetch(buildUrl())
-                    .then((r2) => r2.ok ? r2.json() : null)
-                    .then((data2) => {
-                      if (!data2) return;
-                      const moreTracks = (data2.tracks || []) as Track[];
-                      if (moreTracks.length > 0) {
-                        globalPlayer.appendToQueue(moreTracks.map(toPlayerTrack));
-                      }
-                      setTotal(data2.total || 0);
-                    });
-                }, 500);
-              }
             });
         }
 
@@ -557,9 +534,9 @@ function StackPageContent() {
       globalPlayer.playFromQueue(nextPos);
     }
 
-    // Batch loading when running low — retry once if still low after append
+    // Batch loading when running low on pending tracks
     const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
-    if (!isRankedMode && pendingAhead.length <= 3) {
+    if (pendingAhead.length <= 3) {
       fetch(buildUrl())
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
@@ -569,28 +546,9 @@ function StackPageContent() {
             globalPlayer.appendToQueue(newTracks.map(toPlayerTrack));
           }
           setTotal(data.total || 0);
-
-          // Retry once if we still don't have enough playable tracks
-          const updatedQueue = globalPlayer.queue;
-          const updatedCurPos = globalPlayer.currentIndex;
-          const stillPending = updatedQueue.slice(updatedCurPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
-          if (stillPending.length <= 3 && (data.total || 0) > updatedQueue.length) {
-            setTimeout(() => {
-              fetch(buildUrl())
-                .then((r2) => r2.ok ? r2.json() : null)
-                .then((data2) => {
-                  if (!data2) return;
-                  const moreTracks = (data2.tracks || []) as Track[];
-                  if (moreTracks.length > 0) {
-                    globalPlayer.appendToQueue(moreTracks.map(toPlayerTrack));
-                  }
-                  setTotal(data2.total || 0);
-                });
-            }, 500);
-          }
         });
     }
-  }, [globalPlayer.trackEndedCount, globalPlayer.currentIndex, globalPlayer.queue, buildUrl, hasEpisodeTracks, isRankedMode, globalPlayer, advanceToNextEpisode]);
+  }, [globalPlayer.trackEndedCount, globalPlayer.currentIndex, globalPlayer.queue, buildUrl, hasEpisodeTracks, globalPlayer, advanceToNextEpisode]);
 
   // Preload next track's audio when current track reaches 75% completion
   const preloadTriggeredRef = useRef<string | null>(null);
