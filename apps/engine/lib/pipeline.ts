@@ -425,7 +425,7 @@ export async function enrichTrack(track: any): Promise<boolean> {
   let ytSource: "youtube" | "soundcloud" = "youtube";
 
   // Run Spotify, YouTube, and MusicBrainz lookups in PARALLEL
-  // Spotify has a 15s timeout, MusicBrainz 5s — neither blocks YouTube
+  // Spotify has a 15s timeout (lookup + genre fetch), MusicBrainz 10s — neither blocks YouTube
   let mbResult: MusicBrainzResult | null = null;
   const [spotResult, ytResult, _mbResult] = await Promise.allSettled([
     // Spotify lookup (best-effort — rate limited, non-critical, 15s max)
@@ -449,7 +449,7 @@ export async function enrichTrack(track: any): Promise<boolean> {
           } else {
             updates.spotify_url = "";
           }
-        }), 5_000, `spotify:${label}`).catch((err) => {
+        }), 15_000, `spotify:${label}`).catch((err) => {
           log("fail", `Spotify error for ${label}: ${err instanceof Error ? err.message : err}`);
           updates.spotify_url = "";
         })

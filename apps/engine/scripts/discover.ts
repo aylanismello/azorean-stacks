@@ -510,7 +510,7 @@ async function runDiscover(): Promise<number> {
     "clip", "drop", "dub plate", "dubplate", "white label",
   ]);
   // Patterns that indicate tracklist metadata rather than real tracks
-  const GARBAGE_PATTERNS = /^(intro|outro|jingle|station id|interlude|unknown artist|various artists?)$/i;
+  const GARBAGE_PATTERNS = /^(intro|outro|jingle|station id|station ident|interlude|unknown artist|various artists?|dj mix|continuous mix|mixed by .+|tracklist|setlist|playlist|listener call|phone call|shout ?out)$/i;
   const preFilterCount = toInsert.length;
   const filtered = toInsert.filter((c) => {
     const lTitle = c.title.toLowerCase().trim();

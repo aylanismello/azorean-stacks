@@ -251,8 +251,10 @@ async function processSeed(seedId: string) {
         const lArtist = track.artist.toLowerCase().trim();
         if (GARBAGE_TITLES.has(lTitle) || lTitle.length <= 1 || lArtist.length <= 1) continue;
 
+        const escArtist = track.artist.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
+        const escTitle = track.title.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
         const { data: existing } = await db.from("tracks")
-          .select("id").ilike("artist", track.artist.trim()).ilike("title", track.title.trim()).limit(1);
+          .select("id").ilike("artist", escArtist).ilike("title", escTitle).limit(1);
         if (existing && existing.length > 0) continue;
 
         const { data: inserted, error } = await db.from("tracks").insert({
@@ -712,6 +714,7 @@ async function processSuperLike(trackId: string) {
       ),
     ]);
   } catch (err) {
+    try { dlProc.kill(); } catch {} // kill orphaned yt-dlp process
     log("fail", `Super Like: yt-dlp timed out for ${label}`);
     await logEngineEvent("error", "failed", {
       message: `Super Like: download timeout for ${label}`,
