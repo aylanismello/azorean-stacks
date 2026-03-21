@@ -377,7 +377,7 @@ function StackPageContent() {
           globalPlayer.playFromQueue(nextPos);
         }
 
-        // Batch loading: if running low on pending tracks, fetch more
+        // Batch loading: if running low on pending tracks, fetch more — retry once if still low
         const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
         if (!isRankedMode && pendingAhead.length <= 3) {
           fetch(buildUrl())
@@ -389,6 +389,25 @@ function StackPageContent() {
                 globalPlayer.appendToQueue(newTracks.map(toPlayerTrack));
               }
               setTotal(data.total || 0);
+
+              // Retry once if we still don't have enough playable tracks
+              const updatedQueue = globalPlayer.queue;
+              const updatedCurPos = globalPlayer.currentIndex;
+              const stillPending = updatedQueue.slice(updatedCurPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
+              if (stillPending.length <= 3 && (data.total || 0) > updatedQueue.length) {
+                setTimeout(() => {
+                  fetch(buildUrl())
+                    .then((r2) => r2.ok ? r2.json() : null)
+                    .then((data2) => {
+                      if (!data2) return;
+                      const moreTracks = (data2.tracks || []) as Track[];
+                      if (moreTracks.length > 0) {
+                        globalPlayer.appendToQueue(moreTracks.map(toPlayerTrack));
+                      }
+                      setTotal(data2.total || 0);
+                    });
+                }, 500);
+              }
             });
         }
 
@@ -512,7 +531,7 @@ function StackPageContent() {
       const curPos = globalPlayer.currentIndex;
       let nextPos = -1;
       for (let i = curPos + 1; i < queue.length; i++) {
-        if (isPlayable(queue[i]) || queue[i].spotifyUrl) {
+        if (isPlayable(queue[i])) {
           nextPos = i;
           break;
         }
@@ -525,11 +544,11 @@ function StackPageContent() {
       return;
     }
 
-    // Taste/ranked mode: advance to next pending track
+    // Taste/ranked mode: advance to next pending + playable track
     const curPos = globalPlayer.currentIndex;
     let nextPos = -1;
     for (let i = curPos + 1; i < queue.length; i++) {
-      if ((queue[i].vote_status === "pending" || queue[i].status === "pending") && (isPlayable(queue[i]) || queue[i].spotifyUrl)) {
+      if ((queue[i].vote_status === "pending" || queue[i].status === "pending") && isPlayable(queue[i])) {
         nextPos = i;
         break;
       }
@@ -538,7 +557,7 @@ function StackPageContent() {
       globalPlayer.playFromQueue(nextPos);
     }
 
-    // Batch loading when running low
+    // Batch loading when running low — retry once if still low after append
     const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
     if (!isRankedMode && pendingAhead.length <= 3) {
       fetch(buildUrl())
@@ -550,6 +569,25 @@ function StackPageContent() {
             globalPlayer.appendToQueue(newTracks.map(toPlayerTrack));
           }
           setTotal(data.total || 0);
+
+          // Retry once if we still don't have enough playable tracks
+          const updatedQueue = globalPlayer.queue;
+          const updatedCurPos = globalPlayer.currentIndex;
+          const stillPending = updatedQueue.slice(updatedCurPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
+          if (stillPending.length <= 3 && (data.total || 0) > updatedQueue.length) {
+            setTimeout(() => {
+              fetch(buildUrl())
+                .then((r2) => r2.ok ? r2.json() : null)
+                .then((data2) => {
+                  if (!data2) return;
+                  const moreTracks = (data2.tracks || []) as Track[];
+                  if (moreTracks.length > 0) {
+                    globalPlayer.appendToQueue(moreTracks.map(toPlayerTrack));
+                  }
+                  setTotal(data2.total || 0);
+                });
+            }, 500);
+          }
         });
     }
   }, [globalPlayer.trackEndedCount, globalPlayer.currentIndex, globalPlayer.queue, buildUrl, hasEpisodeTracks, isRankedMode, globalPlayer, advanceToNextEpisode]);
