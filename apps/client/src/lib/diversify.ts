@@ -21,9 +21,11 @@ export function diversifyTracks(tracks: any[]): any[] {
   const wildcards: any[] = [];
   const mainPool: any[] = [];
 
+  // If p25 === p75 (uniform scores), skip wildcard separation — all go to main pool
+  const hasScoreVariance = p25 !== p75;
   for (const t of tracks) {
     const s = t.taste_score ?? 0;
-    if (s >= p25 && s <= p75) {
+    if (hasScoreVariance && s >= p25 && s <= p75) {
       wildcards.push(t);
     } else {
       mainPool.push(t);

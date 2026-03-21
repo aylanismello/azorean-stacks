@@ -81,7 +81,10 @@ async function downloadOne(track: any): Promise<boolean> {
 
   const dlProc = Bun.spawn(
     [YT_DLP_BIN, "-x", "--audio-format", "mp3", "--audio-quality", "0",
-     "--no-playlist", "--no-warnings", "-o", outPath, track.youtube_url],
+     "--no-playlist", "--no-warnings",
+     "--retries", "3", "--fragment-retries", "3",
+     "--socket-timeout", "30", "--extractor-retries", "3",
+     "-o", outPath, track.youtube_url],
     { stdout: "ignore", stderr: "pipe" },
   );
 
