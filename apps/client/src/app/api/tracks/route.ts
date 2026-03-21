@@ -236,64 +236,78 @@ export async function GET(req: NextRequest) {
     ? "taste_score"
     : isPending ? "created_at" : "created_at";
 
-  let query = supabase
-    .from("tracks")
-    .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date, artwork_url, url), seeds!track_id(id)", { count: "exact" });
-
-  // For pending: don't filter by tracks.status (it's always 'pending' in the pipeline sense)
-  // Instead we rely on excluding voted tracks above
-  if (isPending) {
-    // Only show tracks that are pipeline-pending (not failed/skipped)
-    query = query.eq("status", "pending");
-    query = query.or("storage_path.not.is.null,spotify_url.neq.,preview_url.not.is.null");
-  } else {
-    // Fallback for any other status value
-    query = query.eq("status", status);
-  }
-
   const ascending = orderBy === "taste_score" ? false : isPending;
-  const fetchLimit = orderBy === "taste_score" ? limit * 2 : limit;
-  query = query.order(orderCol, { ascending, nullsFirst: false })
-    .range(offset, offset + fetchLimit - 1);
-  if (search) {
-    const escaped = search.replace(/[%_\\]/g, (c) => `\\${c}`);
-    query = query.or(`artist.ilike.%${escaped}%,title.ilike.%${escaped}%`);
-  }
-  if (source) {
-    query = query.eq("source", source);
-  }
-  if (genre) {
-    query = query.contains("metadata", { genres: [genre] });
-  }
-  if (seedId) {
-    query = query.eq("seed_track_id", seedId);
-  }
-  if (seedArtist) {
-    query = query.contains("metadata", { seed_artist: seedArtist });
-  }
-  if (hideLow && orderBy === "taste_score") {
-    query = query.gt("taste_score", -0.3);
+  const isTasteMode = orderBy === "taste_score";
+  const targetCount = isTasteMode ? limit * 2 : limit;
+  const batchSize = 40;
+  const maxIterations = 5;
+
+  let allTracks: any[] = [];
+  let cursor = offset;
+  let totalCount: number | null = null;
+
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    let query = supabase
+      .from("tracks")
+      .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date, artwork_url, url), seeds!track_id(id)", { count: "exact" });
+
+    if (isPending) {
+      query = query.eq("status", "pending");
+      query = query.or("storage_path.not.is.null,preview_url.not.is.null");
+    } else {
+      query = query.eq("status", status);
+    }
+
+    query = query.order(orderCol, { ascending, nullsFirst: false })
+      .range(cursor, cursor + batchSize - 1);
+    if (search) {
+      const escaped = search.replace(/[%_\\]/g, (c) => `\\${c}`);
+      query = query.or(`artist.ilike.%${escaped}%,title.ilike.%${escaped}%`);
+    }
+    if (source) {
+      query = query.eq("source", source);
+    }
+    if (genre) {
+      query = query.contains("metadata", { genres: [genre] });
+    }
+    if (seedId) {
+      query = query.eq("seed_track_id", seedId);
+    }
+    if (seedArtist) {
+      query = query.contains("metadata", { seed_artist: seedArtist });
+    }
+    if (hideLow && isTasteMode) {
+      query = query.gt("taste_score", -0.3);
+    }
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    if (totalCount === null) totalCount = count;
+
+    const batch = (data || []).filter((t: any) => !excludedTrackIds.has(t.id));
+    allTracks.push(...batch);
+
+    // Stop if we have enough or DB is exhausted
+    if (allTracks.length >= targetCount) break;
+    if (!data || data.length < batchSize) break;
+
+    cursor += batchSize;
   }
 
-  const { data, error, count } = await query;
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  // Filter out user's voted tracks
-  const tracks = (data || []).filter((t: any) => !excludedTrackIds.has(t.id));
-
-  await normalizeAndSign(tracks);
+  await normalizeAndSign(allTracks);
 
   // Apply diversification in taste mode then trim to requested limit
-  const finalTracks = orderBy === "taste_score"
-    ? diversifyTracks(tracks).slice(0, limit)
-    : tracks;
+  const finalTracks = isTasteMode
+    ? diversifyTracks(allTracks).slice(0, limit)
+    : allTracks.slice(0, limit);
 
   await attachMatchTypes(finalTracks);
 
-  return NextResponse.json({ tracks: finalTracks, total: count });
+  return NextResponse.json({ tracks: finalTracks, total: totalCount });
 }
 
 // POST /api/tracks — agent pushes new discoveries (service role)
