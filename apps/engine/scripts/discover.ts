@@ -13,6 +13,7 @@
 import { parseArgs } from "util";
 import { getSupabase } from "../lib/supabase";
 import { SOURCES } from "../lib/sources/index";
+import { isGarbageTrack } from "../lib/pipeline";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -105,12 +106,12 @@ function stringSimilarity(a: string, b: string): number {
   const maxLen = Math.max(na.length, nb.length);
 
   // Check if one string contains the other (common for partial matches)
-  // Only boost if the shorter string is substantial (>4 chars) to avoid
-  // inflating scores for generic single-word matches like "stone" or "love"
+  // Require substantial overlap (>8 chars) to avoid false positives on short
+  // generic words like "love", "stone", "dream" that appear in many titles
   if (na.includes(nb) || nb.includes(na)) {
     const minLen = Math.min(na.length, nb.length);
-    if (minLen > 4) {
-      return Math.round(Math.max(60, (minLen / maxLen) * 100));
+    if (minLen > 8) {
+      return Math.round(Math.max(65, (minLen / maxLen) * 100));
     }
   }
 
@@ -509,36 +510,11 @@ async function runDiscover(): Promise<number> {
 
   log("info", `Dedup: ${candidates.length} candidates → ${toInsert.length} new, ${dupCount} already in DB`);
 
-  // Filter out garbage tracks before insertion
-  const GARBAGE_TITLES = new Set([
-    "unknown track", "untitled", "id", "?", "unknown", "",
-    "track id", "unreleased", "n/a", "tba", "tbc", "forthcoming",
-    "clip", "drop", "dub plate", "dubplate", "white label",
-  ]);
-  // Patterns that indicate tracklist metadata rather than real tracks
-  const GARBAGE_PATTERNS = /^(intro|outro|jingle|station id|station ident|interlude|unknown artist|various artists?|dj mix|continuous mix|mixed by .+|tracklist|setlist|playlist|listener call|phone call|shout ?out)$/i;
+  // Filter out garbage tracks before insertion (uses shared filter from pipeline.ts)
   const preFilterCount = toInsert.length;
   const filtered = toInsert.filter((c) => {
-    const lTitle = c.title.toLowerCase().trim();
-    const lArtist = c.artist.toLowerCase().trim();
-    // Reject tracks with garbage titles
-    if (GARBAGE_TITLES.has(lTitle)) {
-      log("skip", `Filtered garbage title: ${c.artist} – ${c.title}`);
-      return false;
-    }
-    // Reject tracks matching garbage patterns
-    if (GARBAGE_PATTERNS.test(lTitle) || GARBAGE_PATTERNS.test(lArtist)) {
-      log("skip", `Filtered garbage pattern: ${c.artist} – ${c.title}`);
-      return false;
-    }
-    // Reject tracks where artist or title is just a single character
-    if (lTitle.length <= 1 || lArtist.length <= 1) {
-      log("skip", `Filtered too-short: ${c.artist} – ${c.title}`);
-      return false;
-    }
-    // Reject tracks where artist and title are identical (likely bad parse)
-    if (lArtist === lTitle) {
-      log("skip", `Filtered artist=title: ${c.artist} – ${c.title}`);
+    if (isGarbageTrack(c.artist, c.title)) {
+      log("skip", `Filtered garbage: ${c.artist} – ${c.title}`);
       return false;
     }
     return true;
@@ -593,10 +569,12 @@ async function runDiscover(): Promise<number> {
 
   // Ensure the seed track itself exists in the tracks table
   {
+    const escSeedArtist = seed.artist.replace(/[%_\\]/g, (c: string) => `\\${c}`);
+    const escSeedTitle = seed.title.replace(/[%_\\]/g, (c: string) => `\\${c}`);
     const { data: existingSeedTrack } = await db.from("tracks")
       .select("id")
-      .ilike("artist", seed.artist)
-      .ilike("title", seed.title)
+      .ilike("artist", escSeedArtist)
+      .ilike("title", escSeedTitle)
       .limit(1)
       .maybeSingle();
 

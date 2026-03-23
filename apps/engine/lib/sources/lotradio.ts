@@ -19,7 +19,14 @@ import { log } from "../pipeline";
 
 const LOT_BASE = "https://www.thelotradio.com";
 
+// Short-lived HTML cache to avoid double-fetching when getTracklist + getArtwork
+// are called for the same URL within the same pipeline run
+const htmlCache = new Map<string, { html: string; at: number }>();
+const HTML_CACHE_TTL = 60_000; // 60 seconds
+
 async function fetchHtml(url: string, timeoutMs = 15_000): Promise<string | null> {
+  const cached = htmlCache.get(url);
+  if (cached && Date.now() - cached.at < HTML_CACHE_TTL) return cached.html;
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
@@ -32,7 +39,16 @@ async function fetchHtml(url: string, timeoutMs = 15_000): Promise<string | null
       log("fail", `Lot Radio fetch HTTP ${res.status}: ${url}`);
       return null;
     }
-    return await res.text();
+    const html = await res.text();
+    htmlCache.set(url, { html, at: Date.now() });
+    // Evict old entries to prevent unbounded growth
+    if (htmlCache.size > 100) {
+      const now = Date.now();
+      for (const [key, val] of htmlCache) {
+        if (now - val.at > HTML_CACHE_TTL) htmlCache.delete(key);
+      }
+    }
+    return html;
   } catch (err) {
     log("fail", `Lot Radio fetch error: ${url} — ${err instanceof Error ? err.message : err}`);
     return null;

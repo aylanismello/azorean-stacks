@@ -13,7 +13,7 @@
  * Usage: bun run radar-curator
  */
 import { getSupabase } from "../lib/supabase";
-import { log, sleep, logEngineEvent } from "../lib/pipeline";
+import { log, sleep, logEngineEvent, isGarbageTrack } from "../lib/pipeline";
 import { ntsSource } from "../lib/sources/nts";
 
 const db = getSupabase();
@@ -25,7 +25,7 @@ const CONCURRENCY = {
   episodes: 2, // Max parallel episodes per show
 } as const;
 
-const GARBAGE_TITLES = new Set(["unknown track", "untitled", "id", "?", "unknown", ""]);
+// GARBAGE_TITLES imported from pipeline.ts via isGarbageTrack
 
 // ─── TYPES ──────────────────────────────────────────────────
 
@@ -285,10 +285,7 @@ async function processEpisode(
 
   for (let pos = 0; pos < rawTracks.length; pos++) {
     const track = rawTracks[pos];
-    const lTitle = track.title.toLowerCase().trim();
-    const lArtist = track.artist.toLowerCase().trim();
-
-    if (GARBAGE_TITLES.has(lTitle) || lTitle.length <= 1 || lArtist.length <= 1) continue;
+    if (isGarbageTrack(track.artist, track.title)) continue;
 
     // Dedup: check for existing track with same artist+title (case-insensitive)
     const { data: existing } = await db

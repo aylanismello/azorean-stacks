@@ -301,6 +301,7 @@ function SwipePageContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [empty, setEmpty] = useState(false);
+  const [superLikeCount, setSuperLikeCount] = useState<number | null>(null);
   const fetchingRef = useRef(false);
   const votingRef = useRef(false);
 
@@ -348,6 +349,10 @@ function SwipePageContent() {
 
   useEffect(() => {
     fetchTracks();
+    fetch("/api/tracks/super-liked-count")
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) setSuperLikeCount(d.count); })
+      .catch(() => {});
   }, [fetchTracks]);
 
   // Auto-refill when running low
@@ -387,6 +392,10 @@ function SwipePageContent() {
       });
 
       if (!res.ok) throw new Error(`Vote failed (${res.status})`);
+
+      if (superLiked) {
+        setSuperLikeCount((prev) => (prev ?? 0) + 1);
+      }
 
       if (status === "approved" && spotifyConnected) {
         fetch("/api/spotify/sync-seeds", { method: "POST" }).catch(() => {});
@@ -505,6 +514,15 @@ function SwipePageContent() {
             </div>
           );
         })}
+
+        {/* Super-like count badge */}
+        {superLikeCount != null && superLikeCount > 0 && (
+          <a href="/studio" className="absolute top-3 left-3 z-30">
+            <div className="px-2.5 py-1 rounded-full bg-black/40 backdrop-blur-md text-xs text-white/60 font-medium">
+              ⭐ {superLikeCount}
+            </div>
+          </a>
+        )}
 
         {/* Remaining count badge */}
         <div className="absolute top-3 right-3 z-30 pointer-events-none">

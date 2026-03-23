@@ -307,9 +307,16 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         return;
       }
 
-      // currentTime hasn't changed — check if 3 seconds have elapsed
-      if (lastProgressCheckRef.current > 0 && now - lastProgressCheckRef.current >= 3000) {
-        // Stall detected
+      // currentTime hasn't changed — initialize check timer if first detection
+      if (lastProgressCheckRef.current === 0) {
+        lastProgressCheckRef.current = now;
+        return;
+      }
+
+      // Check if 3 seconds have elapsed since we first noticed stall
+      if (now - lastProgressCheckRef.current >= 3000) {
+        // Stall detected — reset check timer so next stall starts fresh
+        lastProgressCheckRef.current = 0;
         setBuffering(true);
         setConnectionQuality("stalled");
         lastStallAtRef.current = now;
@@ -321,16 +328,21 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, [source]);
 
   // Update connection quality based on time since last stall
+  // Only updates state when the quality actually changes to avoid unnecessary re-renders
   useEffect(() => {
     if (source !== "audio" || !playing) return;
 
     const interval = setInterval(() => {
       const since = Date.now() - lastStallAtRef.current;
+      let newQuality: typeof connectionQuality;
       if (lastStallAtRef.current === 0 || since >= 60000) {
-        setConnectionQuality("good");
+        newQuality = "good";
       } else if (since >= 5000) {
-        setConnectionQuality("recovering");
+        newQuality = "recovering";
+      } else {
+        return; // still stalled, no change needed
       }
+      setConnectionQuality((prev) => prev === newQuality ? prev : newQuality);
     }, 5000);
 
     return () => clearInterval(interval);
