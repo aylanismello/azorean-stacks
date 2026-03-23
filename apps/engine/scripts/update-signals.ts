@@ -554,12 +554,26 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string | 
       scoreComponents.co_occurrence = Math.round(coOccWeight * 1000) / 1000;
     }
 
+    // Discovery co-occurrence boost: tracks found in multiple seed episodes
+    // get a confidence boost (stored in metadata.co_occurrence by discover.ts)
+    const discoveryCoOcc = typeof meta.co_occurrence === "number" ? meta.co_occurrence : 0;
+    if (discoveryCoOcc > 1) {
+      // Normalize: log scale, capped at 0.15 for tracks in 4+ episodes
+      const coOccBoost = Math.min(0.15, Math.log2(discoveryCoOcc) * 0.08);
+      scoreComponents.discovery_co_occ = Math.round(coOccBoost * 1000) / 1000;
+    }
+
     // Composite score: weighted average of components
     let score = 0;
     if (components.length > 0) {
       const totalTypeWeight = components.reduce((s, c) => s + c.typeWeight, 0);
       score = components.reduce((s, c) => s + c.weight * c.typeWeight, 0) / totalTypeWeight;
       score = Math.round(score * 1000) / 1000;
+    }
+
+    // Apply discovery co-occurrence boost after weighted average
+    if (scoreComponents.discovery_co_occ) {
+      score += scoreComponents.discovery_co_occ;
     }
 
     // ── Match type boost ──────────────────────────────────────────────
