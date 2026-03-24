@@ -15,7 +15,6 @@ import {
   enrichTrack, enrichTrackFast, enrichTrackMetadata, downloadTrack,
   spotifyLookup,
   logEngineEvent,
-  GARBAGE_TITLES, GARBAGE_PATTERNS, isGarbageTrack,
 } from "../lib/pipeline";
 import { SOURCES } from "../lib/sources/index";
 import { runCuratorRadar } from "./radar-curator";
@@ -37,7 +36,7 @@ const CONCURRENCY = {
 const PRIORITY_DOWNLOAD_CONCURRENCY = 20; // Max concurrent downloads for priority pipeline
 const PRIORITY_ENRICH_CONCURRENCY = 3;    // Max concurrent enrichments (low to avoid Spotify 429s)
 
-// GARBAGE_TITLES, GARBAGE_PATTERNS, and isGarbageTrack imported from pipeline.ts
+const GARBAGE_TITLES = new Set(["unknown track", "untitled", "id", "?", "unknown", ""]);
 
 // ─── STATUS TRACKING ────────────────────────────────────────
 
@@ -248,12 +247,12 @@ async function processSeed(seedId: string) {
         const track = rawTracks[pos];
         if (isSameTrack(track, { artist: seed.artist, title: seed.title })) continue;
 
-        if (isGarbageTrack(track.artist, track.title)) continue;
+        const lTitle = track.title.toLowerCase().trim();
+        const lArtist = track.artist.toLowerCase().trim();
+        if (GARBAGE_TITLES.has(lTitle) || lTitle.length <= 1 || lArtist.length <= 1) continue;
 
-        const escArtist = track.artist.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
-        const escTitle = track.title.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
         const { data: existing } = await db.from("tracks")
-          .select("id").ilike("artist", escArtist).ilike("title", escTitle).limit(1);
+          .select("id").ilike("artist", track.artist.trim()).ilike("title", track.title.trim()).limit(1);
         if (existing && existing.length > 0) continue;
 
         const { data: inserted, error } = await db.from("tracks").insert({
@@ -384,26 +383,15 @@ async function processSeed(seedId: string) {
 const seedQueue: string[] = [];
 const trackQueue: string[] = [];
 
-const MAX_SEED_QUEUE = 500;
-const MAX_TRACK_QUEUE = 5000;
-
 function enqueueSeed(seedId: string) {
   if (!seedId) return;
   if (seedQueue.includes(seedId)) return;
-  if (seedQueue.length >= MAX_SEED_QUEUE) {
-    log("warn", `Seed queue at capacity (${MAX_SEED_QUEUE}) — dropping oldest entries`);
-    seedQueue.splice(0, Math.floor(MAX_SEED_QUEUE * 0.2));
-  }
   seedQueue.push(seedId);
 }
 
 function enqueueTrack(trackId: string) {
   if (!trackId) return;
   if (trackQueue.includes(trackId)) return;
-  if (trackQueue.length >= MAX_TRACK_QUEUE) {
-    log("warn", `Track queue at capacity (${MAX_TRACK_QUEUE}) — dropping oldest entries`);
-    trackQueue.splice(0, Math.floor(MAX_TRACK_QUEUE * 0.2));
-  }
   trackQueue.push(trackId);
 }
 
@@ -724,7 +712,6 @@ async function processSuperLike(trackId: string) {
       ),
     ]);
   } catch (err) {
-    try { dlProc.kill(); } catch {} // kill orphaned yt-dlp process
     log("fail", `Super Like: yt-dlp timed out for ${label}`);
     await logEngineEvent("error", "failed", {
       message: `Super Like: download timeout for ${label}`,
@@ -750,15 +737,10 @@ async function processSuperLike(trackId: string) {
 }
 
 const superLikeQueue: string[] = [];
-const MAX_SUPER_LIKE_QUEUE = 200;
 
 function enqueueSuperLike(trackId: string) {
   if (!trackId) return;
   if (superLikeQueue.includes(trackId)) return;
-  if (superLikeQueue.length >= MAX_SUPER_LIKE_QUEUE) {
-    log("warn", `Super-like queue at capacity (${MAX_SUPER_LIKE_QUEUE}) — dropping oldest entries`);
-    superLikeQueue.splice(0, Math.floor(MAX_SUPER_LIKE_QUEUE * 0.2));
-  }
   superLikeQueue.push(trackId);
 }
 
@@ -956,12 +938,12 @@ async function processPrioritySeed(seedId: string) {
     for (let pos = 0; pos < best.rawTracklist.length; pos++) {
       const track = best.rawTracklist[pos];
       if (isSameTrack(track, { artist: seed.artist, title: seed.title })) continue;
-      if (isGarbageTrack(track.artist, track.title)) continue;
+      const lTitle = track.title.toLowerCase().trim();
+      const lArtist = track.artist.toLowerCase().trim();
+      if (GARBAGE_TITLES.has(lTitle) || lTitle.length <= 1 || lArtist.length <= 1) continue;
 
-      const escArtist = track.artist.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
-      const escTitle = track.title.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
       const { data: existing } = await db.from("tracks")
-        .select("id").ilike("artist", escArtist).ilike("title", escTitle).limit(1);
+        .select("id").ilike("artist", track.artist.trim()).ilike("title", track.title.trim()).limit(1);
       if (existing && existing.length > 0) continue;
 
       const { data: inserted } = await db.from("tracks").insert({
@@ -1746,15 +1728,10 @@ async function processDownloadRequest(requestId: string) {
 }
 
 const downloadRequestQueue: string[] = [];
-const MAX_DL_REQUEST_QUEUE = 500;
 
 function enqueueDownloadRequest(requestId: string) {
   if (!requestId) return;
   if (downloadRequestQueue.includes(requestId)) return;
-  if (downloadRequestQueue.length >= MAX_DL_REQUEST_QUEUE) {
-    log("warn", `Download request queue at capacity (${MAX_DL_REQUEST_QUEUE}) — dropping oldest`);
-    downloadRequestQueue.splice(0, Math.floor(MAX_DL_REQUEST_QUEUE * 0.2));
-  }
   downloadRequestQueue.push(requestId);
 }
 

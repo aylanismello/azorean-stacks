@@ -70,9 +70,7 @@ export function stringSimilarity(a: string, b: string): number {
   const maxLen = Math.max(na.length, nb.length);
   if (na.includes(nb) || nb.includes(na)) {
     const minLen = Math.min(na.length, nb.length);
-    // Require substantial overlap (>8 chars) to avoid false positives on short
-    // generic words like "love", "stone", "dream" that appear in many titles
-    if (minLen > 8) return Math.round(Math.max(65, (minLen / maxLen) * 100));
+    if (minLen > 4) return Math.round(Math.max(60, (minLen / maxLen) * 100));
   }
   const m = na.length, n = nb.length;
   let prev = Array.from({ length: n + 1 }, (_, j) => j);
@@ -85,29 +83,6 @@ export function stringSimilarity(a: string, b: string): number {
     [prev, curr] = [curr, prev];
   }
   return Math.round(Math.max(0, (1 - prev[n] / maxLen) * 100));
-}
-
-// ─── GARBAGE FILTERS ────────────────────────────────────────
-
-/** Titles that indicate non-real tracks (tracklist noise, placeholders, etc.) */
-export const GARBAGE_TITLES = new Set([
-  "unknown track", "untitled", "id", "?", "unknown", "",
-  "track id", "unreleased", "n/a", "tba", "tbc", "forthcoming",
-  "clip", "drop", "dub plate", "dubplate", "white label",
-]);
-
-/** Patterns that indicate tracklist metadata rather than real tracks */
-export const GARBAGE_PATTERNS = /^(intro|outro|jingle|station id|station ident|interlude|unknown artist|various artists?|dj mix|continuous mix|mixed by .+|tracklist|setlist|playlist|listener call|phone call|shout ?out)$/i;
-
-/** Returns true if a track should be filtered out as garbage */
-export function isGarbageTrack(artist: string, title: string): boolean {
-  const lTitle = title.toLowerCase().trim();
-  const lArtist = artist.toLowerCase().trim();
-  if (GARBAGE_TITLES.has(lTitle)) return true;
-  if (GARBAGE_PATTERNS.test(lTitle) || GARBAGE_PATTERNS.test(lArtist)) return true;
-  if (lTitle.length <= 1 || lArtist.length <= 1) return true;
-  if (lArtist === lTitle) return true; // artist=title likely bad parse
-  return false;
 }
 
 // ─── TRACK HELPERS ──────────────────────────────────────────
@@ -450,7 +425,7 @@ export async function enrichTrack(track: any): Promise<boolean> {
   let ytSource: "youtube" | "soundcloud" = "youtube";
 
   // Run Spotify, YouTube, and MusicBrainz lookups in PARALLEL
-  // Spotify has a 15s timeout (lookup + genre fetch), MusicBrainz 10s — neither blocks YouTube
+  // Spotify has a 15s timeout, MusicBrainz 5s — neither blocks YouTube
   let mbResult: MusicBrainzResult | null = null;
   const [spotResult, ytResult, _mbResult] = await Promise.allSettled([
     // Spotify lookup (best-effort — rate limited, non-critical, 15s max)
@@ -474,7 +449,7 @@ export async function enrichTrack(track: any): Promise<boolean> {
           } else {
             updates.spotify_url = "";
           }
-        }), 15_000, `spotify:${label}`).catch((err) => {
+        }), 5_000, `spotify:${label}`).catch((err) => {
           log("fail", `Spotify error for ${label}: ${err instanceof Error ? err.message : err}`);
           updates.spotify_url = "";
         })
