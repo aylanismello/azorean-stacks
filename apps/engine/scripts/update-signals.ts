@@ -370,14 +370,13 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string | 
   }
 
   // ─── SCORE PENDING TRACKS ─────────────────────────────────
-  // Unified weights (rebalanced with co-occurrence + match_type):
+  // Unified weights (rebalanced with co-occurrence):
   //   artist: 0.20
   //   genre: 0.25
   //   seed_affinity: 0.20
   //   curator: 0.15
   //   episode_density: 0.10
   //   co_occurrence: 0.10
-  //   match_type: bonus +0.10 for full match, -0.05 for artist-only (applied post-score)
 
   console.log(`\n=== Scoring Pending Tracks ===`);
 
@@ -429,30 +428,6 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string | 
     if (w > 0) acc.approved++;
     else if (w < -0.5) acc.rejected++; // rejected (not skipped)
     episodeVoteStats.set(track.episode_id, acc);
-  }
-
-  // Build episode → best match_type lookup for match_type scoring boost
-  // "full" match = seed track was in the tracklist, "artist" = only the artist appeared
-  const episodeMatchType = new Map<string, string>();
-  {
-    let mtPage = 0;
-    while (true) {
-      const { data: mtBatch } = await db
-        .from("episode_seeds")
-        .select("episode_id, match_type")
-        .range(mtPage * 1000, (mtPage + 1) * 1000 - 1);
-      if (!mtBatch || mtBatch.length === 0) break;
-      for (const row of mtBatch as any[]) {
-        const existing = episodeMatchType.get(row.episode_id);
-        // "full" is stronger than "artist" or "unknown"
-        if (!existing || row.match_type === "full") {
-          episodeMatchType.set(row.episode_id, row.match_type || "unknown");
-        }
-      }
-      if (mtBatch.length < 1000) break;
-      mtPage++;
-    }
-    console.log(`Loaded match_type for ${episodeMatchType.size} episodes`);
   }
 
   // Build episode → curator lookup for pending tracks
@@ -554,41 +529,12 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string | 
       scoreComponents.co_occurrence = Math.round(coOccWeight * 1000) / 1000;
     }
 
-    // Discovery co-occurrence boost: tracks found in multiple seed episodes
-    // get a confidence boost (stored in metadata.co_occurrence by discover.ts)
-    const discoveryCoOcc = typeof meta.co_occurrence === "number" ? meta.co_occurrence : 0;
-    if (discoveryCoOcc > 1) {
-      // Normalize: log scale, capped at 0.15 for tracks in 4+ episodes
-      const coOccBoost = Math.min(0.15, Math.log2(discoveryCoOcc) * 0.08);
-      scoreComponents.discovery_co_occ = Math.round(coOccBoost * 1000) / 1000;
-    }
-
     // Composite score: weighted average of components
     let score = 0;
     if (components.length > 0) {
       const totalTypeWeight = components.reduce((s, c) => s + c.typeWeight, 0);
       score = components.reduce((s, c) => s + c.weight * c.typeWeight, 0) / totalTypeWeight;
       score = Math.round(score * 1000) / 1000;
-    }
-
-    // Apply discovery co-occurrence boost after weighted average
-    if (scoreComponents.discovery_co_occ) {
-      score += scoreComponents.discovery_co_occ;
-    }
-
-    // ── Match type boost ──────────────────────────────────────────────
-    // Tracks from "full" match episodes (seed song was actually in the tracklist)
-    // get a boost. "artist"-only matches get a small penalty since the connection
-    // is weaker — the DJ played the artist but not necessarily the seed song.
-    if (track.episode_id) {
-      const mt = episodeMatchType.get(track.episode_id);
-      if (mt === "full") {
-        score += 0.10;
-        scoreComponents.match_type = 0.10;
-      } else if (mt === "artist") {
-        score -= 0.05;
-        scoreComponents.match_type = -0.05;
-      }
     }
 
     // ── Negative penalties ──────────────────────────────────────────────

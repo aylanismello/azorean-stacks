@@ -112,6 +112,7 @@ while true; do
     fi
     log "Discover completed successfully (tracks_found=$tracks_found)"
   else
+    local err_line
     err_line=$(echo "$output" | tail -1 | sed 's/"/\\"/g')
     LAST_DISCOVER_RESULT="{\"tracks_found\":0,\"error\":\"$err_line\"}"
     log "Discover failed: $output"
@@ -131,6 +132,7 @@ while true; do
     fi
     log "Download completed successfully (tracks_downloaded=$tracks_downloaded)"
   else
+    local err_line
     err_line=$(echo "$output" | tail -1 | sed 's/"/\\"/g')
     LAST_DOWNLOAD_RESULT="{\"tracks_downloaded\":0,\"error\":\"$err_line\"}"
     log "Download failed: $output"
