@@ -735,6 +735,7 @@ async function processSuperLike(trackId: string) {
 
   if (exitCode !== 0) {
     log("fail", `Super Like: yt-dlp exited with ${exitCode} for ${label}`);
+    markSuperLikeFailed(trackId);
     await logEngineEvent("error", "failed", {
       message: `Super Like: yt-dlp failed (exit ${exitCode}) for ${label}`,
       metadata: { track_id: trackId },
@@ -751,15 +752,27 @@ async function processSuperLike(trackId: string) {
 
 const superLikeQueue: string[] = [];
 const MAX_SUPER_LIKE_QUEUE = 200;
+const superLikeFailures = new Map<string, number>(); // trackId → fail count
+const MAX_SUPER_LIKE_RETRIES = 3;
 
 function enqueueSuperLike(trackId: string) {
   if (!trackId) return;
   if (superLikeQueue.includes(trackId)) return;
+  const fails = superLikeFailures.get(trackId) || 0;
+  if (fails >= MAX_SUPER_LIKE_RETRIES) return; // stop retrying after 3 failures
   if (superLikeQueue.length >= MAX_SUPER_LIKE_QUEUE) {
     log("warn", `Super-like queue at capacity (${MAX_SUPER_LIKE_QUEUE}) — dropping oldest entries`);
     superLikeQueue.splice(0, Math.floor(MAX_SUPER_LIKE_QUEUE * 0.2));
   }
   superLikeQueue.push(trackId);
+}
+
+function markSuperLikeFailed(trackId: string) {
+  const count = (superLikeFailures.get(trackId) || 0) + 1;
+  superLikeFailures.set(trackId, count);
+  if (count >= MAX_SUPER_LIKE_RETRIES) {
+    log("warn", `Super Like: giving up on ${trackId} after ${count} failures`);
+  }
 }
 
 // ─── PRIORITY PIPELINE ──────────────────────────────────────
