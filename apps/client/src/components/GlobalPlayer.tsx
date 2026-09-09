@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
 import { openYouTube } from "@/lib/youtube";
@@ -46,20 +46,6 @@ export function GlobalPlayer() {
   const router = useRouter();
   const progressRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
-
-  // Global spacebar play/pause — works everywhere in the app
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== " ") return;
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (!currentTrack) return;
-      e.preventDefault();
-      togglePlayPause();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [currentTrack, togglePlayPause]);
 
   const pct = duration > 0 ? (progress / duration) * 100 : 0;
 

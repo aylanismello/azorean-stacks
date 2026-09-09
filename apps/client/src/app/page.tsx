@@ -7,6 +7,7 @@ import { TrackCard } from "@/components/TrackCard";
 import { EpisodeTracklist, TracklistSheet } from "@/components/EpisodeTracklist";
 import { useGlobalPlayer, PlayerTrack } from "@/components/GlobalPlayerProvider";
 import { useSpotify } from "@/components/SpotifyProvider";
+import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
 
 export default function StackPage() {
   return (
@@ -158,6 +159,7 @@ function StackPageContent() {
   const isSeedMode = stackSource === "seed";
   const isRankedMode = stackSource === "ranked";
   const isTasteMode = stackSource === "taste" || stackSource === "genre" || isSeedMode || isRankedMode || (!stackSource && !episodeId);
+  const isHomeFyp = !episodeId && !fromSeedId && !genreFilter && !seedFilter;
 
   // Page-level UI state (no track state — provider owns that)
   const [loading, setLoading] = useState(true);
@@ -165,9 +167,21 @@ function StackPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [hideLowScored, setHideLowScored] = useState(false);
 
+  const queueViewKey = episodeId
+    ? `episode:${episodeId}`
+    : fromSeedId
+      ? `seed:${fromSeedId}`
+      : genreFilter
+        ? `genre:${genreFilter}`
+        : seedFilter
+          ? `seed-artist:${seedFilter}`
+          : `fyp:${hideLowScored ? "hide-low" : "all"}`;
+  const activeQueueViewRef = useRef<string | null>(null);
+
   useEffect(() => {
     const stored = sessionStorage.getItem("stacks-hide-low-scored");
     if (stored === "1") setHideLowScored(true);
+    activeQueueViewRef.current = sessionStorage.getItem("stacks-active-queue-view");
   }, []);
   const [skippingEpisode, setSkippingEpisode] = useState(false);
   const [tracklistOpen, setTracklistOpen] = useState(false);
@@ -229,9 +243,11 @@ function StackPageContent() {
       setError(null);
       setAdvancingEpisode(false);
 
-      // Hand tracks to the provider — it owns the queue.
-      // Never interrupt active playback.
+      // Hand tracks to the provider — it owns the queue. Preserve order only
+      // when returning to the same view; never append a seed/genre queue into
+      // the FYP (or vice versa).
       const playingTrack = playerCurrentTrackRef.current;
+      const sameQueueView = activeQueueViewRef.current === queueViewKey;
 
       if (episodeId && playerTracks.length > 0) {
         const firstPlayablePending = playerTracks.findIndex((t) => t.status === "pending" && isPlayable(t));
@@ -252,28 +268,34 @@ function StackPageContent() {
         }
       } else if (playerTracks.length > 0) {
         const existingQueue = globalPlayer.queue;
-        if (existingQueue.length > 0) {
-          // Queue already populated — append only genuinely new tracks to preserve vote state
-          const existingIds = new Set(existingQueue.map(t => t.id));
-          const newTracks = playerTracks.filter(t => !existingIds.has(t.id));
-          if (newTracks.length > 0) {
-            globalPlayer.appendToQueue(newTracks);
-          }
+        if (sameQueueView && existingQueue.length > 0) {
+          // Ordinary navigation back to the same view must not mutate its
+          // active sequence. Low-queue replenishment happens after voting.
         } else {
-          // Initial load — set the full queue
-          globalPlayer.setQueue(playerTracks, 0);
-          const firstPlayable = playerTracks.findIndex(isPlayable);
-          if (firstPlayable >= 0) {
-            globalPlayer.loadTrack(playerTracks[firstPlayable]);
+          const playingIdx = playingTrack
+            ? playerTracks.findIndex((track) => track.id === playingTrack.id)
+            : -1;
+          if (playingTrack && playingIdx === -1) {
+            // Keep uninterrupted playback at the front, then use the requested
+            // view's stable queue for every subsequent track.
+            globalPlayer.setQueue([playingTrack, ...playerTracks], 0);
+          } else {
+            const startIndex = playingIdx >= 0 ? playingIdx : 0;
+            globalPlayer.setQueue(playerTracks, startIndex);
+            if (!playingTrack) globalPlayer.loadTrack(playerTracks[startIndex]);
           }
         }
+        setHasEpisodeTracks(false);
       }
+
+      activeQueueViewRef.current = queueViewKey;
+      sessionStorage.setItem("stacks-active-queue-view", queueViewKey);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tracks");
     } finally {
       setLoading(false);
     }
-  }, [buildUrl, episodeId]);
+  }, [buildUrl, episodeId, queueViewKey]);
 
   useEffect(() => {
     fetchTracks();
@@ -325,6 +347,28 @@ function StackPageContent() {
     } catch (err) {
       console.error("Super like error:", err);
       setError("Failed to super like. Please try again.");
+    }
+  };
+
+  const handleReseed = async (track: PlayerTrack) => {
+    if (track.seed_id || track.is_re_seed) return;
+    try {
+      const res = await fetch("/api/seeds/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          track_id: track.id,
+          artist: track.artist,
+          title: track.title,
+          action: "ensure",
+        }),
+      });
+      if (!res.ok) throw new Error(`Re-seed failed (${res.status})`);
+      const data = await res.json();
+      globalPlayer.markTrackSeeded(track.id, data.seed_id);
+    } catch (err) {
+      console.error("Re-seed error:", err);
+      setError("Failed to re-seed. Please try again.");
     }
   };
 
@@ -580,7 +624,8 @@ function StackPageContent() {
     }
   }, [globalPlayer.progress, globalPlayer.duration, globalPlayer.currentTrack?.id, globalPlayer.currentIndex, globalPlayer.queue, hasEpisodeTracks]);
 
-  // Keyboard shortcuts
+  // FYP keyboard shortcuts. Space is handled once by GlobalPlayerProvider so a
+  // focused play button keeps its native space-to-click behavior.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -592,23 +637,49 @@ function StackPageContent() {
         return;
       }
       if (!currentTrack) return;
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === " ") {
-        e.preventDefault();
-        globalPlayer.togglePlayPause();
-      } else if (e.key === "ArrowLeft" || e.key === "j") {
-        handleVote(currentTrack.id, "rejected");
-      } else if (e.key === "ArrowRight" || e.key === "k") {
-        handleVote(currentTrack.id, "approved");
-      } else if (e.key === "l" || e.key === "t") {
-        setTracklistOpen((prev) => !prev);
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
+
+      const action = getFypKeyboardAction(e);
+      if (!action) return;
+      e.preventDefault();
+
+      switch (action) {
+        case "seek-backward":
+          globalPlayer.seek(globalPlayer.progress - 30);
+          break;
+        case "seek-forward":
+          globalPlayer.seek(globalPlayer.progress + 30);
+          break;
+        case "next-track":
+          globalPlayer.next();
+          break;
+        case "previous-track":
+          globalPlayer.prev();
+          break;
+        case "reject":
+          void handleVote(currentTrack.id, "rejected");
+          break;
+        case "like":
+          void handleVote(currentTrack.id, "approved");
+          break;
+        case "star":
+          void handleSuperLike(currentTrack.id);
+          break;
+        case "skip":
+          void handleVote(currentTrack.id, "skipped");
+          break;
+        case "reseed":
+          void handleReseed(currentTrack);
+          break;
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+    // Handler intentionally refreshes with the active track/player state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracklistOpen, contextOpen, globalPlayer, currentTrack?.id]);
+  }, [tracklistOpen, contextOpen, currentTrack, globalPlayer.progress]);
 
   // ── Advancing to next episode ──
   if (advancingEpisode) {
@@ -755,26 +826,27 @@ function StackPageContent() {
     <div className={`px-4 pt-2 pb-0 ${mobileHeightClass} flex flex-col overflow-hidden ${desktopPlayerFrameClass}`}>
       {/* Top bar — stack identity always visible */}
       <div className="relative flex items-center justify-between mb-3 md:mb-2 md:max-w-6xl md:mx-auto md:w-full md:flex-shrink-0 min-h-[40px]">
-        {/* Left: back to stacks */}
-        <button
-          onClick={handleGoBack}
-          className="flex items-center gap-1.5 text-muted hover:text-foreground transition-colors flex-shrink-0 z-10"
-          title={fromEpisodes ? "Back to episodes" : "All stacks"}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-          <span className="text-xs hidden md:inline">
-            {fromEpisodes ? "Episodes" : "Stacks"}
-          </span>
-        </button>
+        {/* Left: filtered views can return to their collection. Home is the FYP. */}
+        {isHomeFyp ? (
+          <div className="w-8 flex-shrink-0" aria-hidden="true" />
+        ) : (
+          <button
+            onClick={handleGoBack}
+            className="flex items-center gap-1.5 text-muted hover:text-foreground transition-colors flex-shrink-0 z-10"
+            title={fromEpisodes ? "Back to episodes" : "All stacks"}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+            <span className="text-xs hidden md:inline">
+              {fromEpisodes ? "Episodes" : "Stacks"}
+            </span>
+          </button>
+        )}
 
-        {/* Center: stack name — absolutely centered, always prominent */}
-        <button
-          onClick={handleGoBack}
-          className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
-        >
-          <span className="text-sm font-semibold text-foreground truncate max-w-[200px] md:max-w-[400px] pointer-events-auto">
+        {/* Center: identity only; navigation lives in the app nav. */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <span className="text-sm font-semibold text-foreground truncate max-w-[200px] md:max-w-[400px]">
             {hasEpisodeTracks && currentEpisodeTitle
               ? currentEpisodeTitle
               : seedName
@@ -783,14 +855,12 @@ function StackPageContent() {
                   ? genreFilter
                   : "For You"}
           </span>
-          <span className="text-[10px] font-mono text-muted/60 pointer-events-auto">
+          <span className="text-[10px] font-mono text-muted/60">
             {hasEpisodeTracks
               ? `${currentDisplayIndex + 1} / ${total}`
-              : isRankedMode
-                ? `ranked queue — ${total} tracks`
-                : `${total} pending`}
+              : `${globalPlayer.queue.length} track${globalPlayer.queue.length === 1 ? "" : "s"} in queue`}
           </span>
-        </button>
+        </div>
 
         {/* Right: tracklist button (mobile only — desktop always shows sidebar) */}
         <button
@@ -860,9 +930,16 @@ function StackPageContent() {
       />
 
       {/* Keyboard hint (desktop only) */}
-      <div className="hidden md:flex justify-center gap-6 py-3 text-xs text-muted md:flex-shrink-0">
-        <span>&larr; / j skip</span>
-        <span>&rarr; / k keep</span>
+      <div className="hidden md:flex flex-wrap justify-center gap-x-5 gap-y-1 py-3 text-xs text-muted md:flex-shrink-0">
+        <span>→ −30s</span>
+        <span>← +30s</span>
+        <span>⇧→ next</span>
+        <span>⇧← previous</span>
+        <span>x reject</span>
+        <span>l like</span>
+        <span>s star</span>
+        <span>n no opinion</span>
+        <span>r re-seed</span>
         <span>space play/pause</span>
         <span>esc close</span>
       </div>

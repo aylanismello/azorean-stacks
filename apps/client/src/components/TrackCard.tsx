@@ -112,11 +112,11 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
       const res = await fetch("/api/seeds/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: track.id, artist: track.artist, title: track.title }),
+        body: JSON.stringify({ track_id: track.id, artist: track.artist, title: track.title, action: "ensure" }),
       });
       if (!res.ok) return;
       const data = await res.json();
-      if (data.action === "created") setSeeded(true);
+      if (data.action === "created" || data.action === "existing") setSeeded(true);
     } catch {
       // silently fail
     } finally {

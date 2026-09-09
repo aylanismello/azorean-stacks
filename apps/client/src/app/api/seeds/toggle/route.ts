@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 // POST /api/seeds/toggle — create or remove a re-seed for a track
 export async function POST(req: NextRequest) {
   const db = getServiceClient();
-  const { track_id, artist, title } = await req.json();
+  const { track_id, artist, title, action } = await req.json();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -64,6 +64,9 @@ export async function POST(req: NextRequest) {
   }
 
   if (existingSeed) {
+    if (action === "ensure") {
+      return NextResponse.json({ action: "existing", seed_id: existingSeed.id });
+    }
     // Remove it
     await db.from("seeds").delete().eq("id", existingSeed.id);
     // Clear re-seed flag on the matching track

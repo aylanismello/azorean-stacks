@@ -296,12 +296,7 @@ export async function GET(req: NextRequest) {
 
   const diversified = diversifyTracks(rows);
 
-  // Retain the response contract used by the existing FYP consumers.
-  const { count } = await db
-    .from("tracks")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "pending")
-    .not("storage_path", "is", null);
-
-  return NextResponse.json({ tracks: diversified, total: count ?? rows.length });
+  // `total` describes the actual personalized page queue. The previous global
+  // count included other users' already-actioned rows and was not an FYP count.
+  return NextResponse.json({ tracks: diversified, total: diversified.length });
 }

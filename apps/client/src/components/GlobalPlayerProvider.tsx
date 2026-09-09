@@ -123,6 +123,8 @@ interface GlobalPlayerContextType {
   prev: () => boolean;
   /** Update a track's vote status in the queue (no array rebuild, no index change) */
   updateTrackVote: (trackId: string, status: string, superLiked?: boolean) => void;
+  /** Mark a discovered track as a user re-seed without interrupting playback */
+  markTrackSeeded: (trackId: string, seedId?: string | null) => void;
   /** Append new tracks to the end of the queue (for batch loading) */
   appendToQueue: (tracks: PlayerTrack[]) => void;
   /** Replace a track's audio URL in queue + reload Audio element if currently active (does NOT auto-play) */
@@ -158,6 +160,7 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   next: () => false,
   prev: () => false,
   updateTrackVote: () => {},
+  markTrackSeeded: () => {},
   appendToQueue: () => {},
   replaceAudioUrl: () => {},
 });
@@ -593,6 +596,20 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     }
   }, []);
 
+  const markTrackSeeded = useCallback((trackId: string, seedId?: string | null) => {
+    const updater = (list: PlayerTrack[]) =>
+      list.map((track) => track.id === trackId
+        ? { ...track, seed_id: seedId || track.seed_id || track.id, is_re_seed: true }
+        : track);
+    queueRef.current = updater(queueRef.current);
+    setQueueState(updater);
+    if (currentTrackRef.current?.id === trackId) {
+      setCurrentTrack((track) => track
+        ? { ...track, seed_id: seedId || track.seed_id || track.id, is_re_seed: true }
+        : track);
+    }
+  }, []);
+
   const appendToQueue = useCallback((tracks: PlayerTrack[]) => {
     const existingIds = new Set(queueRef.current.map((t) => t.id));
     const fresh = tracks.filter((t) => !existingIds.has(t.id));
@@ -951,6 +968,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         next,
         prev,
         updateTrackVote,
+        markTrackSeeded,
         appendToQueue,
         replaceAudioUrl,
       }}
