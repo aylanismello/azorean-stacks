@@ -15,14 +15,15 @@ const links = [
   { href: "/episodes", label: "Episodes", icon: "▶" },
   { href: "/curators", label: "Curators", icon: "♫" },
   { href: "/stats", label: "Stats", icon: "▤" },
+  { href: "/segundo-sol", label: "☀☀", icon: "☀☀" },
 ];
 
-// Fewer tabs on mobile — Playing first, Episodes + Stats in More sheet
+// Fewer tabs on mobile — Segundo Sol stays visible; Seeds, Episodes + Stats live in More
 const mobileLinks = [
   { href: "/", label: "Playing", icon: "▶" },
   { href: "/stacks", label: "Stacks", icon: "◉" },
   { href: "/tracks", label: "Tracks", icon: "✓" },
-  { href: "/seeds", label: "Seeds", icon: "◎" },
+  { href: "/segundo-sol", label: "Sol", icon: "☀☀" },
 ];
 
 function ThemeToggle() {
@@ -287,6 +288,14 @@ function MobileAccountButton() {
 
             <div className="px-4 pb-6 space-y-2">
               {/* Extra pages — only in mobile More sheet */}
+              <Link
+                href="/seeds"
+                onClick={() => setOpen(false)}
+                className="w-full flex items-center gap-3 px-4 py-3 bg-surface-2 rounded-xl text-sm text-foreground/80 hover:bg-surface-3 transition-colors"
+              >
+                <span className="text-base">◎</span>
+                Seeds
+              </Link>
               <Link
                 href="/episodes"
                 onClick={() => setOpen(false)}
