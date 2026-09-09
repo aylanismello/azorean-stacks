@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-09 22:00'
-updated_date: '2026-09-09 22:01'
+updated_date: '2026-09-09 22:11'
 labels:
   - frontend
   - bug
@@ -44,7 +44,8 @@ Correct misleading For You queue UI, preserve the active FYP sequence across Sta
 - Removed the redundant home back button and made the centered title non-navigational.
 - Preserved the exact FYP queue across Stacks navigation while keeping low-queue replenishment vote-driven.
 - Added centralized shortcut mapping, idempotent re-seeding, and matching legend copy.
-- Verified typecheck, tests, production build, focused spacebar behavior, seeks, track navigation, and stable Stacks → For You return.
+- Corrected seek directions after live-use feedback: left rewinds 30 seconds and right advances 30 seconds.
+- Verified typecheck, focused keyboard tests, production build, focused spacebar behavior, seeks, track navigation, and stable Stacks → For You return.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
@@ -52,7 +53,7 @@ Correct misleading For You queue UI, preserve the active FYP sequence across Sta
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Fixed the For You experience so the header reports the actual personalized queue instead of a global legacy pending count, home no longer shows a redundant Stacks back button, and navigating through Stacks does not reshuffle or grow the active FYP.
 
-Added the requested keyboard controls through a tested centralized key map: space play/pause, intentionally reversed arrow seeks, shifted-arrow track navigation, x/l/s/n voting actions, and idempotent r re-seeding. Updated the on-page legend to match.
+Added the requested keyboard controls through a tested centralized key map: space play/pause, conventional left/right 30-second seeking, shifted-arrow track navigation, x/l/s/n voting actions, and idempotent r re-seeding. Updated the on-page legend to match.
 
 Validation: client TypeScript, focused Bun tests, production build, and authenticated Playwright interaction/navigation checks.
 <!-- SECTION:FINAL_SUMMARY:END -->

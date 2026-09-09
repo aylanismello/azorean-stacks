@@ -931,8 +931,8 @@ function StackPageContent() {
 
       {/* Keyboard hint (desktop only) */}
       <div className="hidden md:flex flex-wrap justify-center gap-x-5 gap-y-1 py-3 text-xs text-muted md:flex-shrink-0">
-        <span>→ −30s</span>
-        <span>← +30s</span>
+        <span>← −30s</span>
+        <span>→ +30s</span>
         <span>⇧→ next</span>
         <span>⇧← previous</span>
         <span>x reject</span>

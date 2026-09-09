@@ -12,8 +12,8 @@ const key = (value: string, shiftKey = false) => ({
 
 describe("FYP keyboard shortcuts", () => {
   test("maps arrows and shifted arrows exactly", () => {
-    expect(getFypKeyboardAction(key("ArrowRight"))).toBe("seek-backward");
-    expect(getFypKeyboardAction(key("ArrowLeft"))).toBe("seek-forward");
+    expect(getFypKeyboardAction(key("ArrowRight"))).toBe("seek-forward");
+    expect(getFypKeyboardAction(key("ArrowLeft"))).toBe("seek-backward");
     expect(getFypKeyboardAction(key("ArrowRight", true))).toBe("next-track");
     expect(getFypKeyboardAction(key("ArrowLeft", true))).toBe("previous-track");
   });

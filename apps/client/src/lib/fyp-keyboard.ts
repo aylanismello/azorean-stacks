@@ -21,9 +21,8 @@ export function getFypKeyboardAction(event: ShortcutEvent): FypKeyboardAction | 
   if (event.shiftKey && event.key === "ArrowLeft") return "previous-track";
   if (event.shiftKey) return null;
 
-  // This direction is intentional and follows the FYP control contract.
-  if (event.key === "ArrowRight") return "seek-backward";
-  if (event.key === "ArrowLeft") return "seek-forward";
+  if (event.key === "ArrowRight") return "seek-forward";
+  if (event.key === "ArrowLeft") return "seek-backward";
 
   switch (event.key.toLowerCase()) {
     case "x": return "reject";
