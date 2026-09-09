@@ -83,7 +83,8 @@ async function main() {
     .order("voted_at", { ascending: false })
     .limit(100);
 
-  if (actionsErr || !actions || actions.length === 0) {
+  if (actionsErr) throw actionsErr;
+  if (!actions || actions.length === 0) {
     console.log("No actions found. Exiting.");
     return;
   }
@@ -93,60 +94,88 @@ async function main() {
   const trackIds = actions.map((a: any) => a.track_id);
 
   // 2. Fetch track signals: episode match type, artist approval, seed info
-  const { data: tracksData } = await db
+  const { data: tracksData, error: tracksError } = await db
     .from("tracks")
     .select("id, artist, episode_id, seed_track_id, created_at, metadata")
     .in("id", trackIds);
+  if (tracksError) throw tracksError;
 
   const trackMap = new Map((tracksData || []).map((t: any) => [t.id, t]));
 
-  // 3. Fetch episode → match_type for these tracks
-  const episodeIds = [...new Set((tracksData || []).map((t: any) => t.episode_id).filter(Boolean))];
-  let episodeMatchMap = new Map<string, string>(); // episode_id → match_type
-  if (episodeIds.length > 0) {
-    const { data: episodeSeeds } = await db
-      .from("episode_seeds")
-      .select("episode_id, match_type")
-      .in("episode_id", episodeIds);
-    for (const es of (episodeSeeds || []) as any[]) {
-      // Prefer 'full' match type if multiple seeds
-      if (!episodeMatchMap.has(es.episode_id) || es.match_type === "full") {
-        episodeMatchMap.set(es.episode_id, es.match_type || "artist");
-      }
-    }
-  }
-
-  // 4. Fetch which artists have been approved (familiarity signal)
-  const { data: approvedArtistsData } = await db
-    .from("tracks")
-    .select("artist")
-    .eq("status", "approved")
-    .limit(2000);
-  const approvedArtistsSet = new Set(
-    (approvedArtistsData || []).map((t: any) => (t.artist || "").toLowerCase())
-  );
-
-  // 5. Fetch all seed artists for familiarity check
-  const { data: seedsData } = await db
+  // 3. Fetch only this user's active seeds. Episode lineage and match types
+  // must never admit another account's seeds.
+  const { data: seedsData, error: seedsError } = await db
     .from("seeds")
-    .select("artist")
-    .eq("active", true);
+    .select("id, track_id, artist")
+    .eq("active", true)
+    .eq("user_id", userId);
+  if (seedsError) throw seedsError;
   const seedArtistsSet = new Set(
     (seedsData || []).map((s: any) => (s.artist || "").toLowerCase())
   );
 
-  // 6. Episode approval stats (source quality signal)
-  const { data: votedByEp } = await db
-    .from("tracks")
-    .select("episode_id, status")
-    .in("episode_id", episodeIds)
-    .in("status", ["approved", "rejected"]);
+  const episodeIds = [...new Set((tracksData || []).map((t: any) => t.episode_id).filter(Boolean))];
+  const episodeIdSet = new Set(episodeIds);
+  const seedIds = (seedsData || []).map((seed: any) => seed.id);
+  const [{ data: trackEpisodeLinks, error: trackEpisodeError }, { data: episodeSeedLinks, error: episodeSeedError }] =
+    await Promise.all([
+      trackIds.length > 0
+        ? db.from("episode_tracks").select("track_id, episode_id").in("track_id", trackIds)
+        : Promise.resolve({ data: [], error: null }),
+      seedIds.length > 0
+        ? db.from("episode_seeds").select("episode_id, seed_id, match_type").in("seed_id", seedIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+  if (trackEpisodeError) throw trackEpisodeError;
+  if (episodeSeedError) throw episodeSeedError;
+  const lineageByTrack = buildTrackSeedLineage(
+    tracksData || [],
+    trackEpisodeLinks || [],
+    episodeSeedLinks || [],
+    seedsData || []
+  );
+
+  // 4. Load this user's complete decision history. Approved artists and episode
+  // outcomes come from user_tracks, never the shared tracks.status column.
+  const userVotes: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db
+      .from("user_tracks")
+      .select("track_id, status")
+      .eq("user_id", userId)
+      .in("status", ["approved", "rejected"])
+      .range(from, from + 999);
+    if (error) throw error;
+    userVotes.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  const votedTrackData: any[] = [];
+  const votedTrackIds = userVotes.map((vote) => vote.track_id);
+  for (let i = 0; i < votedTrackIds.length; i += 300) {
+    const { data, error } = await db
+      .from("tracks")
+      .select("id, artist, episode_id")
+      .in("id", votedTrackIds.slice(i, i + 300));
+    if (error) throw error;
+    votedTrackData.push(...(data || []));
+  }
+  const votedTrackMap = new Map(votedTrackData.map((track) => [track.id, track]));
+  const approvedArtistsSet = new Set(
+    userVotes
+      .filter((vote) => vote.status === "approved")
+      .map((vote) => (votedTrackMap.get(vote.track_id)?.artist || "").toLowerCase())
+      .filter(Boolean)
+  );
+
+  // 5. Episode approval stats (source quality signal), scoped to this user.
   const epStats = new Map<string, { approved: number; rejected: number }>();
-  for (const t of (votedByEp || []) as any[]) {
-    const s = epStats.get(t.episode_id) || { approved: 0, rejected: 0 };
-    if (t.status === "approved") s.approved++;
+  for (const vote of userVotes) {
+    const episodeId = votedTrackMap.get(vote.track_id)?.episode_id;
+    if (!episodeId || !episodeIdSet.has(episodeId)) continue;
+    const s = epStats.get(episodeId) || { approved: 0, rejected: 0 };
+    if (vote.status === "approved") s.approved++;
     else s.rejected++;
-    epStats.set(t.episode_id, s);
+    epStats.set(episodeId, s);
   }
 
   // 7. Compute per-signal correlations
@@ -182,7 +211,12 @@ async function main() {
 
     const artistLower = (track.artist || "").toLowerCase();
     const epId = track.episode_id as string | null;
-    const matchType = epId ? (episodeMatchMap.get(epId) || "unknown") : "unknown";
+    const matchTypes = Array.from(lineageByTrack.get(action.track_id)?.values() || []);
+    const matchType = matchTypes.includes("full")
+      ? "full"
+      : matchTypes.includes("artist")
+      ? "artist"
+      : "unknown";
 
     // Compute signal strengths (0–1 normalized) for this track
     const signals = {
@@ -246,13 +280,14 @@ async function main() {
   }
 
   // 8. Compute current weights (read last row or use defaults)
-  const { data: lastWeights } = await db
+  const { data: lastWeights, error: lastWeightsError } = await db
     .from("taste_weights")
     .select("*")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
+  if (lastWeightsError) throw lastWeightsError;
 
   const currentWeights: typeof BASE_WEIGHTS = lastWeights
     ? {

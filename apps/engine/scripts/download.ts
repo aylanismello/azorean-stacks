@@ -16,8 +16,11 @@
 import { parseArgs } from "util";
 import { getSupabase } from "../lib/supabase";
 import {
+  claimPreparationTracks,
+  evictRetiredQueueAudio,
   materializeAllQueues,
   markPreparationState,
+  releasePreparationTracks,
   selectPreparationBatch,
   type PreparationTrack,
 } from "../lib/predictive-queue";
@@ -200,6 +203,10 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 async function runOnce(): Promise<{ downloaded: number; failed: number; empty: boolean }> {
   const materialized = await materializeAllQueues(db);
   console.log(`  Materialized ${materialized.tracks} ranked entries for ${materialized.users} user(s)`);
+  const eviction = await evictRetiredQueueAudio(db);
+  if (eviction.clearedPaths) {
+    console.log(`  Evicted ${eviction.removedPaths}/${eviction.clearedPaths} retired audio path(s)${eviction.leakedPaths ? `; ${eviction.leakedPaths} storage object(s) leaked safely` : ""}`);
+  }
   const tracks = await selectPreparationBatch(db, batchLimit, force);
 
   if (!tracks.length) {
@@ -215,13 +222,29 @@ async function runOnce(): Promise<{ downloaded: number; failed: number; empty: b
   for (let i = 0; i < tracks.length; i += DL_CONCURRENCY) {
     if (shuttingDown) break;
     const batch = tracks.slice(i, i + DL_CONCURRENCY);
+    const ownerToken = crypto.randomUUID();
+    const claimed = await claimPreparationTracks(batch, ownerToken, db);
+    if (claimed.length < batch.length) {
+      console.log(`  Skipped ${batch.length - claimed.length} track(s) leased by another downloader`);
+    }
     const results = await Promise.allSettled(
-      batch.map(async (t) => {
-        await markPreparationState(t, "preparing", null, db);
-        const ok = await downloadOne(t);
-        const attempt = (t.dl_attempts || 0) + (ok ? 0 : 1);
-        console.log(`  ${ok ? "\u2713" : "\u2717"} ${t.artist} - ${t.title}${ok ? "" : ` (${attempt}/${MAX_ATTEMPTS})`}`);
-        return ok;
+      claimed.map(async (t) => {
+        try {
+          await markPreparationState(t, "preparing", null, db);
+          const ok = await downloadOne(t);
+          const attempt = (t.dl_attempts || 0) + (ok ? 0 : 1);
+          console.log(`  ${ok ? "\u2713" : "\u2717"} ${t.artist} - ${t.title}${ok ? "" : ` (${attempt}/${MAX_ATTEMPTS})`}`);
+          return ok;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await markPreparationState(t, "failed", message, db).catch(() => {});
+          console.error(`  \u2717 ${t.artist} - ${t.title}: ${message}`);
+          return false;
+        } finally {
+          await releasePreparationTracks([t], ownerToken, db).catch((error) => {
+            console.error(`  Claim release failed for ${t.id}; lease will expire: ${error instanceof Error ? error.message : error}`);
+          });
+        }
       }),
     );
     for (const r of results) {

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pico'
 created_date: '2026-09-08 23:22'
-updated_date: '2026-09-09 20:48'
+updated_date: '2026-09-09 20:53'
 labels: []
 dependencies: []
 documentation:
@@ -48,4 +48,6 @@ type: feature
 - Migration 020 applied to production. Taste refresh upserted 260 signals and scored 12,397 pending tracks with zero errors.
 - Client production build, client/engine TypeScript checks, and 3 focused link/diversification tests pass.
 - GitHub main push requested explicitly. Local engine LaunchAgent path is repaired but runtime activation remains separate because protected environment setup was not authorized by the terminal safety gate.
+
+- Late post-push release review found blockers in FYP/queue alignment, atomic download claiming, warm-window accounting, cache eviction, taste refresh atomicity, cleanup protection drift, and user-scoped lineage. Treat c637fd9 as provisional; hotfix work started before activating the engine runtime.
 <!-- SECTION:NOTES:END -->

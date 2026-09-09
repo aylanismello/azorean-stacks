@@ -34,6 +34,8 @@ const { values } = parseArgs({
 const db = getSupabase();
 const BUCKET = "tracks";
 const PAGE_SIZE = 1000;
+const EXECUTION_BATCH_SIZE = 200;
+const MAX_RETRIES = 5;
 const recentDays = Number(values["recent-days"] || 14);
 const fypLimit = Number(values["fyp-limit"] || 50);
 
@@ -86,10 +88,42 @@ function requireOk(result: any, label: string): any[] {
   return Array.isArray(result.data) ? result.data : [];
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error && "message" in error) return String(error.message);
+  return String(error);
+}
+
+function isRetryable(error: unknown): boolean {
+  const message = errorMessage(error);
+  const status = typeof error === "object" && error && "status" in error ? Number(error.status) : 0;
+  return status === 408 || status === 429 || status >= 500
+    || /fetch|network|timeout|timed out|connection|ECONN|socket|502|503|504|rate limit|still exists/i.test(message);
+}
+
+async function withRetry<T>(label: string, operation: () => PromiseLike<T>, attempts = MAX_RETRIES): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const result = await operation() as T & { error?: unknown };
+      if (!result?.error) return result;
+      lastError = result.error;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt === attempts || !isRetryable(lastError)) {
+      throw new Error(`${label}: ${errorMessage(lastError)}`);
+    }
+    await Bun.sleep(250 * 2 ** (attempt - 1));
+  }
+  throw new Error(`${label}: exhausted retries`);
+}
+
 async function fetchAll(table: string, select: string): Promise<any[]> {
   const rows: any[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
-    const result = await db.from(table).select(select).range(from, from + PAGE_SIZE - 1);
+    const result = await withRetry(`${table} page ${from / PAGE_SIZE + 1}`, () =>
+      db.from(table).select(select).range(from, from + PAGE_SIZE - 1));
     const page = requireOk(result, `${table} page ${from / PAGE_SIZE + 1}`);
     rows.push(...page);
     if (page.length < PAGE_SIZE) return rows;
@@ -168,7 +202,7 @@ async function buildManifest(): Promise<Manifest> {
     ...seeds.map((row) => row.user_id),
   ].filter(Boolean))).sort();
   for (const userId of userIds) {
-    const result = await db.rpc("get_fyp_tracks", {
+    const result = await withRetry(`FYP protection for ${userId}`, () => db.rpc("get_fyp_tracks", {
       p_user_id: userId,
       p_limit: fypLimit,
       p_offset: 0,
@@ -176,7 +210,7 @@ async function buildManifest(): Promise<Manifest> {
       p_genre: null,
       p_seed_artist: null,
       p_hide_low: false,
-    });
+    }));
     if (result.error) throw new Error(`FYP protection for ${userId}: ${result.error.message}`);
     for (const row of result.data || []) protect(row.id, `fyp:${userId}`);
   }
@@ -184,9 +218,14 @@ async function buildManifest(): Promise<Manifest> {
   // If migration 020 is already applied, include the materialized queue. A
   // missing table is expected during the first rollout and is not ignored for
   // any other reason.
-  const queueResult = await db.from("audio_preparation_queue")
-    .select("track_id,state,expires_at")
-    .in("state", ["ranked", "preparing", "ready"]);
+  let queueResult: any;
+  try {
+    queueResult = await withRetry("audio_preparation_queue protection", () => db.from("audio_preparation_queue")
+      .select("track_id,state,expires_at")
+      .in("state", ["ranked", "preparing", "ready"]));
+  } catch (error) {
+    queueResult = { data: null, error: { message: errorMessage(error) } };
+  }
   if (!queueResult.error) {
     const now = Date.now();
     for (const row of queueResult.data || []) {
@@ -243,10 +282,173 @@ async function buildManifest(): Promise<Manifest> {
 async function verifyDeletionRows(trackIds: string[]): Promise<void> {
   for (let i = 0; i < trackIds.length; i += 200) {
     const ids = trackIds.slice(i, i + 200);
-    const result = await db.from("tracks").select("id,storage_path").in("id", ids).not("storage_path", "is", null);
+    const result = await withRetry("database deletion verification", () => db.from("tracks")
+      .select("id,storage_path").in("id", ids).not("storage_path", "is", null));
     const remaining = requireOk(result, "database deletion verification");
     if (remaining.length) throw new Error(`Verification failed: ${remaining.length} track rows still reference deleted audio`);
   }
+}
+
+type PathTrackRow = Pick<TrackRow,
+  "id" | "status" | "source" | "is_seed" | "is_re_seed" | "is_artist_seed" | "metadata"
+> & { storage_path: string | null };
+
+async function currentProtectionReasons(tracks: PathTrackRow[]): Promise<Map<string, Set<string>>> {
+  const reasons = new Map<string, Set<string>>();
+  const protect = (trackId: string | null | undefined, reason: string) => {
+    if (!trackId) return;
+    const trackReasons = reasons.get(trackId) || new Set<string>();
+    trackReasons.add(reason);
+    reasons.set(trackId, trackReasons);
+  };
+
+  for (const track of tracks) {
+    if (track.status === "approved") protect(track.id, "legacy:approved");
+    if (track.is_seed) protect(track.id, "track:is_seed");
+    if (track.is_re_seed) protect(track.id, "track:is_re_seed");
+    if (track.is_artist_seed) protect(track.id, "track:is_artist_seed");
+    if (["seed", "manual", "picodrops", "pico_drops"].includes((track.source || "").toLowerCase())) {
+      protect(track.id, `source:${track.source}`);
+    }
+    for (const reason of metadataProtection(track.metadata)) protect(track.id, reason);
+  }
+
+  const trackIds = tracks.map((track) => track.id);
+  const now = new Date().toISOString();
+  for (let i = 0; i < trackIds.length; i += EXECUTION_BATCH_SIZE) {
+    const ids = trackIds.slice(i, i + EXECUTION_BATCH_SIZE);
+    const [opinionsResult, seedsResult, queueResult, requestsResult] = await Promise.all([
+      withRetry("current user retention check", () => db.from("user_tracks")
+        .select("track_id,status,super_liked,permanent,local_download_intent").in("track_id", ids)),
+      withRetry("current seed check", () => db.from("seeds")
+        .select("track_id,source").in("track_id", ids).eq("active", true)),
+      withRetry("current warm queue check", () => db.from("audio_preparation_queue")
+        .select("track_id,state,expires_at").in("track_id", ids)
+        .in("state", ["ranked", "preparing", "ready"]).gt("expires_at", now)),
+      withRetry("current download request check", () => db.from("download_requests")
+        .select("track_id,status").in("track_id", ids).in("status", ["pending", "downloading"])),
+    ]);
+
+    for (const row of requireOk(opinionsResult, "current user retention check")) {
+      if (row.status === "approved") protect(row.track_id, "user:approved");
+      if (row.super_liked) protect(row.track_id, "user:super_liked");
+      if (row.permanent) protect(row.track_id, "user:permanent");
+      if (row.local_download_intent) protect(row.track_id, "user:local_download_intent");
+    }
+    for (const row of requireOk(seedsResult, "current seed check")) {
+      protect(row.track_id, row.source === "re-seed" ? "seed:active_reseed" : "seed:active");
+    }
+    for (const row of requireOk(queueResult, "current warm queue check")) protect(row.track_id, `queue:${row.state}`);
+    for (const row of requireOk(requestsResult, "current download request check")) {
+      protect(row.track_id, "download_request:active");
+    }
+  }
+  return reasons;
+}
+
+async function inspectCurrentPath(path: string): Promise<PathTrackRow[]> {
+  const result = await withRetry(`current references for ${path}`, () => db.from("tracks")
+    .select("id,status,source,storage_path,is_seed,is_re_seed,is_artist_seed,metadata")
+    .eq("storage_path", path));
+  return requireOk(result, `current references for ${path}`) as PathTrackRow[];
+}
+
+async function inspectCurrentTracks(trackIds: string[]): Promise<PathTrackRow[]> {
+  const tracks: PathTrackRow[] = [];
+  for (let i = 0; i < trackIds.length; i += EXECUTION_BATCH_SIZE) {
+    const ids = trackIds.slice(i, i + EXECUTION_BATCH_SIZE);
+    const result = await withRetry("final current track check", () => db.from("tracks")
+      .select("id,status,source,storage_path,is_seed,is_re_seed,is_artist_seed,metadata")
+      .in("id", ids));
+    tracks.push(...requireOk(result, "final current track check") as PathTrackRow[]);
+  }
+  return tracks;
+}
+
+async function assertPathUnprotected(path: string, tracks: PathTrackRow[]): Promise<void> {
+  const reasons = await currentProtectionReasons(tracks);
+  if (!reasons.size) return;
+  const protectedTracks = Array.from(reasons, ([track_id, values]) => ({
+    track_id,
+    reasons: Array.from(values).sort(),
+  })).sort((a, b) => a.track_id.localeCompare(b.track_id));
+  throw new Error(`Protection drift detected; aborting before ${path}: ${JSON.stringify(protectedTracks)}`);
+}
+
+async function clearPathReferences(path: string): Promise<string[]> {
+  const clearedIds = new Set<string>();
+  for (let pass = 1; pass <= MAX_RETRIES; pass++) {
+    const tracks = await inspectCurrentPath(path);
+    if (!tracks.length) return Array.from(clearedIds);
+
+    // This path may have gained additional references since manifest creation.
+    // Re-check every current sharer immediately before the first mutation.
+    await assertPathUnprotected(path, tracks);
+    const clearResult = await withRetry(`clear references for ${path}`, () => db.from("tracks")
+      .update({ storage_path: null, download_url: null, downloaded_at: null })
+      .eq("storage_path", path)
+      .select("id"));
+    for (const row of requireOk(clearResult, `clear references for ${path}`)) clearedIds.add(row.id);
+  }
+
+  const remaining = await inspectCurrentPath(path);
+  if (remaining.length) {
+    await assertPathUnprotected(path, remaining);
+    throw new Error(`Reference clear did not stabilize for ${path}; ${remaining.length} rows still reference it`);
+  }
+  return Array.from(clearedIds);
+}
+
+async function restorePathReferences(path: string, trackIds: string[]): Promise<void> {
+  if (!trackIds.length) return;
+  for (let i = 0; i < trackIds.length; i += EXECUTION_BATCH_SIZE) {
+    const ids = trackIds.slice(i, i + EXECUTION_BATCH_SIZE);
+    const result = await withRetry(`restore references for ${path}`, () => db.from("tracks")
+      .update({ storage_path: path })
+      .in("id", ids)
+      .is("storage_path", null)
+      .select("id"));
+    const restored = requireOk(result, `restore references for ${path}`);
+    if (restored.length !== ids.length) {
+      throw new Error(`Could not restore every reference for ${path}: expected ${ids.length}, restored ${restored.length}`);
+    }
+  }
+}
+
+async function deleteStoragePath(path: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let removeError: unknown;
+    try {
+      const removeResult = await db.storage.from(BUCKET).remove([path]);
+      if (removeResult.error) removeError = removeResult.error;
+    } catch (error) {
+      removeError = error;
+    }
+
+    // A timed-out remove may still have committed. Probe independently so an
+    // absent object is treated as success and an extant one is retried.
+    try {
+      const probe = await probeStoragePath(path);
+      if (!probe.exists) return;
+      lastError = removeError || new Error("storage object still exists after deletion");
+    } catch (probeError) {
+      lastError = probeError;
+    }
+
+    if (attempt < MAX_RETRIES && isRetryable(lastError)) {
+      await Bun.sleep(250 * 2 ** (attempt - 1));
+      continue;
+    }
+    break;
+  }
+
+  console.error(JSON.stringify({
+    error: "storage_deletion_failed_after_references_cleared",
+    orphaned_objects: [path],
+    detail: errorMessage(lastError),
+  }, null, 2));
+  throw new Error(`Storage deletion failed for ${path}; database references remain cleared`);
 }
 
 async function probeStoragePath(path: string): Promise<{ exists: boolean; bytes: number }> {
@@ -260,7 +462,12 @@ async function probeStoragePath(path: string): Promise<{ exists: boolean; bytes:
     const response = await fetch(url, {
       headers: { apikey: key, Authorization: `Bearer ${key}`, Range: "bytes=0-0" },
     });
-    if (response.status === 404 || response.status === 400) return { exists: false, bytes: 0 };
+    if (response.status === 404) return { exists: false, bytes: 0 };
+    if (response.status === 400) {
+      const body = await response.text();
+      if (/not found|does not exist/i.test(body)) return { exists: false, bytes: 0 };
+      throw new Error(`Storage probe ${response.status} for ${path}: ${body.slice(0, 200)}`);
+    }
     if (response.ok) {
       const contentRange = response.headers.get("content-range") || "";
       const totalMatch = contentRange.match(/\/(\d+)$/);
@@ -327,29 +534,37 @@ async function executeManifest(path: string, confirmation: string): Promise<void
     ids.push(row.track_id);
     pathToIds.set(row.path, ids);
   }
+  const manifestProtectedPaths = new Set(manifest.protected.map((row) => row.path));
+  const overlap = Array.from(pathToIds.keys()).filter((item) => manifestProtectedPaths.has(item));
+  if (overlap.length) throw new Error(`Manifest attempts to delete ${overlap.length} protected paths`);
   const paths = Array.from(pathToIds.keys());
   let deletedPaths = 0;
   let clearedRows = 0;
 
-  for (let i = 0; i < paths.length; i += 100) {
-    const batchPaths = paths.slice(i, i + 100);
-    const removeResult = await db.storage.from(BUCKET).remove(batchPaths);
-    if (removeResult.error) throw new Error(`Storage deletion batch ${i / 100 + 1}: ${removeResult.error.message}`);
+  for (const storagePath of paths) {
+    const cleared = await clearPathReferences(storagePath);
+    clearedRows += cleared.length;
 
-    const ids = batchPaths.flatMap((item) => pathToIds.get(item) || []);
-    for (let j = 0; j < ids.length; j += 200) {
-      const idBatch = ids.slice(j, j + 200);
-      const clearResult = await db.from("tracks")
-        .update({ storage_path: null, download_url: null, downloaded_at: null })
-        .in("id", idBatch)
-        .select("id");
-      const cleared = requireOk(clearResult, "clear evicted track references");
-      if (cleared.length !== idBatch.length) {
-        throw new Error(`Reference clear mismatch: expected ${idBatch.length}, got ${cleared.length}`);
+    // Close the protection-check/update window as tightly as this manual tool
+    // can without a database RPC. If intent changes after references were
+    // cleared but before object deletion, restore the path and abort safely.
+    try {
+      const finalTracks = await inspectCurrentTracks(cleared);
+      await assertPathUnprotected(storagePath, finalTracks);
+      const lateSharers = await inspectCurrentPath(storagePath);
+      if (lateSharers.length) {
+        await assertPathUnprotected(storagePath, lateSharers);
+        throw new Error(`Shared-path drift detected before storage deletion for ${storagePath}`);
       }
-      clearedRows += cleared.length;
+    } catch (error) {
+      await restorePathReferences(storagePath, cleared);
+      throw error;
     }
-    deletedPaths += batchPaths.length;
+
+    // Storage is mutated only after every current shared database reference is
+    // gone. A failed remove leaves a recoverable orphan, never a dangling URL.
+    await deleteStoragePath(storagePath);
+    deletedPaths++;
     console.log(`deleted ${deletedPaths}/${paths.length} paths; cleared ${clearedRows}/${manifest.deletions.length} rows`);
   }
 

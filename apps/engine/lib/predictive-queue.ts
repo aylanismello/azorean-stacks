@@ -167,12 +167,13 @@ export async function materializeUserQueue(
     if (result.error) throw new Error(`queue materialization: ${result.error.message}`);
   }
 
-  // Expire stale ranked entries from previous materializations without deleting history.
+  // Retire every stale entry, including ready audio. Ready rows outside the
+  // current ranking must not keep the predictive cache alive forever.
   const currentIds = new Set(rows.map((row) => row.track_id));
   const oldResult = await db.from("audio_preparation_queue")
     .select("track_id")
     .eq("user_id", userId)
-    .in("state", ["ranked", "preparing"]);
+    .in("state", ["ranked", "preparing", "ready"]);
   const oldRows = requireOk(oldResult, "stale queue lookup");
   const staleIds = oldRows.map((row: any) => row.track_id).filter((id: string) => !currentIds.has(id));
   if (staleIds.length) {
@@ -194,11 +195,11 @@ export async function materializeAllQueues(db: Db = getSupabase()): Promise<{ us
 
 const REASON_PRIORITY: Record<PreparationTrack["preparation_reason"], number> = {
   explicit_request: 0,
-  permanent: 1,
-  super_liked: 2,
-  approved: 3,
-  active_seed: 4,
-  predictive_queue: 5,
+  predictive_queue: 1,
+  permanent: 2,
+  super_liked: 3,
+  approved: 4,
+  active_seed: 5,
 };
 
 export function orderPreparationTracks(tracks: PreparationTrack[]): PreparationTrack[] {
@@ -207,6 +208,21 @@ export function orderPreparationTracks(tracks: PreparationTrack[]): PreparationT
     || a.preparation_rank - b.preparation_rank
     || String(a.id).localeCompare(String(b.id))
   );
+}
+
+export interface WarmQueueRow {
+  user_id: string;
+  track_id: string;
+  state: "ranked" | "preparing" | "ready";
+  rank: number;
+}
+
+/** Keep predictive preparation strictly inside each user's upcoming window. */
+export function warmQueueRowsNeedingPreparation(
+  rows: WarmQueueRow[],
+  warmTarget = WARM_TARGET,
+): WarmQueueRow[] {
+  return rows.filter((row) => row.rank <= warmTarget && row.state !== "ready");
 }
 
 export async function selectPreparationBatch(
@@ -220,6 +236,7 @@ export async function selectPreparationBatch(
       .select("user_id,track_id,state,rank")
       .in("state", ["ranked", "preparing", "ready"])
       .gt("expires_at", now)
+      .lte("rank", WARM_TARGET)
       .order("rank", { ascending: true }),
     db.from("user_tracks")
       .select("user_id,track_id,status,super_liked,permanent,local_download_intent")
@@ -232,15 +249,7 @@ export async function selectPreparationBatch(
   const seeds = requireOk(seedsResult, "active seeds scan");
   const requests = requireOk(requestsResult, "pending download_requests scan");
 
-  const readyByUser = new Map<string, number>();
-  for (const row of queueRows) {
-    if (row.state === "ready") readyByUser.set(row.user_id, (readyByUser.get(row.user_id) || 0) + 1);
-  }
-  const queueEligible = queueRows.filter((row: any) => {
-    if (row.state === "ready") return false;
-    const ready = readyByUser.get(row.user_id) || 0;
-    return ready < WARM_TARGET || ready < SAFETY_FLOOR;
-  });
+  const queueEligible = warmQueueRowsNeedingPreparation(queueRows as WarmQueueRow[]);
 
   type PreparationIntent = Pick<PreparationTrack, "preparation_reason" | "preparation_rank" | "queue_user_ids">;
   const intent = new Map<string, PreparationIntent>();
@@ -274,6 +283,69 @@ export async function selectPreparationBatch(
   const tracks = requireOk(tracksResult, "preparation track lookup");
   const eligible = tracks.filter((track: any) => force || Number(track.dl_attempts || 0) < MAX_DL_ATTEMPTS);
   return orderPreparationTracks(eligible.map((track: any) => ({ ...track, ...intent.get(track.id)! }))).slice(0, limit);
+}
+
+export function filterClaimedPreparationTracks(
+  tracks: PreparationTrack[],
+  claimedTrackIds: Iterable<string>,
+): PreparationTrack[] {
+  const claimed = new Set(claimedTrackIds);
+  return tracks.filter((track) => claimed.has(track.id));
+}
+
+export async function claimPreparationTracks(
+  tracks: PreparationTrack[],
+  ownerToken: string,
+  db: Db = getSupabase(),
+  leaseSeconds = 900,
+): Promise<PreparationTrack[]> {
+  if (!tracks.length) return [];
+  const result = await db.rpc("claim_audio_preparation_tracks", {
+    p_track_ids: tracks.map((track) => track.id),
+    p_owner_token: ownerToken,
+    p_lease_seconds: leaseSeconds,
+  });
+  const rows = requireOk(result, "audio preparation claim");
+  return filterClaimedPreparationTracks(tracks, rows.map((row: any) => row.track_id));
+}
+
+export async function releasePreparationTracks(
+  tracks: Pick<PreparationTrack, "id">[],
+  ownerToken: string,
+  db: Db = getSupabase(),
+): Promise<void> {
+  if (!tracks.length) return;
+  const result = await db.rpc("release_audio_preparation_tracks", {
+    p_track_ids: tracks.map((track) => track.id),
+    p_owner_token: ownerToken,
+  });
+  if (result.error) throw new Error(`audio preparation release: ${result.error.message}`);
+}
+
+export interface AudioEvictionResult {
+  clearedPaths: number;
+  removedPaths: number;
+  leakedPaths: number;
+}
+
+/**
+ * The RPC rechecks all protection references and clears track rows atomically.
+ * Storage is deliberately removed second: a storage failure leaks an unreachable
+ * object instead of leaving a playable row pointing at a missing object.
+ */
+export async function evictRetiredQueueAudio(db: Db = getSupabase()): Promise<AudioEvictionResult> {
+  const result = await db.rpc("evict_retired_queue_audio", { p_warm_target: WARM_TARGET });
+  const rows = requireOk(result, "retired queue audio eviction");
+  const paths = Array.from(new Set(rows.map((row: any) => row.storage_path).filter(Boolean))) as string[];
+  let removedPaths = 0;
+  let leakedPaths = 0;
+  for (let index = 0; index < paths.length; index += 100) {
+    const batch = paths.slice(index, index + 100);
+    const removal = await db.storage.from("tracks").remove(batch);
+    if (removal.error) leakedPaths += batch.length;
+    else removedPaths += batch.length;
+  }
+  return { clearedPaths: paths.length, removedPaths, leakedPaths };
 }
 
 export async function markPreparationState(

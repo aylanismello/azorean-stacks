@@ -20,8 +20,11 @@ import {
 import { SOURCES } from "../lib/sources/index";
 import { runCuratorRadar } from "./radar-curator";
 import {
+  claimPreparationTracks,
+  evictRetiredQueueAudio,
   materializeAllQueues,
   markPreparationState,
+  releasePreparationTracks,
   selectPreparationBatch,
 } from "../lib/predictive-queue";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
@@ -1493,8 +1496,12 @@ function startWatcher() {
               downloadDrainRunning = true;
               try {
                 const materialized = await materializeAllQueues(db);
+                const eviction = await evictRetiredQueueAudio(db);
                 const downloadable = await selectPreparationBatch(db, 20);
                 log("info", `[DL Drain] Ranked ${materialized.tracks} entries for ${materialized.users} user(s)`);
+                if (eviction.clearedPaths) {
+                  log("info", `[DL Drain] Evicted ${eviction.removedPaths}/${eviction.clearedPaths} retired audio path(s)${eviction.leakedPaths ? `; ${eviction.leakedPaths} object(s) leaked safely` : ""}`);
+                }
                 if (!downloadable?.length) {
                   // Mark tracks with 3+ failed attempts as 'failed' so they stop being re-queued
                   const { data: gaveUp } = await db.from("tracks")
@@ -1528,8 +1535,13 @@ function startWatcher() {
                 for (let i = 0; i < downloadable.length; i += PRIORITY_DOWNLOAD_CONCURRENCY) {
                   if (shuttingDown) break;
                   const batch = downloadable.slice(i, i + PRIORITY_DOWNLOAD_CONCURRENCY);
+                  const ownerToken = crypto.randomUUID();
+                  const claimed = await claimPreparationTracks(batch, ownerToken, db);
+                  if (claimed.length < batch.length) {
+                    log("info", `[DL Drain] Skipped ${batch.length - claimed.length} track(s) leased by another downloader`);
+                  }
                   const results = await Promise.allSettled(
-                    batch.map(async (track: any) => {
+                    claimed.map(async (track: any) => {
                       try {
                         await markPreparationState(track, "preparing", null, db);
                         const ok = await downloadTrack(track);
@@ -1545,6 +1557,10 @@ function startWatcher() {
                         await markPreparationState(track, "failed", err instanceof Error ? err.message : String(err), db);
                         log("fail", `[DL Drain] Error: ${track.artist} – ${track.title}: ${err instanceof Error ? err.message : err}`);
                         return false;
+                      } finally {
+                        await releasePreparationTracks([track], ownerToken, db).catch((err) => {
+                          log("fail", `[DL Drain] Claim release failed for ${track.id}; lease will expire: ${err instanceof Error ? err.message : err}`);
+                        });
                       }
                     }),
                   );

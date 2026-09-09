@@ -17,6 +17,29 @@ interface SignalAccumulator {
   samples: number;
 }
 
+const IN_BATCH_SIZE = 300;
+
+async function selectInBatches<T = any>(
+  db: any,
+  table: string,
+  columns: string,
+  column: string,
+  values: string[],
+  batchSize = IN_BATCH_SIZE
+): Promise<T[]> {
+  const rows: T[] = [];
+  const uniqueValues = Array.from(new Set(values.filter(Boolean)));
+  for (let i = 0; i < uniqueValues.length; i += batchSize) {
+    const { data, error } = await db
+      .from(table)
+      .select(columns)
+      .in(column, uniqueValues.slice(i, i + batchSize));
+    if (error) throw error;
+    rows.push(...((data || []) as T[]));
+  }
+  return rows;
+}
+
 async function main() {
   console.log(`\n=== Update Taste Signals ===`);
   console.log(`Time: ${new Date().toISOString()}\n`);
@@ -95,7 +118,8 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   // Fetch super-liked track IDs (scoped to user when userId is set)
   let superLikedQuery = db.from("user_tracks").select("track_id").eq("super_liked", true);
   if (userId) superLikedQuery = (superLikedQuery as any).eq("user_id", userId);
-  const { data: superLikedRows } = await superLikedQuery;
+  const { data: superLikedRows, error: superLikedError } = await superLikedQuery;
+  if (superLikedError) throw superLikedError;
   const superLikedSet = new Set((superLikedRows || []).map((r: any) => r.track_id as string));
 
   const signals = new Map<string, SignalAccumulator>();
@@ -161,23 +185,26 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   // Seeds with high approval rate → boost tracks from those seeds
   console.log(`\nComputing seed affinity signals...`);
 
-  const { data: seeds } = await db
+  const { data: seeds, error: seedsError } = await db
     .from("seeds")
     .select("id, track_id, artist, title")
     .eq("active", true)
     .eq("user_id", userId);
+  if (seedsError) throw seedsError;
 
   if (seeds && seeds.length > 0) {
     const trackIds = tracks.map((track: any) => track.id);
     const seedIds = seeds.map((seed: any) => seed.id);
-    const [{ data: trackEpisodeLinks }, { data: episodeSeedLinks }] = await Promise.all([
-      db.from("episode_tracks").select("track_id, episode_id").in("track_id", trackIds),
-      db.from("episode_seeds").select("episode_id, seed_id, match_type").in("seed_id", seedIds),
-    ]);
+    const trackEpisodeRows = trackIds.length > 0
+      ? await selectInBatches(db, "episode_tracks", "track_id, episode_id", "track_id", trackIds)
+      : [];
+    const episodeSeedRows = seedIds.length > 0
+      ? await selectInBatches(db, "episode_seeds", "episode_id, seed_id, match_type", "seed_id", seedIds)
+      : [];
     const lineageByTrack = buildTrackSeedLineage(
       tracks,
-      trackEpisodeLinks || [],
-      episodeSeedLinks || [],
+      trackEpisodeRows,
+      episodeSeedRows,
       seeds
     );
     const tracksBySeed = new Map<string, YieldAccumulator>();
@@ -203,14 +230,16 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   // NTS show curators with consistent approval rates boost their episode tracks
   console.log(`Computing curator quality signals...`);
 
-  const { data: curators } = await db
+  const { data: curators, error: curatorsError } = await db
     .from("curators")
     .select("id, slug");
+  if (curatorsError) throw curatorsError;
   console.log(`Computing episode and show yield signals...`);
   const votedEpisodeIds = Array.from(new Set(tracks.map((track: any) => track.episode_id).filter(Boolean)));
-  const { data: votedEpisodes } = votedEpisodeIds.length > 0
+  const { data: votedEpisodes, error: votedEpisodesError } = votedEpisodeIds.length > 0
     ? await db.from("episodes").select("id, curator_id, source, url, title").in("id", votedEpisodeIds)
-    : { data: [] };
+    : { data: [], error: null };
+  if (votedEpisodesError) throw votedEpisodesError;
   const episodeMap = new Map<string, any>((votedEpisodes || []).map((episode: any) => [episode.id, episode]));
   const curatorSlugMap = new Map<string, string>((curators || []).map((curator: any) => [curator.id, curator.slug]));
   const curatorStats = new Map<string, YieldAccumulator>();
@@ -290,45 +319,65 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     }
   }
 
-  // Remove stale values for this user before writing the complete fresh profile.
-  const { error: clearSignalsError } = await db
-    .from("taste_signals")
-    .delete()
-    .eq("user_id", userId);
-  if (clearSignalsError) throw clearSignalsError;
-
-  // Upsert signals
-  let upserted = 0;
-  let errors = 0;
-
-  for (const [key, acc] of signals) {
+  // Materialize the complete replacement before touching live rows. Existing
+  // rows are retained until every upsert succeeds, so a failed batch cannot
+  // leave the user with a cleared or truncated snapshot.
+  const refreshedAt = new Date().toISOString();
+  const signalRows = Array.from(signals, ([key, acc]) => {
     const [signalType, value] = key.split("::");
     const totalWeight = acc.positive + acc.negative;
     const weight = totalWeight > 0 ? (acc.positive - acc.negative) / totalWeight : 0;
+    return {
+      user_id: userId,
+      signal_type: signalType,
+      value,
+      weight: Math.round(weight * 1000) / 1000,
+      sample_count: acc.samples,
+      updated_at: refreshedAt,
+    };
+  });
+  const liveSignals: Array<{ id: string; signal_type: string; value: string }> = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db
+      .from("taste_signals")
+      .select("id, signal_type, value")
+      .eq("user_id", userId)
+      .range(from, from + 999);
+    if (error) throw error;
+    liveSignals.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
 
-    const { error: upsertError } = await db.from("taste_signals").upsert(
-      {
-        user_id: userId,
-        signal_type: signalType,
-        value,
-        weight: Math.round(weight * 1000) / 1000,
-        sample_count: acc.samples,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id,signal_type,value" }
-    );
-
+  // Upsert the complete computed set. Any batch failure aborts the refresh
+  // before stale rows are deleted and propagates to main's nonzero exit.
+  let upserted = 0;
+  for (let i = 0; i < signalRows.length; i += 500) {
+    const batch = signalRows.slice(i, i + 500);
+    const { error: upsertError } = await db
+      .from("taste_signals")
+      .upsert(batch, { onConflict: "user_id,signal_type,value" });
     if (upsertError) {
-      console.error(`  Failed to upsert ${key}: ${upsertError.message}`);
-      errors++;
-    } else {
-      upserted++;
+      throw new Error(`Failed signal batch ${i / 500 + 1}: ${upsertError.message}`);
     }
+    upserted += batch.length;
+  }
+
+  const nextSignalKeys = new Set(signalRows.map((row) => `${row.signal_type}::${row.value}`));
+  const staleSignalIds = liveSignals
+    .filter((row) => !nextSignalKeys.has(`${row.signal_type}::${row.value}`))
+    .map((row) => row.id);
+  for (let i = 0; i < staleSignalIds.length; i += 500) {
+    const { error } = await db
+      .from("taste_signals")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", staleSignalIds.slice(i, i + 500));
+    if (error) throw new Error(`Failed stale signal cleanup batch ${i / 500 + 1}: ${error.message}`);
   }
 
   console.log(`\n=== Summary ===`);
   console.log(`Signals upserted: ${upserted}`);
-  console.log(`Errors: ${errors}`);
+  console.log(`Stale signals deleted: ${staleSignalIds.length}`);
 
   // Show top positive signals (scoped to this user)
   let topSignalsQuery = db
@@ -342,7 +391,8 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   } else {
     topSignalsQuery = (topSignalsQuery as any).is("user_id", null);
   }
-  const { data: topSignals } = await topSignalsQuery;
+  const { data: topSignals, error: topSignalsError } = await topSignalsQuery;
+  if (topSignalsError) throw topSignalsError;
 
   if (topSignals && topSignals.length > 0) {
     console.log(`\nTop positive signals:`);
@@ -363,20 +413,9 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   // With prior=3: 1 sample → 25%, 3 → 50%, 6 → 67%, 10 → 77%, 20 → 87%
   const CONFIDENCE_PRIOR = 3;
 
-  // Load signals scoped to this user (or null for legacy global signals)
-  let allSignalsQuery = db
-    .from("taste_signals")
-    .select("signal_type, value, weight, sample_count");
-  if (userId) {
-    allSignalsQuery = (allSignalsQuery as any).eq("user_id", userId);
-  } else {
-    allSignalsQuery = (allSignalsQuery as any).is("user_id", null);
-  }
-  const { data: allSignals } = await allSignalsQuery;
-
   const signalMap = new Map<string, number>();
   const signalConfidenceMap = new Map<string, number>();
-  for (const s of allSignals || []) {
+  for (const s of signalRows) {
     const samples = s.sample_count || 0;
     const dampened = s.weight * (samples / (samples + CONFIDENCE_PRIOR));
     const key = `${s.signal_type}::${s.value}`;
@@ -388,11 +427,12 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   const pending: any[] = [];
   let page = 0;
   while (true) {
-    const { data: batch } = await db
+    const { data: batch, error } = await db
       .from("tracks")
       .select("id, artist, metadata, episode_id, seed_track_id")
       .eq("status", "pending")
       .range(page * 1000, (page + 1) * 1000 - 1);
+    if (error) throw error;
     if (!batch || batch.length === 0) break;
     pending.push(...batch);
     if (batch.length < 1000) break;
@@ -403,18 +443,16 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
 
   const pendingTrackIds = pending.map((track: any) => track.id);
   const seedIds = (seeds || []).map((seed: any) => seed.id);
-  const [{ data: pendingEpisodeLinks }, { data: scopedEpisodeSeedLinks }] = await Promise.all([
-    pendingTrackIds.length > 0
-      ? db.from("episode_tracks").select("track_id, episode_id").in("track_id", pendingTrackIds)
-      : Promise.resolve({ data: [] }),
-    seedIds.length > 0
-      ? db.from("episode_seeds").select("episode_id, seed_id, match_type").in("seed_id", seedIds)
-      : Promise.resolve({ data: [] }),
-  ]);
+  const pendingEpisodeRows = pendingTrackIds.length > 0
+    ? await selectInBatches(db, "episode_tracks", "track_id, episode_id", "track_id", pendingTrackIds)
+    : [];
+  const scopedEpisodeSeedRows = seedIds.length > 0
+    ? await selectInBatches(db, "episode_seeds", "episode_id, seed_id, match_type", "seed_id", seedIds)
+    : [];
   const pendingLineage = buildTrackSeedLineage(
     pending,
-    pendingEpisodeLinks || [],
-    scopedEpisodeSeedLinks || [],
+    pendingEpisodeRows,
+    scopedEpisodeSeedRows,
     seeds || []
   );
 
@@ -436,11 +474,12 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     let mtPage = 0;
     while (true) {
       if (seedIds.length === 0) break;
-      const { data: mtBatch } = await db
+      const { data: mtBatch, error } = await db
         .from("episode_seeds")
         .select("episode_id, match_type")
         .in("seed_id", seedIds)
         .range(mtPage * 1000, (mtPage + 1) * 1000 - 1);
+      if (error) throw error;
       if (!mtBatch || mtBatch.length === 0) break;
       for (const row of mtBatch as any[]) {
         const existing = episodeMatchType.get(row.episode_id);
@@ -456,9 +495,10 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   }
 
   // Build episode → curator lookup for pending tracks
-  const { data: epCuratorLinks } = await db
+  const { data: epCuratorLinks, error: epCuratorError } = await db
     .from("episodes")
     .select("id, curator_id, source, url, title");
+  if (epCuratorError) throw epCuratorError;
 
   const epToCuratorMap = new Map<string, string>();
   const epToContextMap = new Map<string, string>();
@@ -479,8 +519,6 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   }
 
   let scored = 0;
-  let scoreErrors = 0;
-
   // Batch updates: collect scores then update in chunks
   const updates: Array<{
     id: string;
@@ -681,14 +719,20 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     });
   }
 
-  // Replace this user's score snapshot in bulk. This is intentionally separate
-  // from tracks.taste_score, which is legacy/shared and can leak between users.
-  const { error: clearScoreError } = await db
-    .from("user_track_scores")
-    .delete()
-    .eq("user_id", userId);
-  if (clearScoreError) throw clearScoreError;
-
+  // Stage the complete score replacement in memory and retain the current
+  // snapshot until every score batch has been written successfully.
+  const liveScoreTrackIds: string[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db
+      .from("user_track_scores")
+      .select("track_id")
+      .eq("user_id", userId)
+      .range(from, from + 999);
+    if (error) throw error;
+    liveScoreTrackIds.push(...(data || []).map((row: any) => row.track_id));
+    if (!data || data.length < 1000) break;
+  }
+  const scoredAt = new Date().toISOString();
   for (let i = 0; i < updates.length; i += 500) {
     const batch = updates.slice(i, i + 500).map((update) => ({
       user_id: userId,
@@ -697,18 +741,27 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
       confidence: update.confidence,
       components: update.score_components,
       scoring_version: "taste_context_v2",
-      scored_at: new Date().toISOString(),
+      scored_at: scoredAt,
     }));
     const { error } = await db.from("user_track_scores").upsert(batch, { onConflict: "user_id,track_id" });
     if (error) {
-      console.error(`  Failed score batch ${i / 500 + 1}: ${error.message}`);
-      scoreErrors += batch.length;
-    } else {
-      scored += batch.length;
+      throw new Error(`Failed score batch ${i / 500 + 1}: ${error.message}`);
     }
+    scored += batch.length;
   }
 
-  console.log(`Scored: ${scored}, Errors: ${scoreErrors}`);
+  const nextScoreTrackIds = new Set(updates.map((update) => update.id));
+  const staleScoreTrackIds = liveScoreTrackIds.filter((trackId) => !nextScoreTrackIds.has(trackId));
+  for (let i = 0; i < staleScoreTrackIds.length; i += 500) {
+    const { error } = await db
+      .from("user_track_scores")
+      .delete()
+      .eq("user_id", userId)
+      .in("track_id", staleScoreTrackIds.slice(i, i + 500));
+    if (error) throw new Error(`Failed stale score cleanup batch ${i / 500 + 1}: ${error.message}`);
+  }
+
+  console.log(`Scored: ${scored}, stale scores deleted: ${staleScoreTrackIds.length}`);
 
   // Show score distribution
   const scoreDist = { positive: 0, zero: 0, negative: 0 };
