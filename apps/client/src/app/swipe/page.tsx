@@ -39,6 +39,8 @@ function toPlayerTrack(track: Track): PlayerTrack {
     _score_components: (track as any)._score_components,
     _match_type: (track as any)._match_type,
     _seed_name: (track as any)._seed_name,
+    _seed_artist: (track as any)._seed_artist,
+    _seed_title: (track as any)._seed_title,
     voted_at: track.voted_at,
   };
 }

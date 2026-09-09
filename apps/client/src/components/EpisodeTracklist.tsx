@@ -174,6 +174,11 @@ export function EpisodeTracklist(props: TracklistProps) {
   const handlePlay = (t: TrackListItem) => {
     const audioUrl = t.audio_url || t.preview_url || null;
     const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
+    const queuedTrack = globalPlayer.queue.find((queued) => queued.id === t.id);
+    if (queuedTrack) {
+      globalPlayer.play(queuedTrack, origin);
+      return;
+    }
     const trackPayload = {
       id: t.id,
       artist: t.artist,

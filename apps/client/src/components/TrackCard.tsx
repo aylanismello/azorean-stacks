@@ -302,7 +302,10 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
       return;
     }
     const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
-    globalPlayer.play({
+    // Prefer the provider's queue object so source, episode, seed lineage, and
+    // scoring context survive a play action. The fallback covers standalone cards.
+    const queuedTrack = globalPlayer.queue.find((queued) => queued.id === track.id);
+    globalPlayer.play(queuedTrack || {
       id: track.id,
       artist: track.artist,
       title: track.title,
@@ -312,6 +315,28 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
       episodeId: track.episode_id,
       episodeTitle: track.episode?.title,
       youtubeUrl: track.youtube_url,
+      source: track.source,
+      episode_id: track.episode_id,
+      episode_title: track.episode?.title || null,
+      storage_path: track.storage_path,
+      youtube_url: track.youtube_url,
+      preview_url: track.preview_url,
+      seed_id: track.seed_id,
+      seed_track: track.seed_track,
+      taste_score: track.taste_score,
+      source_url: track.source_url,
+      source_context: track.source_context,
+      episode: track.episode,
+      metadata: track.metadata,
+      is_seed: track.is_seed,
+      is_re_seed: track.is_re_seed,
+      is_artist_seed: (track as any).is_artist_seed,
+      _ranked_score: (track as any)._ranked_score,
+      _score_components: (track as any)._score_components,
+      _match_type: (track as any)._match_type,
+      _seed_name: (track as any)._seed_name,
+      _seed_artist: (track as any)._seed_artist,
+      _seed_title: (track as any)._seed_title,
     }, origin);
   }, [track, isCurrentTrack, globalPlayer]);
 
@@ -522,17 +547,19 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     </p>
   );
 
-  const sourceContext = track.source_context && (
-    track.source_url ? (
+  const effectiveSourceContext = track.source_context || track.episode?.title || sourceLabel(track.source);
+  const effectiveSourceUrl = track.source_url || track.episode?.url || null;
+  const sourceContext = effectiveSourceContext && (
+    effectiveSourceUrl ? (
       <a
-        href={track.source_url}
+        href={effectiveSourceUrl}
         target="_blank"
         rel="noopener noreferrer"
         className="flex items-center gap-1.5 text-[11px] text-muted hover:text-accent transition-colors group truncate"
       >
         <span className="text-accent">◉</span>
         <span className="truncate underline underline-offset-2 decoration-foreground/10 group-hover:decoration-accent">
-          {track.source_context}
+          {effectiveSourceContext}
         </span>
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-40 group-hover:opacity-100">
           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
@@ -541,7 +568,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     ) : (
       <div className="flex items-center gap-1.5 text-[11px] text-muted truncate">
         <span className="text-accent">◉</span>
-        <span className="truncate">{track.source_context}</span>
+        <span className="truncate">{effectiveSourceContext}</span>
       </div>
     )
   );
@@ -1126,15 +1153,16 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
             <p className="text-xl text-foreground/70 truncate">{track.artist}</p>
             <button
               onClick={handleCopy}
-              className="flex-shrink-0 p-1.5 rounded-md hover:bg-foreground/10 active:scale-90 transition-all"
+              className={`flex-shrink-0 p-1.5 rounded-md transition-all active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${copied ? "text-green-500" : "text-foreground/60 hover:text-foreground hover:bg-foreground/10"}`}
               title="Copy artist - title"
+              aria-label={copied ? "Copied artist and title" : "Copy artist and title"}
             >
               {copied ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
               ) : (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>
               )}

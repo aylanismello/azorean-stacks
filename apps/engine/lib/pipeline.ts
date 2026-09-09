@@ -785,6 +785,7 @@ export type EngineEventType =
   | "watcher_connected"
   | "watcher_disconnected"
   | "watcher_reconnect"
+  | "watcher_fatal_exit"
   | "radar_curator_run"
   | "download_drain_started"
   | "download_drain_completed";

@@ -57,6 +57,8 @@ export interface PlayerTrack {
   _score_components?: Record<string, number>;
   _match_type?: string;
   _seed_name?: string;
+  _seed_artist?: string;
+  _seed_title?: string;
 
   // Voted timestamp
   voted_at?: string | null;

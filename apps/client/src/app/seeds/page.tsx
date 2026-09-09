@@ -6,6 +6,7 @@ import { SeedForm } from "@/components/SeedForm";
 import { useAuth } from "@/components/AuthProvider";
 import { isReseed } from "@/lib/seeds";
 import { openYouTube } from "@/lib/youtube";
+import { openSpotify } from "@/lib/spotify-link";
 import { EpisodeTracklist } from "@/components/EpisodeTracklist";
 
 interface RadarEpisode {
@@ -996,11 +997,11 @@ function SeedTrackRow({
           className={local.spotify_url ? "text-green-400" : "text-muted/25"}
         >
           {local.spotify_url ? (
-            <a href={local.spotify_url} target="_blank" rel="noopener noreferrer">
+            <button onClick={() => openSpotify(local.spotify_url!)} aria-label="Open in Spotify">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.622.622 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.622.622 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.224-2.723a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 0 1-.973-.519.781.781 0 0 1 .519-.972c3.632-1.102 8.147-.568 11.234 1.328a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 9.15 9.375 8.977 6.297 9.9a.937.937 0 0 1-.583-1.782c3.532-1.157 9.404-.933 13.115 1.338a.937.937 0 0 1-.914 1.63z"/>
               </svg>
-            </a>
+            </button>
           ) : (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.586 14.424a.622.622 0 0 1-.857.207c-2.348-1.435-5.304-1.76-8.785-.964a.622.622 0 1 1-.277-1.215c3.809-.87 7.076-.496 9.712 1.115a.623.623 0 0 1 .207.857zm1.224-2.723a.78.78 0 0 1-1.072.257c-2.687-1.652-6.785-2.131-9.965-1.166a.78.78 0 0 1-.973-.519.781.781 0 0 1 .519-.972c3.632-1.102 8.147-.568 11.234 1.328a.78.78 0 0 1 .257 1.072zm.105-2.835C14.692 9.15 9.375 8.977 6.297 9.9a.937.937 0 0 1-.583-1.782c3.532-1.157 9.404-.933 13.115 1.338a.937.937 0 0 1-.914 1.63z"/>
@@ -1055,15 +1056,16 @@ function SeedTrackRow({
         )}
         <button
           onClick={handleCopy}
-          className="p-0.5 rounded hover:bg-surface-3 active:scale-90 transition-all"
+          className={`p-1 rounded transition-all active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${copied ? "text-green-500" : "text-foreground/60 hover:text-foreground hover:bg-surface-3"}`}
           title="Copy artist - title"
+          aria-label={copied ? "Copied artist and title" : "Copy artist and title"}
         >
           {copied ? (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 6 9 17 4 12" />
             </svg>
           ) : (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted/50 hover:text-muted">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
             </svg>
           )}

@@ -19,10 +19,15 @@ import {
 } from "../lib/pipeline";
 import { SOURCES } from "../lib/sources/index";
 import { runCuratorRadar } from "./radar-curator";
+import {
+  materializeAllQueues,
+  markPreparationState,
+  selectPreparationBatch,
+} from "../lib/predictive-queue";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 
 const db = getSupabase();
-const STATUS_FILE = `${process.env.HOME}/.openclaw/data/azorean-engine-status.json`;
+const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json`;
 
 // ─── CONCURRENCY LIMITS ─────────────────────────────────────
 // Tuned for M4 Mac Mini — all bottlenecks are network I/O
@@ -66,15 +71,16 @@ function updateStatusFile() {
 
 // ─── USER HELPERS ────────────────────────────────────────────
 
-// Returns the first user ID found in user_tracks — used to scope engine runs
-// to the primary user in single-user setups. Returns null if no users found.
+// Scope single-user scheduled jobs to the account with the latest explicit
+// activity rather than the oldest arbitrary row. Returns null if no user exists.
 async function getPrimaryUserId(): Promise<string | null> {
   try {
     const { data } = await db
       .from("user_tracks")
       .select("user_id")
       .not("user_id", "is", null)
-      .order("created_at", { ascending: true })
+      .not("voted_at", "is", null)
+      .order("voted_at", { ascending: false })
       .limit(1)
       .maybeSingle();
     return data?.user_id ?? null;
@@ -325,27 +331,10 @@ async function processSeed(seedId: string) {
           metadata: { enriched, failed: enrichFailed },
         });
 
-        // ── Phase 3: Download audio for enriched tracks ──
-        const { data: downloadable } = await db.from("tracks")
-          .select("*")
-          .in("id", insertedTracks.map((t) => t.id))
-          .not("youtube_url", "is", null)
-          .is("storage_path", null);
-
-        if (downloadable?.length) {
-          log("info", `Downloading audio for ${downloadable.length} tracks...`);
-          let downloaded = 0;
-          for (let i = 0; i < downloadable.length; i += CONCURRENCY.download) {
-            const batch = downloadable.slice(i, i + CONCURRENCY.download);
-            const results = await Promise.allSettled(batch.map(async (track) => {
-              const ok = await downloadTrack(track);
-              log(ok ? "ok" : "fail", `DL: ${track.artist} – ${track.title}`);
-              return ok;
-            }));
-            downloaded += results.filter(r => r.status === "fulfilled" && r.value).length;
-          }
-          log("info", `Downloaded ${downloaded}/${downloadable.length} tracks`);
-        }
+        // Audio is prepared separately from the ranked per-user queue. Discovery
+        // continues enriching every candidate without downloading the whole episode.
+        const materialized = await materializeAllQueues(db);
+        log("info", `Materialized ${materialized.tracks} queue entries for ${materialized.users} user(s)`);
       }
 
       // Only process the first episode with tracks per source
@@ -581,13 +570,7 @@ async function processTrack(trackId: string, prefetched?: any) {
   const shouldEnrich =
     track.status === "pending" &&
     (spotifyMissing || (!track.youtube_url && !track.storage_path));
-  const canDownload =
-    ["pending", "approved"].includes(track.status) &&
-    !!track.youtube_url &&
-    !track.storage_path &&
-    (track.dl_attempts || 0) < MAX_DL_ATTEMPTS;
-
-  if (!shouldEnrich && !canDownload) {
+  if (!shouldEnrich) {
     return;
   }
 
@@ -597,7 +580,7 @@ async function processTrack(trackId: string, prefetched?: any) {
     metadata: {
       track_id: trackId,
       should_enrich: shouldEnrich,
-      can_download: canDownload,
+      audio_preparation: "deferred_to_ranked_queue",
     },
   });
 
@@ -612,29 +595,11 @@ async function processTrack(trackId: string, prefetched?: any) {
 
   if (!refreshed) return;
 
-  if (
-    ["pending", "approved"].includes(refreshed.status) &&
-    refreshed.youtube_url &&
-    !refreshed.storage_path &&
-    (refreshed.dl_attempts || 0) < MAX_DL_ATTEMPTS
-  ) {
-    const ok = await downloadTrack(refreshed);
-    log(ok ? "ok" : "fail", `Repair DL: ${label}`);
-    await logEngineEvent(ok ? "repair_completed" : "error", ok ? "completed" : "failed", {
-      message: ok ? label : `Repair download failed: ${label}`,
-      metadata: {
-        track_id: trackId,
-        downloaded: ok,
-      },
-    });
-    return;
-  }
-
   await logEngineEvent("repair_completed", "completed", {
     message: label,
     metadata: {
       track_id: trackId,
-      downloaded: false,
+      audio_preparation: "deferred_to_ranked_queue",
     },
   });
 }
@@ -1046,34 +1011,15 @@ async function processPrioritySeed(seedId: string) {
 
   await updatePipelineStatus(seedId, {}, `enriched ${enriched}/${tracksToProcess.length} tracks`);
 
-  // Phase 3: Download ALL tracks with YouTube URLs (no limit)
-  const { data: downloadable } = await db.from("tracks")
-    .select("*")
-    .in("id", tracksToProcess.map((t) => t.id))
-    .not("youtube_url", "is", null)
-    .is("storage_path", null);
+  // Phase 3: Re-rank per-user preparation queues. The bounded drain owns audio;
+  // priority discovery must not download every track from the selected episode.
+  const materialized = await materializeAllQueues(db);
 
-  let downloaded = 0;
-  if (downloadable && downloadable.length > 0) {
-    await updatePipelineStatus(
-      seedId,
-      { state: "downloading", progress: `0/${downloadable.length}` },
-      `downloading ${downloadable.length} tracks`,
-    );
-
-    for (let i = 0; i < downloadable.length; i += PRIORITY_DOWNLOAD_CONCURRENCY) {
-      const batch = downloadable.slice(i, i + PRIORITY_DOWNLOAD_CONCURRENCY);
-      const results = await Promise.allSettled(batch.map(async (track) => {
-        const ok = await downloadTrack(track);
-        log(ok ? "ok" : "fail", `Priority DL: ${track.artist} – ${track.title}`);
-        return ok;
-      }));
-      downloaded += results.filter((r) => r.status === "fulfilled" && r.value).length;
-      await updatePipelineStatus(seedId, { progress: `${Math.min(i + PRIORITY_DOWNLOAD_CONCURRENCY, downloadable.length)}/${downloadable.length}` });
-    }
-
-    await updatePipelineStatus(seedId, {}, `downloaded ${downloaded}/${downloadable.length} tracks`);
-  }
+  await updatePipelineStatus(
+    seedId,
+    { state: "preparing", progress: `0/${materialized.tracks}` },
+    `queued bounded audio preparation for ${materialized.tracks} ranked entries`,
+  );
 
   // Phase 4: Cleanup — mark dangling pending tracks (no spotify_url AND no youtube_url) as skipped
   const trackIds = tracksToProcess.map((t) => t.id);
@@ -1102,10 +1048,10 @@ async function processPrioritySeed(seedId: string) {
   await updatePipelineStatus(
     seedId,
     { state: "done", completed_at: new Date().toISOString() },
-    `pipeline complete — ${tracksToProcess.length} tracks processed, ${enriched} enriched, ${downloaded} downloaded in ${elapsedSec}s`,
+    `pipeline complete — ${tracksToProcess.length} tracks processed, ${enriched} enriched, audio queued in ${elapsedSec}s`,
   );
 
-  log("ok", `Priority pipeline done for ${seedLabel} — ${tracksToProcess.length} tracks, ${enriched} enriched, ${downloaded} downloaded in ${elapsedSec}s`);
+  log("ok", `Priority pipeline done for ${seedLabel} — ${tracksToProcess.length} tracks, ${enriched} enriched, bounded audio queued in ${elapsedSec}s`);
 }
 
 async function processPriorityQueue() {
@@ -1259,6 +1205,59 @@ async function processRepairQueue() {
   repairProcessing = false;
 }
 
+async function ensureApprovalSeed(trackId: string, userId: string): Promise<void> {
+  const { data: track, error: trackError } = await db.from("tracks")
+    .select("artist,title")
+    .eq("id", trackId)
+    .maybeSingle();
+  if (trackError) throw new Error(`track lookup failed: ${trackError.message}`);
+  if (!track?.artist || !track?.title) return;
+
+  const { data: byTrack, error: byTrackError } = await db.from("seeds")
+    .select("id,track_id")
+    .eq("user_id", userId)
+    .eq("track_id", trackId)
+    .limit(1)
+    .maybeSingle();
+  if (byTrackError) throw new Error(`seed track lookup failed: ${byTrackError.message}`);
+
+  let existing = byTrack;
+  if (!existing) {
+    const escapedArtist = track.artist.replace(/[%_\\]/g, (c: string) => `\\${c}`);
+    const escapedTitle = track.title.replace(/[%_\\]/g, (c: string) => `\\${c}`);
+    const legacyResult = await db.from("seeds")
+      .select("id,track_id")
+      .eq("user_id", userId)
+      .ilike("artist", escapedArtist)
+      .ilike("title", escapedTitle)
+      .limit(1)
+      .maybeSingle();
+    if (legacyResult.error) throw new Error(`legacy seed lookup failed: ${legacyResult.error.message}`);
+    existing = legacyResult.data;
+  }
+  if (existing) {
+    if (!existing.track_id) await db.from("seeds").update({ track_id: trackId }).eq("id", existing.id);
+    return;
+  }
+
+  const now = new Date();
+  const { error } = await db.from("seeds").insert({
+    track_id: trackId,
+    artist: track.artist,
+    title: track.title,
+    user_id: userId,
+    source: "auto:approved",
+    pipeline_status: {
+      state: "queued",
+      started_at: now.toISOString(),
+      log: [{ t: now.toTimeString().slice(0, 8), msg: "seed auto-created from approved track" }],
+    },
+  });
+  // The partial unique index makes concurrent INSERT/UPDATE events idempotent.
+  if (error && error.code !== "23505") throw new Error(`seed insert failed: ${error.message}`);
+  log("ok", `Re-seed queued for approved track: ${track.artist} – ${track.title} (user: ${userId})`);
+}
+
 function startWatcher() {
   log("info", "Connecting to Supabase Realtime...");
 
@@ -1298,43 +1297,27 @@ function startWatcher() {
         // the approving user so results stay isolated per-user.
         if (payload.new?.status === "approved" && userId) {
           try {
-            const { data: track } = await db
-              .from("tracks")
-              .select("artist, title")
-              .eq("id", trackId)
-              .maybeSingle();
-
-            if (track?.artist && track?.title) {
-              // Only create seed if one doesn't already exist for this user + track
-              const { data: existingSeed } = await db
-                .from("seeds")
-                .select("id")
-                .or(`user_id.eq.${userId},user_id.is.null`)
-                .ilike("artist", track.artist.replace(/[%_\\]/g, (c: string) => `\\${c}`))
-                .ilike("title", track.title.replace(/[%_\\]/g, (c: string) => `\\${c}`))
-                .limit(1)
-                .maybeSingle();
-
-              if (!existingSeed) {
-                const now = new Date();
-                const timeStr = now.toTimeString().slice(0, 8);
-                await db.from("seeds").insert({
-                  artist: track.artist,
-                  title: track.title,
-                  user_id: userId,
-                  source: "auto:approved",
-                  pipeline_status: {
-                    state: "queued",
-                    started_at: now.toISOString(),
-                    log: [{ t: timeStr, msg: "seed auto-created from approved track" }],
-                  },
-                });
-                log("ok", `Re-seed queued for approved track: ${track.artist} – ${track.title} (user: ${userId})`);
-              }
-            }
+            await ensureApprovalSeed(trackId, userId);
           } catch (err) {
             log("fail", `Re-seed on approve failed for track ${trackId}: ${err instanceof Error ? err.message : err}`);
           }
+        }
+      },
+    )
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "user_tracks" },
+      async (payload) => {
+        lastRealtimeEventAt = new Date().toISOString();
+        const trackId = payload.new?.track_id;
+        const userId = payload.new?.user_id;
+        const becameApproved = payload.new?.status === "approved" && payload.old?.status !== "approved";
+        if (!trackId || !userId || !becameApproved) return;
+        try {
+          await ensureApprovalSeed(trackId, userId);
+          await materializeAllQueues(db);
+        } catch (err) {
+          log("fail", `Re-seed on approval UPDATE failed for track ${trackId}: ${err instanceof Error ? err.message : err}`);
         }
       },
     )
@@ -1509,19 +1492,9 @@ function startWatcher() {
               }
               downloadDrainRunning = true;
               try {
-                const { data: downloadable, error } = await db.from("tracks")
-                  .select("*")
-                  .not("youtube_url", "is", null)
-                  .neq("youtube_url", "")
-                  .is("storage_path", null)
-                  .eq("status", "pending")
-                  .lt("dl_attempts", 3)
-                  .order("created_at", { ascending: true })
-                  .limit(20);
-                if (error) {
-                  log("fail", `[DL Drain] Query failed: ${error.message}`);
-                  return;
-                }
+                const materialized = await materializeAllQueues(db);
+                const downloadable = await selectPreparationBatch(db, 20);
+                log("info", `[DL Drain] Ranked ${materialized.tracks} entries for ${materialized.users} user(s)`);
                 if (!downloadable?.length) {
                   // Mark tracks with 3+ failed attempts as 'failed' so they stop being re-queued
                   const { data: gaveUp } = await db.from("tracks")
@@ -1558,13 +1531,18 @@ function startWatcher() {
                   const results = await Promise.allSettled(
                     batch.map(async (track: any) => {
                       try {
+                        await markPreparationState(track, "preparing", null, db);
                         const ok = await downloadTrack(track);
                         if (ok) {
+                          await markPreparationState(track, "ready", null, db);
                           downloaded++;
                           log("ok", `[DL Drain] Downloaded: ${track.artist} – ${track.title}`);
+                        } else {
+                          await markPreparationState(track, "failed", "download failed", db);
                         }
                         return ok;
                       } catch (err) {
+                        await markPreparationState(track, "failed", err instanceof Error ? err.message : String(err), db);
                         log("fail", `[DL Drain] Error: ${track.artist} – ${track.title}: ${err instanceof Error ? err.message : err}`);
                         return false;
                       }

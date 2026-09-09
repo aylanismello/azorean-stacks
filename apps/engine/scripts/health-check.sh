@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Quick health check — returns non-zero if engine needs restart
 ENGINE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-STATUS_FILE="$HOME/.openclaw/data/azorean-engine-status.json"
+STATUS_FILE="$HOME/.hermes/data/azorean-engine-status.json"
 
 # Check if engine process is running
 if ! pgrep -f "runner.sh" > /dev/null 2>&1; then
@@ -17,7 +17,7 @@ if [ -z "$WATCHER_PID" ] || [ "$WATCHER_PID" = "0" ] || ! kill -0 "$WATCHER_PID"
 fi
 
 # Check for sustained Realtime errors in last 100 lines of logs
-RECENT_ERRORS=$(tail -100 "$HOME/.openclaw/logs/azorean-engine.log" | grep -c "CHANNEL_ERROR\|CLOSED.*reconnect")
+RECENT_ERRORS=$(tail -100 "$HOME/.hermes/logs/azorean-engine.log" | grep -c "CHANNEL_ERROR\|CLOSED.*reconnect")
 if [ "$RECENT_ERRORS" -gt 10 ]; then
   echo "UNHEALTHY: $RECENT_ERRORS Realtime errors in recent logs"
   exit 1

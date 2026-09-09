@@ -5,37 +5,41 @@
  *  - Max 2 consecutive tracks from the same episode
  *  - Max 2 consecutive tracks from the same artist
  *  - No 3 consecutive tracks with the same primary genre
- *  - Every 5th slot is an exploration wildcard: a medium-scored track
- *    (between 25th and 75th percentile of taste_score)
+ *  - Reserve roughly 10–15% of positions for low-confidence exploration
+ *    rather than forcing a medium-score wildcard every fifth track.
  */
 export function diversifyTracks(tracks: any[]): any[] {
   if (tracks.length === 0) return [];
 
-  // Separate wildcards (medium-scored, 25th–75th percentile)
-  const scores = tracks
-    .map((t) => t.taste_score ?? 0)
-    .sort((a: number, b: number) => a - b);
-  const p25 = scores[Math.floor(scores.length * 0.25)];
-  const p75 = scores[Math.floor(scores.length * 0.75)];
+  const explorationCount = tracks.length >= 8
+    ? Math.max(1, Math.round(tracks.length * 0.125))
+    : 0;
 
-  const wildcards: any[] = [];
-  const mainPool: any[] = [];
+  // Avoid replacing the strongest first-page candidates. Among the remainder,
+  // explore where the model is least certain and closest to neutral.
+  const rankedExploration = tracks
+    .map((track, index) => {
+      const meta = (track.metadata || {}) as Record<string, unknown>;
+      const confidenceValue = meta._score_confidence;
+      const confidence = typeof confidenceValue === "number"
+        ? Math.max(0, Math.min(1, confidenceValue))
+        : 0;
+      const score = Math.max(-1, Math.min(1, Number(track.taste_score || 0)));
+      const uncertainty = (1 - confidence) * 0.75 + (1 - Math.abs(score)) * 0.25;
+      return { track, index, uncertainty };
+    })
+    .filter((entry) => entry.index >= Math.ceil(tracks.length * 0.25))
+    .sort((a, b) => b.uncertainty - a.uncertainty || a.index - b.index)
+    .slice(0, explorationCount);
 
-  // If p25 === p75 (uniform scores), skip wildcard separation — all go to main pool
-  const hasScoreVariance = p25 !== p75;
-  for (const t of tracks) {
-    const s = t.taste_score ?? 0;
-    if (hasScoreVariance && s >= p25 && s <= p75) {
-      wildcards.push(t);
-    } else {
-      mainPool.push(t);
-    }
-  }
-
+  const explorationIds = new Set(rankedExploration.map((entry) => entry.track.id));
+  const explorationPool = rankedExploration.map((entry) => entry.track);
+  const mainPool = tracks.filter((track) => !explorationIds.has(track.id));
   const result: any[] = [];
-  let wildcardIdx = 0;
+  const explorationInterval = explorationPool.length
+    ? Math.max(7, Math.round(tracks.length / explorationPool.length))
+    : Number.POSITIVE_INFINITY;
 
-  // Track consecutive runs
   let consecEpId: string | null = null;
   let consecEpCount = 0;
   let consecArtist: string | null = null;
@@ -43,71 +47,58 @@ export function diversifyTracks(tracks: any[]): any[] {
   let consecGenre: string | null = null;
   let consecGenreCount = 0;
 
-  function updateConsecState(t: any) {
-    const epId = t.episode_id || null;
+  function updateConsecState(track: any) {
+    const epId = track.episode_id || null;
     if (epId !== null && epId === consecEpId) consecEpCount++;
     else { consecEpId = epId; consecEpCount = 1; }
 
-    const artist = (t.artist || "").toLowerCase();
+    const artist = (track.artist || "").toLowerCase();
     if (artist && artist === consecArtist) consecArtistCount++;
     else { consecArtist = artist || null; consecArtistCount = 1; }
 
-    const genre = primaryGenre(t);
+    const genre = primaryGenre(track);
     if (genre && genre === consecGenre) consecGenreCount++;
     else { consecGenre = genre; consecGenreCount = 1; }
   }
 
-  function violatesConstraints(t: any): boolean {
-    const epId = t.episode_id || null;
+  function violatesConstraints(track: any): boolean {
+    const epId = track.episode_id || null;
     if (epId !== null && epId === consecEpId && consecEpCount >= 2) return true;
 
-    const artist = (t.artist || "").toLowerCase();
+    const artist = (track.artist || "").toLowerCase();
     if (artist && artist === consecArtist && consecArtistCount >= 2) return true;
 
-    const genre = primaryGenre(t);
+    const genre = primaryGenre(track);
     if (genre && genre === consecGenre && consecGenreCount >= 2) return true;
 
     return false;
   }
 
-  const pool = [...mainPool];
+  function takeFirstEligible(pool: any[]): any | null {
+    if (!pool.length) return null;
+    const index = pool.findIndex((track) => !violatesConstraints(track));
+    const [track] = pool.splice(index === -1 ? 0 : index, 1);
+    return track;
+  }
 
-  while (pool.length > 0) {
-    // Insert exploration wildcard at every 5th position (indices 4, 9, 14…)
-    if (result.length > 0 && (result.length + 1) % 5 === 0 && wildcardIdx < wildcards.length) {
-      const w = wildcards[wildcardIdx++];
-      result.push(w);
-      updateConsecState(w);
-      continue;
-    }
-
-    // Find first pool track that satisfies all constraints
-    let idx = -1;
-    for (let i = 0; i < pool.length; i++) {
-      if (!violatesConstraints(pool[i])) {
-        idx = i;
-        break;
-      }
-    }
-    if (idx === -1) idx = 0; // fallback
-
-    const [track] = pool.splice(idx, 1);
+  while (mainPool.length || explorationPool.length) {
+    const explorationDue = explorationPool.length > 0
+      && result.length > 0
+      && (result.length + 1) % explorationInterval === 0;
+    let track = explorationDue ? takeFirstEligible(explorationPool) : takeFirstEligible(mainPool);
+    if (!track) track = takeFirstEligible(explorationPool);
+    if (!track) break;
     result.push(track);
     updateConsecState(track);
   }
 
-  // Append remaining wildcards at the end
-  result.push(...wildcards.slice(wildcardIdx));
   return result;
 }
 
-function primaryGenre(t: any): string | null {
-  const meta = t.metadata;
-  if (!meta) return null;
-  const genres = meta.genres;
+function primaryGenre(track: any): string | null {
+  const genres = track.metadata?.genres;
   if (Array.isArray(genres) && genres.length > 0 && typeof genres[0] === "string") {
     return genres[0].toLowerCase();
   }
-  // Also check _score_components or inline genre field
   return null;
 }

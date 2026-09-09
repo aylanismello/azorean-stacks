@@ -15,6 +15,12 @@
  */
 import { parseArgs } from "util";
 import { getSupabase } from "../lib/supabase";
+import {
+  materializeAllQueues,
+  markPreparationState,
+  selectPreparationBatch,
+  type PreparationTrack,
+} from "../lib/predictive-queue";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, readdirSync } from "fs";
 
 const { values } = parseArgs({
@@ -28,7 +34,7 @@ const { values } = parseArgs({
 });
 
 const batchLimit = parseInt(String(values.limit || "20"), 10);
-const force = values.force || false;
+const force = values.force === true;
 const durationMinutes = values.duration ? parseInt(String(values.duration), 10) : null;
 const deadline = durationMinutes ? Date.now() + durationMinutes * 60_000 : null;
 const db = getSupabase();
@@ -54,14 +60,15 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer!));
 }
 
-async function markFailed(track: any): Promise<void> {
+async function markFailed(track: PreparationTrack, message = "download failed"): Promise<void> {
   await db.from("tracks").update({
     dl_attempts: (track.dl_attempts || 0) + 1,
     dl_failed_at: new Date().toISOString(),
   }).eq("id", track.id);
+  await markPreparationState(track, "failed", message, db);
 }
 
-async function markSuccess(track: any, storagePath: string, signedUrl: string): Promise<void> {
+async function markSuccess(track: PreparationTrack, storagePath: string, signedUrl: string): Promise<void> {
   await db.from("tracks").update({
     storage_path: storagePath,
     download_url: signedUrl,
@@ -69,6 +76,7 @@ async function markSuccess(track: any, storagePath: string, signedUrl: string): 
     dl_attempts: 0,
     dl_failed_at: null,
   }).eq("id", track.id);
+  await markPreparationState(track, "ready", null, db);
 }
 
 async function tryDownloadUrl(url: string, videoId: string, label: string): Promise<{ ok: boolean; stderr: string }> {
@@ -115,7 +123,7 @@ async function soundcloudFallback(artist: string, title: string): Promise<string
   }
 }
 
-async function downloadOne(track: any): Promise<boolean> {
+async function downloadOne(track: PreparationTrack): Promise<boolean> {
   if (!track.youtube_url) return false;
   if (!existsSync(TMP_DIR)) mkdirSync(TMP_DIR, { recursive: true });
 
@@ -190,29 +198,12 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 }
 
 async function runOnce(): Promise<{ downloaded: number; failed: number; empty: boolean }> {
-  let query = db.from("tracks").select("*")
-    .is("storage_path", null).not("youtube_url", "is", null).neq("youtube_url", "")
-    .in("status", ["pending", "approved"])
-    .order("created_at").limit(batchLimit);
+  const materialized = await materializeAllQueues(db);
+  console.log(`  Materialized ${materialized.tracks} ranked entries for ${materialized.users} user(s)`);
+  const tracks = await selectPreparationBatch(db, batchLimit, force);
 
-  if (!force) {
-    query = query.lt("dl_attempts", MAX_ATTEMPTS);
-  }
-
-  const { data: tracks } = await query;
-
-  if (!tracks?.length) {
-    const { count } = await db.from("tracks").select("id", { count: "exact", head: true })
-      .is("storage_path", null).not("youtube_url", "is", null).neq("youtube_url", "")
-      .in("status", ["pending", "approved"])
-      .gte("dl_attempts", MAX_ATTEMPTS);
-
-    if (count && count > 0) {
-      console.log(`  Nothing to do. ${count} track${count > 1 ? "s" : ""} skipped (failed ${MAX_ATTEMPTS}+ times).`);
-      console.log(`  Run with --force to retry.`);
-    } else {
-      console.log(`  Nothing to download.`);
-    }
+  if (!tracks.length) {
+    console.log("  Warm queue satisfied; no protected or explicitly requested audio needs preparation.");
     return { downloaded: 0, failed: 0, empty: true };
   }
 
@@ -226,6 +217,7 @@ async function runOnce(): Promise<{ downloaded: number; failed: number; empty: b
     const batch = tracks.slice(i, i + DL_CONCURRENCY);
     const results = await Promise.allSettled(
       batch.map(async (t) => {
+        await markPreparationState(t, "preparing", null, db);
         const ok = await downloadOne(t);
         const attempt = (t.dl_attempts || 0) + (ok ? 0 : 1);
         console.log(`  ${ok ? "\u2713" : "\u2717"} ${t.artist} - ${t.title}${ok ? "" : ` (${attempt}/${MAX_ATTEMPTS})`}`);
@@ -258,7 +250,7 @@ async function cleanupStaleTemps() {
 async function main() {
   const start = Date.now();
   const mode = deadline ? `looping for ${durationMinutes}m` : "single run";
-  console.log(`\n  The Stacks — Downloader${force ? " (force retry)" : ""}`);
+  console.log(`\n  The Stacks — Bounded Predictive Downloader${force ? " (force retry)" : ""}`);
   console.log(`  ${new Date().toISOString()}`);
   console.log(`  Mode: ${mode}\n`);
 

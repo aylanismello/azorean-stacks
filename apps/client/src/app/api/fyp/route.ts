@@ -53,6 +53,31 @@ export async function GET(req: NextRequest) {
 
   const rows = tracks || [];
 
+  // Overlay the authenticated user's score snapshot. Shared tracks.taste_score
+  // is legacy state and must not carry one account's model into another.
+  if (rows.length > 0) {
+    const personalized = await db.from("user_track_scores")
+      .select("track_id,score,confidence,components")
+      .eq("user_id", user.id)
+      .in("track_id", rows.map((track: any) => track.id));
+    if (!personalized.error) {
+      const scoreMap = new Map((personalized.data || []).map((score: any) => [score.track_id, score]));
+      for (const track of rows) {
+        const score: any = scoreMap.get(track.id);
+        if (!score) continue;
+        track.taste_score = Number(score.score || 0);
+        track.metadata = {
+          ...(track.metadata || {}),
+          _score_components: score.components || {},
+          _score_confidence: Number(score.confidence || 0),
+        };
+      }
+      rows.sort((a: any, b: any) => Number(b.taste_score || 0) - Number(a.taste_score || 0));
+    } else if (!/could not find the table|does not exist|schema cache/i.test(personalized.error.message)) {
+      return NextResponse.json({ error: personalized.error.message }, { status: 500 });
+    }
+  }
+
   // Fetch seed_track and episode joins in bulk
   const trackIds = rows.map((t: any) => t.id);
   const seedTrackIds = Array.from(new Set(rows.map((t: any) => t.seed_track_id).filter(Boolean)));

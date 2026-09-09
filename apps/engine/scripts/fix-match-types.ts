@@ -104,7 +104,7 @@ async function main() {
       .eq("seed_id", row.seed_id);
 
     if (updateErr) {
-      console.error(`  [error] Failed to update row ${row.id}: ${updateErr.message}`);
+      console.error(`  [error] Failed to update ${row.episode_id}/${row.seed_id}: ${updateErr.message}`);
       errors++;
     } else {
       console.log(`  [${newMatchType}] ${seed.artist} – ${seed.title}`);

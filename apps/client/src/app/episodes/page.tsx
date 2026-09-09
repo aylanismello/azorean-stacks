@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Episode, EpisodeTrack } from "@/lib/types";
 import { openYouTube } from "@/lib/youtube";
+import { openSpotify } from "@/lib/spotify-link";
 
 type SourceTab = "all" | "nts" | "lotradio";
 
@@ -476,15 +477,16 @@ function TrackRow({
         )}
         <button
           onClick={handleCopy}
-          className="p-0.5 rounded hover:bg-surface-3 active:scale-90 transition-all"
+          className={`p-1 rounded transition-all active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${copied ? "text-green-500" : "text-foreground/60 hover:text-foreground hover:bg-surface-3"}`}
           title="Copy artist - title"
+          aria-label={copied ? "Copied artist and title" : "Copy artist and title"}
         >
           {copied ? (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 6 9 17 4 12" />
             </svg>
           ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-muted/40 hover:text-muted">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
             </svg>
           )}
@@ -502,9 +504,9 @@ function TrackRow({
           {seeding ? "·" : "SD"}
         </button>
         {t.spotify_url && (
-          <a href={t.spotify_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-green-400/50 hover:text-green-400">
+          <button onClick={() => openSpotify(t.spotify_url!)} className="text-[10px] text-green-400/50 hover:text-green-400" aria-label="Open in Spotify">
             SP
-          </a>
+          </button>
         )}
         {t.youtube_url && (
           <button onClick={() => openYouTube(t.youtube_url!)} className="text-[10px] text-red-400/50 hover:text-red-400">

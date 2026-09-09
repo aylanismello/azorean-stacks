@@ -18,6 +18,14 @@
  *   bun run tune-weights [--user-id <uuid>]
  */
 import { getSupabase } from "../lib/supabase";
+import {
+  addYield,
+  buildTrackSeedLineage,
+  emptyYield,
+  estimateYield,
+  recencyWeight,
+  resolveUserId,
+} from "../lib/taste-scoring";
 
 // Default weights (sum = 100)
 const BASE_WEIGHTS = {
@@ -52,23 +60,19 @@ async function main() {
   const db = getSupabase();
 
   // Resolve user ID
-  let userId: string | null = null;
+  let explicitUserId: string | null = null;
   const userIdArgIdx = process.argv.indexOf("--user-id");
   if (userIdArgIdx !== -1 && process.argv[userIdArgIdx + 1]) {
-    userId = process.argv[userIdArgIdx + 1];
-    console.log(`User filter: ${userId}`);
-  } else {
-    const { data: firstUserRow } = await db
-      .from("user_tracks")
-      .select("user_id")
-      .not("user_id", "is", null)
-      .order("voted_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    userId = firstUserRow?.user_id ?? null;
-    if (userId) console.log(`Auto-detected user: ${userId}`);
-    else { console.log("No users found. Exiting."); return; }
+    explicitUserId = process.argv[userIdArgIdx + 1];
   }
+  const { data: detectedUsers, error: detectedUsersError } = await db
+    .from("user_tracks")
+    .select("user_id")
+    .not("user_id", "is", null)
+    .limit(1000);
+  if (detectedUsersError) throw detectedUsersError;
+  const userId = resolveUserId(explicitUserId, (detectedUsers || []).map((row: any) => row.user_id));
+  console.log(`${explicitUserId ? "User filter" : "Single user auto-detected"}: ${userId}`);
 
   // 1. Fetch last 100 user_tracks with engagement data
   const { data: actions, error: actionsErr } = await db

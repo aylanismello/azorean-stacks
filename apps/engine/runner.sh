@@ -5,9 +5,9 @@
 set -o pipefail
 
 ENGINE_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="$HOME/.openclaw/logs"
+LOG_DIR="$HOME/.hermes/logs"
 LOG_FILE="$LOG_DIR/azorean-engine.log"
-STATUS_FILE="$HOME/.openclaw/data/azorean-engine-status.json"
+STATUS_FILE="$HOME/.hermes/data/azorean-engine-status.json"
 MAX_LOG_LINES=10000
 BUN="/opt/homebrew/bin/bun"
 YT_DLP_BIN="${YT_DLP_BIN:-$(command -v yt-dlp 2>/dev/null || true)}"

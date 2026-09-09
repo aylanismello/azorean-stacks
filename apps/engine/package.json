@@ -8,6 +8,7 @@
     "manual-seed": "bun run scripts/manual-seed.ts",
     "status": "bun run scripts/status.ts",
     "clear-storage": "bun run scripts/clear-storage.ts",
+    "cleanup-audio-cache": "bun run scripts/cleanup-audio-cache.ts",
     "update-signals": "bun run scripts/update-signals.ts",
     "audit": "bun run scripts/audit.ts",
     "watcher": "bun run scripts/watcher.ts",

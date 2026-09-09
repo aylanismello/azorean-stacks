@@ -71,6 +71,8 @@ function toPlayerTrack(track: Track): PlayerTrack {
     _score_components: (track as any)._score_components,
     _match_type: (track as any)._match_type,
     _seed_name: (track as any)._seed_name,
+    _seed_artist: (track as any)._seed_artist,
+    _seed_title: (track as any)._seed_title,
 
     // Voted timestamp
     voted_at: track.voted_at,
@@ -114,6 +116,8 @@ function toTrackLike(pt: PlayerTrack): Track {
     _score_components: pt._score_components,
     _match_type: pt._match_type,
     _seed_name: pt._seed_name,
+    _seed_artist: pt._seed_artist,
+    _seed_title: pt._seed_title,
     // Pass through vote_status for TrackCard
     vote_status: pt.vote_status,
     is_artist_seed: pt.is_artist_seed,
@@ -883,6 +887,19 @@ function StackPageContent() {
 
 // ── Track Context Modal ──────────────────────────────────────────────────────
 
+function discoverySourceLabel(source: string | null | undefined): string {
+  if (!source) return "Unknown source";
+  const labels: Record<string, string> = {
+    nts: "NTS Radio",
+    lotradio: "The Lot Radio",
+    "1001tracklists": "1001Tracklists",
+    spotify: "Spotify",
+    bandcamp: "Bandcamp",
+    manual: "Manual",
+  };
+  return labels[source.toLowerCase()] || source;
+}
+
 function TrackContextModal({
   track,
   stackSource,
@@ -912,8 +929,15 @@ function TrackContextModal({
   const discoveryMethod = meta.discovery_method as string | undefined;
   const curatorSlug = meta.curator_slug as string | undefined;
   const matchType = (track as any)._match_type as string | undefined;
+  const rankedSeedName = (track as any)._seed_name as string | undefined;
   const rankedScore = (track as any)._ranked_score as number | undefined;
   const scoreComponents = (track as any)._score_components as Record<string, number> | undefined;
+  const sourceName = discoverySourceLabel(track.episode?.source || track.source);
+  const sourceUrl = track.source_url || track.episode?.url || null;
+  const episodeLabel = track.episode?.title || track.source_context || episodeTitle || null;
+  const seedLineage = seedArtist
+    ? `${seedArtist}${seedTitle ? ` — ${seedTitle}` : ""}`
+    : rankedSeedName || null;
 
   const modeLabel = () => {
     if (episodeTitle) return `Episode: ${episodeTitle}${episodePos && episodeTotal ? ` — track ${episodePos} of ${episodeTotal}` : ""}`;
@@ -945,29 +969,29 @@ function TrackContextModal({
           </button>
         </div>
 
-        {/* Source episode */}
-        {(track.source || track.source_context || track.episode) && (
-          <div>
-            <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Source Episode</p>
-            {(() => {
-              const linkUrl = track.source_url || track.episode?.url || null;
-              const label = track.source_context || track.episode?.title || track.source;
-              if (linkUrl) {
-                return (
-                  <a
-                    href={linkUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-accent hover:text-accent-bright underline underline-offset-2 decoration-accent/30"
-                  >
-                    {label}
-                  </a>
-                );
-              }
-              return <p className="text-sm text-foreground/80">{label}</p>;
-            })()}
-          </div>
-        )}
+        {/* Actual discovery source and episode/show context */}
+        <div>
+          <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Source</p>
+          <p className="text-sm text-foreground/80">{sourceName}</p>
+        </div>
+        <div>
+          <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Episode / Show</p>
+          {episodeLabel && sourceUrl ? (
+            <a
+              href={sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-sm text-accent hover:text-accent-bright focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded underline underline-offset-2 decoration-accent/30"
+            >
+              {episodeLabel}
+              <span aria-hidden="true">↗</span>
+            </a>
+          ) : episodeLabel ? (
+            <p className="text-sm text-foreground/80">{episodeLabel}</p>
+          ) : (
+            <p className="text-sm text-muted">Episode context unavailable</p>
+          )}
+        </div>
 
         {/* Discovery Method */}
         <div>
@@ -983,21 +1007,22 @@ function TrackContextModal({
                 <span className="text-foreground/50"> · via {seedArtist}{seedTitle ? ` — ${seedTitle}` : ""}</span>
               )}
             </p>
-          ) : (
+          ) : matchType === "full" || seedLineage ? (
             <p className="text-sm text-foreground/80">🌱 Seed Discovery</p>
+          ) : (
+            <p className="text-sm text-muted">Discovery method unavailable</p>
           )}
         </div>
 
-        {/* Seed connection */}
-        {seedArtist && (
-          <div>
-            <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Seed Connection</p>
-            <p className="text-sm text-foreground/80">
-              <span className="text-foreground">{seedArtist}</span>
-              {seedTitle && <span className="text-foreground/50"> — {seedTitle}</span>}
-            </p>
-          </div>
-        )}
+        {/* Seed lineage */}
+        <div>
+          <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Seed Lineage</p>
+          {seedLineage ? (
+            <p className="text-sm text-foreground/80">{seedLineage}</p>
+          ) : (
+            <p className="text-sm text-muted">No seed lineage available</p>
+          )}
+        </div>
 
         {/* Mode context */}
         <div>

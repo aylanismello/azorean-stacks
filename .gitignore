@@ -14,6 +14,9 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 
+# production cleanup audit manifests (local only)
+apps/engine/cleanup-manifests/
+
 # os
 .DS_Store
 
