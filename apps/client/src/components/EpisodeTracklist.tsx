@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
 import { supabase } from "@/lib/supabase";
+import { getSeedBadge } from "@/lib/seed-badge";
 
 interface TrackListItem {
   id: string;
@@ -273,6 +274,7 @@ export function EpisodeTracklist(props: TracklistProps) {
           <div className="space-y-0.5">
             {tracks.map((t) => {
               const isPlaying = globalPlayer.currentTrack?.id === t.id;
+              const seedBadge = getSeedBadge(t);
               return (
                 <button
                   key={t.id}
@@ -283,7 +285,7 @@ export function EpisodeTracklist(props: TracklistProps) {
                   }}
                   disabled={false}
                   className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center gap-2.5 transition-colors group border ${
-                    t.is_seed
+                    seedBadge === "seed"
                       ? "bg-green-500/5 border-green-500/15 cursor-default"
                       : isPlaying
                         ? "bg-accent/10 border-accent/20"
@@ -326,9 +328,9 @@ export function EpisodeTracklist(props: TracklistProps) {
                   {/* Track info */}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1 mb-0.5">
-                      {(t.is_seed || t.is_artist_seed) ? (
+                      {seedBadge === "seed" ? (
                         <span className="text-[9px] leading-none flex-shrink-0" title="Seed">🌱</span>
-                      ) : t.is_re_seed ? (
+                      ) : seedBadge === "re-seed" ? (
                         <span className="text-[9px] leading-none flex-shrink-0" title="Re-seed">🌿</span>
                       ) : t.super_liked ? (
                         <span className="text-[9px] leading-none text-amber-400 flex-shrink-0" title="Super liked">⭐</span>
@@ -342,9 +344,9 @@ export function EpisodeTracklist(props: TracklistProps) {
                               ? "text-amber-400/40"
                               : t.vote_status === "listened"
                                 ? "text-foreground/40"
-                                : (t.is_seed || t.is_artist_seed)
+                                : seedBadge === "seed"
                                   ? "text-green-400/90 font-medium"
-                                  : t.is_re_seed
+                                  : seedBadge === "re-seed"
                                     ? "text-emerald-400/80 font-medium"
                                     : t.super_liked
                                       ? "text-amber-300/90 font-medium"

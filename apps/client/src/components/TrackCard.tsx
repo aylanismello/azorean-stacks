@@ -6,6 +6,7 @@ import { openYouTube } from "@/lib/youtube";
 import { openSpotify } from "@/lib/spotify-link";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
 import { useSpotify } from "./SpotifyProvider";
+import { getSeedBadge } from "@/lib/seed-badge";
 
 interface TrackCardProps {
   track: Track;
@@ -83,6 +84,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
   const touchRef = useRef<{ startX: number; startY: number; swiping: boolean } | null>(null);
   const globalPlayer = useGlobalPlayer();
   const spotify = useSpotify();
+  const seedBadge = getSeedBadge(track);
 
   // Restore vote state from track data on mount (returning to a previously-voted track)
   // Restore vote state — runs on mount AND when track object changes
@@ -740,12 +742,12 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/30 z-[1]" />
 
         {/* Seed indicator badge */}
-        {(track.is_seed || (track as any).is_artist_seed) && (
+        {seedBadge === "seed" && (
           <div className="absolute top-3 left-3 z-20 text-base leading-none" title="Seed">
             🌱
           </div>
         )}
-        {track.is_re_seed && !track.is_seed && !(track as any).is_artist_seed && (
+        {seedBadge === "re-seed" && (
           <div className="absolute top-3 left-3 z-20 text-base leading-none" title="Re-seed">
             🌿
           </div>
@@ -1175,12 +1177,12 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
           <span className="px-2.5 py-1 bg-surface-2 rounded-lg text-xs text-muted">
             {sourceLabel(track.source)}
           </span>
-          {(track.is_seed || (track as any).is_artist_seed) && (
+          {seedBadge === "seed" && (
             <span className="px-2 py-1 bg-green-500/15 rounded-lg text-xs text-green-400 font-medium" title="Seed">
               🌱 seed
             </span>
           )}
-          {track.is_re_seed && !track.is_seed && !(track as any).is_artist_seed && (
+          {seedBadge === "re-seed" && (
             <span className="px-2 py-1 bg-emerald-500/15 rounded-lg text-xs text-emerald-400 font-medium" title="Re-seed">
               🌿 re-seed
             </span>

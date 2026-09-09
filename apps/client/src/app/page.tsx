@@ -8,6 +8,7 @@ import { EpisodeTracklist, TracklistSheet } from "@/components/EpisodeTracklist"
 import { useGlobalPlayer, PlayerTrack } from "@/components/GlobalPlayerProvider";
 import { useSpotify } from "@/components/SpotifyProvider";
 import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
+import { destinationQueueStartIndex } from "@/lib/queue-navigation";
 
 export default function StackPage() {
   return (
@@ -272,18 +273,11 @@ function StackPageContent() {
           // Ordinary navigation back to the same view must not mutate its
           // active sequence. Low-queue replenishment happens after voting.
         } else {
-          const playingIdx = playingTrack
-            ? playerTracks.findIndex((track) => track.id === playingTrack.id)
-            : -1;
-          if (playingTrack && playingIdx === -1) {
-            // Keep uninterrupted playback at the front, then use the requested
-            // view's stable queue for every subsequent track.
-            globalPlayer.setQueue([playingTrack, ...playerTracks], 0);
-          } else {
-            const startIndex = playingIdx >= 0 ? playingIdx : 0;
-            globalPlayer.setQueue(playerTracks, startIndex);
-            if (!playingTrack) globalPlayer.loadTrack(playerTracks[startIndex]);
-          }
+          const startIndex = destinationQueueStartIndex(playerTracks, playingTrack?.id);
+          // Preserve the audio element, not a foreign queue row. -1 represents
+          // playback outside this destination so next enters its first track.
+          globalPlayer.setQueue(playerTracks, startIndex);
+          if (!playingTrack) globalPlayer.loadTrack(playerTracks[0]);
         }
         setHasEpisodeTracks(false);
       }
