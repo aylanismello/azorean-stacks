@@ -131,6 +131,15 @@ while true; do
     printf '[%s] Lot Radio refresh failed with exit %s; retaining existing source data\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code" >> "$LOG_FILE"
   fi
 
+  write_status "soulection" "running"
+  printf '[%s] refreshing recent Soulection episodes\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
+  if run_job "soulection" bun run crawl-soulection --limit 20; then
+    :
+  else
+    code=$?
+    printf '[%s] Soulection refresh failed with exit %s; retaining existing source data\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code" >> "$LOG_FILE"
+  fi
+
   write_status "discovery" "running"
   printf '[%s] starting discovery cycle\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
   if run_job "discovery" bun run discover --once; then

@@ -2,9 +2,19 @@
 
 import { createContext, useContext, useCallback, useRef, useState, useEffect } from "react";
 import { useSpotify } from "./SpotifyProvider";
+import { nextEpisodePositionToPrepare } from "@/lib/episode-playback";
+import { refreshSignedUrl } from "@/lib/player-audio";
+import { canonicalPlayerTrackId } from "@/lib/player-track-identity";
+import { buildQualifiedListenEvidence } from "@/lib/listen-evidence";
 
 export interface PlayerTrack {
   id: string;
+  /** Stable source-appearance identity for exact episode ordering and repeats. */
+  appearanceId?: string | null;
+  /** Zero-based position in the source episode tracklist. */
+  episodePosition?: number | null;
+  /** Honest state for episode entries that cannot currently play. */
+  episodeAvailability?: "ready" | "queued" | "unavailable" | "unresolved";
   /** Stable catalog identity shared by the library and episode snapshots. */
   catalogTrackId?: string | null;
   artist: string;
@@ -68,6 +78,13 @@ export interface PlayerTrack {
   voted_at?: string | null;
 }
 
+export interface EpisodePlaybackSession {
+  sessionId: string;
+  episodeId: string;
+  /** Position already prepared by the episode-start request. */
+  preparedPosition?: number;
+}
+
 type PlaybackSource = "spotify" | "audio" | null;
 
 /** Connection quality based on recent stall history */
@@ -119,6 +136,8 @@ interface GlobalPlayerContextType {
   currentIndex: number;
   /** Replace the playback queue; if startIndex is provided, seek to that position */
   setQueue: (queue: PlayerTrack[], startIndex?: number) => void;
+  /** Replace the queue with a persistent, lossless episode playback session. */
+  setEpisodeQueue: (queue: PlayerTrack[], session: EpisodePlaybackSession, startIndex?: number) => void;
   /** Jump to a specific position in the queue and start playing */
   playFromQueue: (index: number, origin?: string) => void;
   /** Advance to the next track in the queue; returns false if at end */
@@ -160,6 +179,7 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   queue: [],
   currentIndex: 0,
   setQueue: () => {},
+  setEpisodeQueue: () => {},
   playFromQueue: () => {},
   next: () => false,
   prev: () => false,
@@ -171,30 +191,6 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
 
 export function useGlobalPlayer() {
   return useContext(GlobalPlayerContext);
-}
-
-/** Re-fetch a fresh signed URL for a track from the episodes API */
-async function refreshSignedUrl(track: PlayerTrack): Promise<string | null> {
-  if (track.audioRefreshUrl) {
-    try {
-      const res = await fetch(track.audioRefreshUrl);
-      if (!res.ok) return null;
-      const data = await res.json() as { url?: string };
-      return data.url || null;
-    } catch {
-      return null;
-    }
-  }
-  if (!track.episodeId) return null;
-  try {
-    const res = await fetch(`/api/episodes/${track.episodeId}/tracks`);
-    if (!res.ok) return null;
-    const tracks: Array<{ id: string; audio_url?: string }> = await res.json();
-    const match = tracks.find((t) => t.id === track.id);
-    return match?.audio_url || null;
-  } catch {
-    return null;
-  }
 }
 
 export function GlobalPlayerProvider({ children }: { children: React.ReactNode }) {
@@ -219,6 +215,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [currentIndex, setCurrentIndex] = useState(0);
   const queueRef = useRef<PlayerTrack[]>([]);
   const currentIndexRef = useRef(0);
+  const [episodeSession, setEpisodeSession] = useState<EpisodePlaybackSession | null>(null);
+  const episodeSessionRef = useRef<EpisodePlaybackSession | null>(null);
+  const lastScheduledEpisodePositionRef = useRef<number | null>(null);
+  const episodePrepareChainRef = useRef<Promise<void>>(Promise.resolve());
+  const lastEpisodeEndedCountRef = useRef(0);
   // Tracks whether we've already fired the 'listened' mark for the current track session
   const listenedFiredRef = useRef(false);
 
@@ -494,18 +495,18 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   // Fire-and-forget — backend guards against overwriting explicit votes.
   useEffect(() => {
     if (listenedFiredRef.current) return;
-    const catalogTrackId = currentTrack?.catalogTrackId || null;
+    const catalogTrackId = canonicalPlayerTrackId(currentTrack);
     if (!catalogTrackId) return;
-    if (duration <= 0 || progress <= 0) return;
-    if (progress / duration < 0.8) return;
+    const evidence = buildQualifiedListenEvidence(progress, duration);
+    if (!evidence) return;
 
     listenedFiredRef.current = true;
     fetch(`/api/tracks/${catalogTrackId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "listened" }),
+      body: JSON.stringify(evidence),
     }).catch(() => {});
-  }, [progress, duration, currentTrack?.catalogTrackId]);
+  }, [progress, duration, currentTrack]);
 
   // ── Proactive signed URL refresh ──
   // Supabase signed URLs expire after 1 hour. Refresh at ~50 minutes to avoid mid-playback expiry.
@@ -562,6 +563,10 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, [spotify]);
 
   const setQueue = useCallback((newQueue: PlayerTrack[], startIndex?: number) => {
+    // Ordinary queues end any dedicated episode session without changing their behavior.
+    episodeSessionRef.current = null;
+    setEpisodeSession(null);
+    lastScheduledEpisodePositionRef.current = null;
     queueRef.current = newQueue;
     setQueueState(newQueue);
     if (startIndex !== undefined) {
@@ -580,10 +585,52 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     }
   }, []);
 
+  const setEpisodeQueue = useCallback((
+    newQueue: PlayerTrack[],
+    session: EpisodePlaybackSession,
+    startIndex = 0,
+  ) => {
+    queueRef.current = newQueue;
+    setQueueState(newQueue);
+    currentIndexRef.current = startIndex;
+    setCurrentIndex(startIndex);
+    episodeSessionRef.current = session;
+    setEpisodeSession(session);
+    lastScheduledEpisodePositionRef.current = session.preparedPosition ?? null;
+    lastEpisodeEndedCountRef.current = trackEndedCount;
+    episodePrepareChainRef.current = Promise.resolve();
+  }, [trackEndedCount]);
+
+  // Keep lookahead and the durable session position moving with each source
+  // appearance. Serialization prevents rapid unavailable-track skips from
+  // writing an older position after a newer one.
+  useEffect(() => {
+    if (!episodeSession) return;
+    const position = nextEpisodePositionToPrepare(
+      queueRef.current,
+      currentIndex,
+      lastScheduledEpisodePositionRef.current,
+    );
+    if (position === null) return;
+    lastScheduledEpisodePositionRef.current = position;
+    const scheduledSession = episodeSession;
+    episodePrepareChainRef.current = episodePrepareChainRef.current
+      .catch(() => {})
+      .then(async () => {
+        if (episodeSessionRef.current?.sessionId !== scheduledSession.sessionId) return;
+        await fetch(`/api/episodes/${scheduledSession.episodeId}/prepare`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: scheduledSession.sessionId, current_position: position }),
+        });
+      })
+      .catch(() => {});
+  }, [currentIndex, episodeSession]);
+
   const updateTrackVote = useCallback((trackId: string, status: string, superLiked?: boolean) => {
     const updater = (list: PlayerTrack[]) =>
       list.map((t) =>
-        t.id === trackId
+        t.id === trackId || t.catalogTrackId === trackId
           ? {
               ...t,
               vote_status: status as PlayerTrack["vote_status"],
@@ -596,7 +643,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     queueRef.current = updater(queueRef.current);
     setQueueState(updater);
     // Also update currentTrack if it matches
-    if (currentTrackRef.current?.id === trackId) {
+    if (currentTrackRef.current?.id === trackId || currentTrackRef.current?.catalogTrackId === trackId) {
       setCurrentTrack((prev) =>
         prev
           ? {
@@ -613,12 +660,12 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
   const markTrackSeeded = useCallback((trackId: string, seedId?: string | null) => {
     const updater = (list: PlayerTrack[]) =>
-      list.map((track) => track.id === trackId
+      list.map((track) => track.id === trackId || track.catalogTrackId === trackId
         ? { ...track, seed_id: seedId || track.seed_id || track.id, is_re_seed: true }
         : track);
     queueRef.current = updater(queueRef.current);
     setQueueState(updater);
-    if (currentTrackRef.current?.id === trackId) {
+    if (currentTrackRef.current?.id === trackId || currentTrackRef.current?.catalogTrackId === trackId) {
       setCurrentTrack((track) => track
         ? { ...track, seed_id: seedId || track.seed_id || track.id, is_re_seed: true }
         : track);
@@ -637,12 +684,12 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const replaceAudioUrl = useCallback((trackId: string, newUrl: string) => {
     // Update the track in the queue
     const updater = (list: PlayerTrack[]) =>
-      list.map((t) => (t.id === trackId ? { ...t, audioUrl: newUrl } : t));
+      list.map((t) => (t.id === trackId || t.catalogTrackId === trackId ? { ...t, audioUrl: newUrl } : t));
     queueRef.current = updater(queueRef.current);
     setQueueState(updater);
 
     // Update currentTrack if it matches
-    if (currentTrackRef.current?.id === trackId) {
+    if (currentTrackRef.current?.id === trackId || currentTrackRef.current?.catalogTrackId === trackId) {
       setCurrentTrack((prev) => (prev ? { ...prev, audioUrl: newUrl } : prev));
       urlObtainedAtRef.current.set(trackId, Date.now());
 
@@ -823,6 +870,16 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     return true;
   }, [playFromQueue]);
 
+  // Ordinary queue pages retain their existing end handling. Dedicated episode
+  // sessions advance here so playback survives navigation away from the mix page
+  // and can skip unresolved/unavailable appearances without dropping them.
+  useEffect(() => {
+    if (!episodeSession) return;
+    if (trackEndedCount === lastEpisodeEndedCountRef.current) return;
+    lastEpisodeEndedCountRef.current = trackEndedCount;
+    next();
+  }, [episodeSession, next, trackEndedCount]);
+
   const togglePlayPause = useCallback(() => {
     if (!currentTrack) return;
     if (noSource) return;
@@ -929,6 +986,9 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setPlaybackOrigin(null);
     setTrackStartedAt(null);
     setConnectionQuality("good");
+    episodeSessionRef.current = null;
+    setEpisodeSession(null);
+    lastScheduledEpisodePositionRef.current = null;
     // Clear queue
     queueRef.current = [];
     setQueueState([]);
@@ -1006,6 +1066,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         queue,
         currentIndex,
         setQueue,
+        setEpisodeQueue,
         playFromQueue,
         next,
         prev,

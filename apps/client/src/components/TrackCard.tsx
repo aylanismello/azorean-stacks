@@ -7,9 +7,12 @@ import { openSpotify } from "@/lib/spotify-link";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
 import { useSpotify } from "./SpotifyProvider";
 import { getSeedBadge } from "@/lib/seed-badge";
+import { playerTrackMatchesCanonicalId, trackCardActionTargets } from "@/lib/player-track-identity";
 
 interface TrackCardProps {
   track: Track;
+  /** Catalog identity for writes; explicit null means an unresolved appearance. */
+  canonicalTrackId?: string | null;
   onVote: (id: string, status: "approved" | "rejected" | "skipped" | "bad_source", advance?: boolean) => Promise<void>;
   onSuperLike?: (id: string) => Promise<void>;
   onSkipEpisode?: () => void;
@@ -63,7 +66,7 @@ function audioSourceLabel(meta: Record<string, any>, track: { youtube_url: strin
   return "Audio";
 }
 
-export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingEpisode, onShowContext, seedContext }: TrackCardProps) {
+export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkipEpisode, skippingEpisode, onShowContext, seedContext }: TrackCardProps) {
   const [exiting, setExiting] = useState<"left" | "right" | null>(null);
   const [voting, setVoting] = useState(false);
   const votingRef = useRef(false);
@@ -85,6 +88,8 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
   const globalPlayer = useGlobalPlayer();
   const spotify = useSpotify();
   const seedBadge = getSeedBadge(track);
+  const actionTrackId = canonicalTrackId === undefined ? track.id : canonicalTrackId;
+  const actionTargets = trackCardActionTargets(actionTrackId);
 
   // Restore vote state from track data on mount (returning to a previously-voted track)
   // Restore vote state — runs on mount AND when track object changes
@@ -108,13 +113,13 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
   }, [track.artist, track.title]);
 
   const handlePlantSeed = useCallback(async () => {
-    if (seeding || seeded) return; // one-time, irreversible from this screen
+    if (!actionTargets || seeding || seeded) return; // one-time, irreversible from this screen
     setSeeding(true);
     try {
       const res = await fetch("/api/seeds/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: track.id, artist: track.artist, title: track.title, action: "ensure" }),
+        body: JSON.stringify({ track_id: actionTargets.trackId, artist: track.artist, title: track.title, action: "ensure" }),
       });
       if (!res.ok) return;
       const data = await res.json();
@@ -124,7 +129,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     } finally {
       setSeeding(false);
     }
-  }, [track.id, track.artist, track.title, seeding, seeded]);
+  }, [actionTargets, track.artist, track.title, seeding, seeded]);
 
   const isValidFixUrl = useCallback((url: string) => {
     const prefixes = [
@@ -138,6 +143,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
   }, []);
 
   const handleFixSource = useCallback(async () => {
+    if (!actionTargets) return;
     if (!isValidFixUrl(fixUrl)) {
       setFixError("Must be a YouTube or SoundCloud URL");
       return;
@@ -145,7 +151,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     setFixSubmitting(true);
     setFixError("");
     try {
-      const res = await fetch(`/api/tracks/${track.id}`, {
+      const res = await fetch(actionTargets.trackPatchUrl, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "fix_source", source_url: fixUrl }),
@@ -161,7 +167,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
         // Audio element reloads with the fresh source (does NOT auto-play).
         setFixUrl("");
         setFixModalOpen(false);
-        globalPlayer.replaceAudioUrl(track.id, data.audio_url);
+        globalPlayer.replaceAudioUrl(actionTargets.trackId, data.audio_url);
       } else if (data.queued) {
         // Engine is downloading in background
         setFixError("");
@@ -179,18 +185,19 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     } finally {
       setFixSubmitting(false);
     }
-  }, [track, fixUrl, isValidFixUrl, globalPlayer]);
+  }, [actionTargets, fixUrl, isValidFixUrl, globalPlayer]);
 
   // Report engagement metrics to backend before a vote action.
   // Fire-and-forget — don't block the vote on this.
   const reportEngagement = useCallback(() => {
-    if (!globalPlayer.trackStartedAt || globalPlayer.currentTrack?.id !== track.id) return;
+    if (!actionTargets || !globalPlayer.trackStartedAt) return;
+    if (!playerTrackMatchesCanonicalId(globalPlayer.currentTrack, actionTargets.trackId)) return;
     const duration = globalPlayer.duration;
     const progress = globalPlayer.progress;
     const listenPct = duration > 0 ? Math.round((progress / duration) * 100) : null;
     const listenDurationMs = Math.round(progress * 1000);
     const actionDelayMs = Date.now() - globalPlayer.trackStartedAt;
-    fetch(`/api/user-tracks/${track.id}/engagement`, {
+    fetch(actionTargets.engagementUrl, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -199,10 +206,10 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
         action_delay_ms: actionDelayMs,
       }),
     }).catch(() => {}); // fire-and-forget
-  }, [track.id, globalPlayer]);
+  }, [actionTargets, globalPlayer]);
 
   const handleSuperLike = useCallback(async () => {
-    if (superLiking || votingRef.current) return;
+    if (!actionTargets || superLiking || votingRef.current) return;
     setSuperLiking(true);
     // Reset all other vote states (mutual exclusivity)
     setRejected(false);
@@ -213,18 +220,18 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     reportEngagement();
     try {
       if (onSuperLike) {
-        await onSuperLike(track.id);
+        await onSuperLike(actionTargets.trackId);
       }
     } catch {
       // silently fail — the pop animation already ran
     } finally {
       setSuperLiking(false);
     }
-  }, [track.id, onSuperLike, superLiking, reportEngagement]);
+  }, [actionTargets, onSuperLike, superLiking, reportEngagement]);
 
   const handleVote = useCallback(
     async (status: "approved" | "rejected" | "skipped" | "bad_source", advance: boolean = true) => {
-      if (votingRef.current) return;
+      if (!actionTargets || votingRef.current) return;
       // Reset all vote states (mutual exclusivity) before setting new one
       setRejected(false);
       setSkippedVote(false);
@@ -241,7 +248,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
       if (!advance) {
         if (superLiked) return; // already super-liked, don't double-approve
         reportEngagement();
-        await onVote(track.id, status, false);
+        await onVote(actionTargets.trackId, status, false);
         return;
       }
       reportEngagement();
@@ -249,19 +256,19 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
       setVoting(true);
       setExiting(status === "approved" ? "right" : status === "skipped" ? "right" : "left"); // rejected + bad_source exit left
       await new Promise((r) => setTimeout(r, 250));
-      await onVote(track.id, status, true);
+      await onVote(actionTargets.trackId, status, true);
     },
-    [track.id, onVote, superLiked, reportEngagement]
+    [actionTargets, onVote, superLiked, reportEngagement]
   );
 
   const handleAdvance = useCallback(async () => {
-    if (votingRef.current) return;
+    if (!actionTargets || votingRef.current) return;
     votingRef.current = true;
     setVoting(true);
     setExiting("right");
     await new Promise((r) => setTimeout(r, 250));
-    await onVote(track.id, "approved", true);
-  }, [track.id, onVote]);
+    await onVote(actionTargets.trackId, "approved", true);
+  }, [actionTargets, onVote]);
 
   // Touch swipe handlers
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -296,7 +303,7 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
   const isRadarTrack = meta.discovery_method === "radar:curator";
   const hasAudio = !!(track.audio_url || track.preview_url);
   const hasPlayableSource = hasAudio || (!!track.spotify_url && spotify.connected && !!spotify.deviceId);
-  const isCurrentTrack = globalPlayer.currentTrack?.id === track.id;
+  const isCurrentTrack = playerTrackMatchesCanonicalId(globalPlayer.currentTrack, actionTrackId);
 
   const handleArtworkPlay = useCallback(() => {
     if (isCurrentTrack) {
@@ -306,9 +313,9 @@ export function TrackCard({ track, onVote, onSuperLike, onSkipEpisode, skippingE
     const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
     // Prefer the provider's queue object so source, episode, seed lineage, and
     // scoring context survive a play action. The fallback covers standalone cards.
-    const queuedTrack = globalPlayer.queue.find((queued) => queued.id === track.id);
+    const queuedTrack = globalPlayer.queue.find((queued) => playerTrackMatchesCanonicalId(queued, actionTrackId));
     globalPlayer.play(queuedTrack || {
-      id: track.id,
+      id: actionTrackId || track.id,
       artist: track.artist,
       title: track.title,
       coverArtUrl: safeCoverUrl(track.cover_art_url) || safeCoverUrl(track.episode?.artwork_url ?? null),

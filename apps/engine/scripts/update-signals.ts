@@ -6,6 +6,7 @@ import {
   emptyYield,
   episodeContextKey,
   estimateYield,
+  explicitOutcomeWeight,
   indexTrackEpisodes,
   recencyWeight,
   resolveUserId,
@@ -61,7 +62,7 @@ async function main() {
       .from("user_tracks")
       .select("user_id")
       .not("user_id", "is", null)
-      .in("status", ["approved", "rejected", "skipped"])
+      .in("status", ["approved", "rejected", "skipped", "listened"])
       .range(from, from + 999);
     if (error) throw error;
     detectedUserIds.push(...(data || []).map((row: any) => row.user_id));
@@ -82,9 +83,9 @@ async function main() {
     // legacy state and must never be used as a taste label.
     const { data: userVotes, error: uvError } = await db
       .from("user_tracks")
-      .select("track_id, status, super_liked, voted_at")
+      .select("track_id, status, super_liked, voted_at, listen_pct")
       .eq("user_id", userId)
-      .in("status", ["approved", "rejected", "skipped"]);
+      .in("status", ["approved", "rejected", "skipped", "listened"]);
     if (uvError) throw uvError;
     if (!userVotes || userVotes.length === 0) continue;
 
@@ -103,7 +104,13 @@ async function main() {
     // Merge only this user's outcome; never fall back to global tracks.status.
     const tracks = tracksData.map((track: any) => {
       const vote = userVoteMap.get(track.id);
-      return { ...track, status: vote!.status, _super_liked: !!vote!.super_liked, _voted_at: vote!.voted_at };
+      return {
+        ...track,
+        status: vote!.status,
+        _super_liked: !!vote!.super_liked,
+        _voted_at: vote!.voted_at,
+        _listen_pct: vote!.listen_pct,
+      };
     });
     await computeAndUpsertSignals(db, tracks, userId);
   }
@@ -126,6 +133,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   const signals = new Map<string, SignalAccumulator>();
 
   function addSignal(type: string, value: string, weight: number) {
+    if (weight === 0) return;
     const key = `${type}::${value.toLowerCase().trim()}`;
     const existing = signals.get(key) || { positive: 0, negative: 0, samples: 0 };
     if (weight > 0) {
@@ -147,11 +155,11 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   }
 
   function trackWeight(track: any): number {
-    // For user-path tracks, _super_liked flag is already merged in
-    if (track._super_liked || superLikedSet.has(track.id)) return 3.0;
-    if (track.status === "approved") return 1.0;
-    if (track.status === "skipped") return -0.3;
-    return -1.0; // rejected
+    return explicitOutcomeWeight(
+      track.status,
+      track._super_liked || superLikedSet.has(track.id),
+      track._listen_pct,
+    );
   }
 
   const globalYield = emptyYield();
@@ -242,7 +250,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     tracks.flatMap((track: any) => [...(episodesByTrack.get(track.id) || [])]),
   ));
   const { data: votedEpisodes, error: votedEpisodesError } = votedEpisodeIds.length > 0
-    ? await db.from("episodes").select("id, curator_id, source, url, title").in("id", votedEpisodeIds)
+    ? await db.from("episodes").select("id, curator_id, series_id, source, url, title").in("id", votedEpisodeIds)
     : { data: [], error: null };
   if (votedEpisodesError) throw votedEpisodesError;
   const episodeMap = new Map<string, any>((votedEpisodes || []).map((episode: any) => [episode.id, episode]));
@@ -462,10 +470,10 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     ? (await selectInBatches<any>(
         db,
         "tracks",
-        "id, artist, metadata, episode_id, seed_track_id, status",
+        "id, artist, metadata, episode_id, seed_track_id",
         "id",
         eligiblePendingIds,
-      )).filter((track) => track.status === "pending")
+      ))
     : [];
 
   console.log(`Scoring ${pending.length} pending tracks`);
@@ -492,7 +500,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     const weight = trackWeight(track);
     for (const episodeId of episodesByTrack.get(track.id) || []) {
       const accumulator = episodeVoteStats.get(episodeId) || { approved: 0, rejected: 0 };
-      if (weight > 0) accumulator.approved++;
+      if (weight >= 1) accumulator.approved++;
       else if (weight < -0.5) accumulator.rejected++; // rejected (not skipped)
       episodeVoteStats.set(episodeId, accumulator);
     }
@@ -506,7 +514,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     pending.flatMap((track: any) => [...(pendingEpisodesByTrack.get(track.id) || [])]),
   ));
   const epCuratorLinks = pendingEpisodeIds.length > 0
-    ? await selectInBatches<any>(db, "episodes", "id, curator_id, source, url, title", "id", pendingEpisodeIds)
+    ? await selectInBatches<any>(db, "episodes", "id, curator_id, series_id, source, url, title", "id", pendingEpisodeIds)
     : [];
 
   const epToCuratorMap = new Map<string, string>();
@@ -731,7 +739,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
       score: update.taste_score,
       confidence: update.confidence,
       components: update.score_components,
-      scoring_version: "taste_context_v2",
+      scoring_version: "taste_context_v3",
       scored_at: scoredAt,
     }));
     const { error } = await db.from("user_track_scores").upsert(batch, { onConflict: "user_id,track_id" });

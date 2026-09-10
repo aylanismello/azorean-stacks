@@ -9,6 +9,7 @@ import { useGlobalPlayer, PlayerTrack } from "@/components/GlobalPlayerProvider"
 import { useSpotify } from "@/components/SpotifyProvider";
 import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
 import { destinationQueueStartIndex } from "@/lib/queue-navigation";
+import { canonicalPlayerTrackId, displayedPlayerTrackId, playerTrackActionId } from "@/lib/player-track-identity";
 
 export default function StackPage() {
   return (
@@ -84,7 +85,8 @@ function toPlayerTrack(track: Track): PlayerTrack {
 /** Convert a PlayerTrack back to a Track-like object for components that still expect Track */
 function toTrackLike(pt: PlayerTrack): Track {
   return {
-    id: pt.id,
+    // TrackCard writes to the catalog row; PlayerTrack.id keeps queue identity.
+    id: displayedPlayerTrackId(pt),
     artist: pt.artist,
     title: pt.title,
     cover_art_url: pt.coverArtUrl,
@@ -323,8 +325,10 @@ function StackPageContent() {
 
   const handleSuperLike = async (id: string) => {
     userHasInteracted.current = true;
+    const actionTrackId = playerTrackActionId(id, currentTrack, globalPlayer.queue);
+    if (!actionTrackId) return;
     try {
-      const res = await fetch(`/api/tracks/${id}`, {
+      const res = await fetch(`/api/tracks/${actionTrackId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ super_liked: true }),
@@ -336,7 +340,7 @@ function StackPageContent() {
       }
 
       // Update vote in provider — single source of truth
-      globalPlayer.updateTrackVote(id, "approved", true);
+      globalPlayer.updateTrackVote(actionTrackId, "approved", true);
       setVoteCount((c) => c + 1);
     } catch (err) {
       console.error("Super like error:", err);
@@ -346,12 +350,14 @@ function StackPageContent() {
 
   const handleReseed = async (track: PlayerTrack) => {
     if (track.seed_id || track.is_re_seed) return;
+    const actionTrackId = canonicalPlayerTrackId(track);
+    if (!actionTrackId) return;
     try {
       const res = await fetch("/api/seeds/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          track_id: track.id,
+          track_id: actionTrackId,
           artist: track.artist,
           title: track.title,
           action: "ensure",
@@ -359,7 +365,7 @@ function StackPageContent() {
       });
       if (!res.ok) throw new Error(`Re-seed failed (${res.status})`);
       const data = await res.json();
-      globalPlayer.markTrackSeeded(track.id, data.seed_id);
+      globalPlayer.markTrackSeeded(actionTrackId, data.seed_id);
     } catch (err) {
       console.error("Re-seed error:", err);
       setError("Failed to re-seed. Please try again.");
@@ -368,8 +374,10 @@ function StackPageContent() {
 
   const handleVote = async (id: string, status: "approved" | "rejected" | "skipped" | "bad_source", advance: boolean = true) => {
     userHasInteracted.current = true;
+    const actionTrackId = playerTrackActionId(id, currentTrack, globalPlayer.queue);
+    if (!actionTrackId) return;
     try {
-      const res = await fetch(`/api/tracks/${id}`, {
+      const res = await fetch(`/api/tracks/${actionTrackId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
@@ -381,7 +389,7 @@ function StackPageContent() {
       }
 
       // Update vote in provider — single source of truth
-      globalPlayer.updateTrackVote(id, status);
+      globalPlayer.updateTrackVote(actionTrackId, status);
       setVoteCount((c) => c + 1);
 
       if (!advance) return;
@@ -901,6 +909,7 @@ function StackPageContent() {
           <TrackCard
             key={currentTrack.id}
             track={currentTrackLike}
+            canonicalTrackId={canonicalPlayerTrackId(currentTrack)}
             onVote={handleVote}
             onSuperLike={handleSuperLike}
             onSkipEpisode={currentEpisodeId ? handleSkipEpisode : undefined}

@@ -3,9 +3,49 @@ import {
   addYield,
   buildTrackSeedLineage,
   emptyYield,
+  episodeContextKey,
   estimateYield,
+  explicitOutcomeWeight,
   indexTrackEpisodes,
 } from "./taste-scoring";
+
+describe("explicitOutcomeWeight", () => {
+  test("keeps explicit likes strongest and preserves missing skip behavior", () => {
+    expect(explicitOutcomeWeight("approved", true, 5)).toBe(3);
+    expect(explicitOutcomeWeight("approved", false, 100)).toBe(1);
+    expect(explicitOutcomeWeight("rejected", false, 100)).toBe(-1);
+    expect(explicitOutcomeWeight("skipped", false, null)).toBe(-0.3);
+    expect(explicitOutcomeWeight("listened", false, null)).toBe(0);
+  });
+
+  test("treats an early skip as more negative than a mostly-listened skip", () => {
+    expect(explicitOutcomeWeight("skipped", false, 0)).toBe(-0.4);
+    expect(explicitOutcomeWeight("skipped", false, 5)).toBeLessThan(
+      explicitOutcomeWeight("skipped", false, 90),
+    );
+    expect(explicitOutcomeWeight("skipped", false, 90)).toBeLessThan(0);
+    expect(explicitOutcomeWeight("skipped", false, 100)).toBe(-0.2);
+  });
+
+  test("uses a completed listen as weak evidence well below approval", () => {
+    expect(explicitOutcomeWeight("listened", false, 80)).toBe(0.15);
+    expect(explicitOutcomeWeight("listened", false, 100)).toBe(0.15);
+    expect(explicitOutcomeWeight("listened", false, 100)).toBeLessThan(
+      explicitOutcomeWeight("approved", false, 1),
+    );
+  });
+});
+
+describe("episodeContextKey", () => {
+  test("aggregates separate episodes from one series into a stable context", () => {
+    expect(episodeContextKey({ series_id: "series-1", title: "Episode One" })).toBe("series:series-1");
+    expect(episodeContextKey({ series_id: "series-1", title: "Episode Two" })).toBe("series:series-1");
+  });
+
+  test("keeps the existing show fallback when no series is attached", () => {
+    expect(episodeContextKey({ url: "https://www.nts.live/shows/heat-wave/episodes/one" })).toBe("nts:heat-wave");
+  });
+});
 
 describe("estimateYield", () => {
   test("does not let many ancient votes satisfy current support", () => {

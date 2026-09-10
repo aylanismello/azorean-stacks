@@ -2,14 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks } from "@/lib/diversify";
+import { loadPersonalizedFyp } from "@/lib/fyp-personalization";
 import { parsePagination } from "@/lib/pagination";
 
 export const dynamic = "force-dynamic";
-
-const QUERY_PAGE_SIZE = 1000;
-const MISSING_TABLE_RE = /could not find the table|does not exist|schema cache/i;
-
-type Db = ReturnType<typeof getServiceClient>;
 
 function getAuthClient(req: NextRequest) {
   return createServerClient(
@@ -22,120 +18,6 @@ function getAuthClient(req: NextRequest) {
       },
     }
   );
-}
-
-function joinedTrack(row: any) {
-  return Array.isArray(row.track) ? row.track[0] : row.track;
-}
-
-async function getExcludedTrackIds(db: Db, userId: string) {
-  const excluded = new Set<string>();
-  for (let page = 0; ; page++) {
-    const { data, error } = await db.from("user_tracks")
-      .select("track_id,status")
-      .eq("user_id", userId)
-      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
-    if (error) throw error;
-    for (const opinion of data || []) {
-      if (opinion.status !== "pending") excluded.add(opinion.track_id);
-    }
-    if (!data || data.length < QUERY_PAGE_SIZE) break;
-  }
-  return excluded;
-}
-
-/**
- * Select the authenticated user's playable ranking before applying the API
- * offset. Ready queue entries are the tracks the warmer actually prepared;
- * scored playable tracks fill any gap without falling back to shared scores.
- */
-async function getPersonalizedTracks(
-  db: Db,
-  userId: string,
-  limit: number,
-  offset: number,
-  hideLow: boolean,
-) {
-  const target = offset + limit;
-  if (target <= 0) return [];
-
-  const excluded = await getExcludedTrackIds(db, userId);
-  const ranked: any[] = [];
-  const seen = new Set<string>();
-  const now = new Date().toISOString();
-
-  for (let page = 0; ranked.length < target; page++) {
-    let query = db.from("audio_preparation_queue")
-      .select("track_id,rank,score,score_components,track:tracks!inner(*)")
-      .eq("user_id", userId)
-      .eq("state", "ready")
-      .gt("expires_at", now)
-      .eq("track.status", "pending")
-      .not("track.storage_path", "is", null)
-      .order("rank", { ascending: true })
-      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
-    if (hideLow) query = query.gt("score", -0.3);
-
-    const { data, error } = await query;
-    if (error) {
-      if (!MISSING_TABLE_RE.test(error.message)) throw error;
-      break;
-    }
-
-    for (const queueRow of data || []) {
-      const track = joinedTrack(queueRow);
-      if (!track || excluded.has(track.id) || seen.has(track.id)) continue;
-      seen.add(track.id);
-      ranked.push({
-        ...track,
-        taste_score: Number(queueRow.score || 0),
-        metadata: {
-          ...(track.metadata || {}),
-          _score_components: queueRow.score_components || {},
-          _score_confidence: 0,
-        },
-      });
-      if (ranked.length >= target) break;
-    }
-    if (!data || data.length < QUERY_PAGE_SIZE) break;
-  }
-
-  for (let page = 0; ranked.length < target; page++) {
-    let query = db.from("user_track_scores")
-      .select("track_id,score,confidence,components,track:tracks!inner(*)")
-      .eq("user_id", userId)
-      .eq("track.status", "pending")
-      .not("track.storage_path", "is", null)
-      .order("score", { ascending: false })
-      .order("confidence", { ascending: false })
-      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
-    if (hideLow) query = query.gt("score", -0.3);
-
-    const { data, error } = await query;
-    if (error) {
-      if (!MISSING_TABLE_RE.test(error.message)) throw error;
-      break;
-    }
-
-    for (const scoreRow of data || []) {
-      const track = joinedTrack(scoreRow);
-      if (!track || excluded.has(track.id) || seen.has(track.id)) continue;
-      seen.add(track.id);
-      ranked.push({
-        ...track,
-        taste_score: Number(scoreRow.score || 0),
-        metadata: {
-          ...(track.metadata || {}),
-          _score_components: scoreRow.components || {},
-          _score_confidence: Number(scoreRow.confidence || 0),
-        },
-      });
-      if (ranked.length >= target) break;
-    }
-    if (!data || data.length < QUERY_PAGE_SIZE) break;
-  }
-
-  return ranked.slice(offset, target);
 }
 
 export async function GET(req: NextRequest) {
@@ -159,75 +41,15 @@ export async function GET(req: NextRequest) {
   }
 
   const db = getServiceClient();
-  const isFiltered = Boolean(seedId || genre || seedArtist);
   let rows: any[];
-
-  if (isFiltered) {
-    if (seedId) {
-      const { data: ownedSeed, error: seedError } = await db.from("seeds")
-        .select("id")
-        .eq("id", seedId)
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (seedError) return NextResponse.json({ error: seedError.message }, { status: 500 });
-      if (!ownedSeed) return NextResponse.json({ error: "Seed not found" }, { status: 404 });
-    }
-
-    const { data: tracks, error } = await db.rpc("get_fyp_tracks", {
-      p_user_id: user.id,
-      p_limit: limit,
-      p_offset: offset,
-      p_seed_id: seedId,
-      p_genre: genre,
-      p_seed_artist: seedArtist,
-      p_hide_low: hideLow,
+  try {
+    rows = await loadPersonalizedFyp(db, user.id, {
+      limit, offset, hideLow, seedId, genre, seedArtist,
     });
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-    rows = tracks || [];
-
-    if (rows.length > 0) {
-      const { data: eligible, error: eligibilityError } = await db.from("user_tracks")
-        .select("track_id")
-        .eq("user_id", user.id)
-        .eq("status", "pending")
-        .in("track_id", rows.map((track: any) => track.id));
-      if (eligibilityError) return NextResponse.json({ error: eligibilityError.message }, { status: 500 });
-      const eligibleIds = new Set((eligible || []).map((row) => row.track_id));
-      rows = rows.filter((track: any) => eligibleIds.has(track.id));
-    }
-
-    // Filtered rows retain personalized score display when a snapshot exists.
-    if (rows.length > 0) {
-      const personalized = await db.from("user_track_scores")
-        .select("track_id,score,confidence,components")
-        .eq("user_id", user.id)
-        .in("track_id", rows.map((track: any) => track.id));
-      if (!personalized.error) {
-        const scoreMap = new Map((personalized.data || []).map((score: any) => [score.track_id, score]));
-        for (const track of rows) {
-          const score: any = scoreMap.get(track.id);
-          if (!score) continue;
-          track.taste_score = Number(score.score || 0);
-          track.metadata = {
-            ...(track.metadata || {}),
-            _score_components: score.components || {},
-            _score_confidence: Number(score.confidence || 0),
-          };
-        }
-        rows.sort((a: any, b: any) => Number(b.taste_score || 0) - Number(a.taste_score || 0));
-      } else if (!MISSING_TABLE_RE.test(personalized.error.message)) {
-        return NextResponse.json({ error: personalized.error.message }, { status: 500 });
-      }
-    }
-  } else {
-    try {
-      rows = await getPersonalizedTracks(db, user.id, limit, offset, hideLow);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to load personalized FYP";
-      return NextResponse.json({ error: message }, { status: 500 });
-    }
+  } catch (error) {
+    const status = error instanceof Error && "status" in error && error.status === 404 ? 404 : 500;
+    const message = error instanceof Error ? error.message : "Failed to load personalized FYP";
+    return NextResponse.json({ error: message }, { status });
   }
 
   const seedTrackIds = Array.from(new Set(rows.map((t: any) => t.seed_track_id).filter(Boolean)));

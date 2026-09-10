@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { canEditSharedCatalog } from "@/lib/server-auth";
+import { parseQualifiedListenEvidence } from "@/lib/listen-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,10 @@ function getAuthClient(req: NextRequest) {
 function isPendingPipelineMigration(error: { code?: string; message?: string }): boolean {
   const message = error.message || "";
   return (["42703", "PGRST204"].includes(error.code || "") && message.includes("user_id"))
-    || (error.code === "PGRST202" && message.includes("enqueue_corrected_download_request"));
+    || (error.code === "PGRST202" && (
+      message.includes("enqueue_corrected_download_request")
+      || message.includes("record_qualified_track_listen")
+    ));
 }
 
 // PATCH /api/tracks/[id] — update vote (writes to user_tracks ONLY, never tracks.status)
@@ -151,20 +155,31 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
 
   // 'listened' is a soft-skip: only set if no explicit vote exists yet
   if (status === "listened") {
-    const { data: existing } = await supabase
-      .from("user_tracks")
-      .select("status")
-      .eq("user_id", user.id)
-      .eq("track_id", params.id)
-      .maybeSingle();
+    const evidence = parseQualifiedListenEvidence(body);
+    if (!evidence) {
+      return NextResponse.json({
+        error: "listened requires integer listen_pct (80-100) and non-negative listen_duration_ms",
+      }, { status: 400 });
+    }
 
-    if (!existing || existing.status === "pending") {
-      await supabase
-        .from("user_tracks")
-        .upsert(
-          { user_id: user.id, track_id: params.id, status: "listened" },
-          { onConflict: "user_id,track_id" }
-        );
+    // The RPC makes evidence + soft status one atomic upsert. Its conflict branch
+    // preserves approved/rejected/skipped/bad_source if an explicit vote races it.
+    const { data: persistedStatus, error: listenError } = await supabase.rpc(
+      "record_qualified_track_listen",
+      {
+        p_user_id: user.id,
+        p_track_id: params.id,
+        p_listen_pct: evidence.listen_pct,
+        p_listen_duration_ms: evidence.listen_duration_ms,
+      },
+    );
+    if (listenError) {
+      if (isPendingPipelineMigration(listenError)) {
+        return NextResponse.json({
+          error: "Qualified listen persistence is temporarily unavailable while its database migration is applied",
+        }, { status: 503 });
+      }
+      return NextResponse.json({ error: listenError.message }, { status: 500 });
     }
 
     const { data: track, error: trackErr } = await supabase
@@ -173,7 +188,7 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       .eq("id", params.id)
       .single();
     if (trackErr) return NextResponse.json({ error: trackErr.message }, { status: 500 });
-    return NextResponse.json({ ...track, status: existing?.status === "pending" || !existing ? "listened" : existing.status });
+    return NextResponse.json({ ...track, status: persistedStatus, ...evidence });
   }
 
   // All other votes: upsert to user_tracks only

@@ -19,19 +19,43 @@ import {
 } from "../lib/pipeline";
 import { SOURCES } from "../lib/sources/index";
 import { runCuratorRadar } from "./radar-curator";
+import { crawlSoulection } from "./crawl-soulection";
 import {
   claimPreparationTracks,
   evictRetiredQueueAudio,
   materializeAllQueues,
+  materializeUserQueue,
   markPreparationState,
   releasePreparationTracks,
   selectPreparationBatch,
 } from "../lib/predictive-queue";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { downloadConcurrency, preferredAcquisitionUrl, ytDlpAudioArgs } from "../lib/yt-dlp";
+import { isExplicitDecision, refreshDecisionQueue } from "../lib/decision-refresh";
 
 const db = getSupabase();
 const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json`;
+
+const decisionRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let decisionRefreshChain = Promise.resolve();
+function scheduleDecisionRefresh(userId: string) {
+  const existing = decisionRefreshTimers.get(userId);
+  if (existing) clearTimeout(existing);
+  if (!existing && decisionRefreshTimers.size >= 100) return;
+  decisionRefreshTimers.set(userId, setTimeout(() => {
+    decisionRefreshTimers.delete(userId);
+    decisionRefreshChain = decisionRefreshChain.then(() => refreshDecisionQueue(userId, {
+      refreshPersonalizedScores: async () => {
+        const proc = Bun.spawn([Bun.which("bun") || "bun", "run", "scripts/update-signals.ts", "--user-id", userId], {
+          cwd: `${import.meta.dir}/..`, stdout: "inherit", stderr: "inherit",
+        });
+        const exitCode = await proc.exited;
+        if (exitCode !== 0) throw new Error(`signal refresh exited ${exitCode}`);
+      },
+      materializeUserQueue: () => materializeUserQueue(userId, db),
+    })).catch((error) => log("fail", `Decision refresh failed for ${userId}: ${error instanceof Error ? error.message : error}`));
+  }, 2_000));
+}
 
 // ─── CONCURRENCY LIMITS ─────────────────────────────────────
 // Tuned for M4 Mac Mini — all bottlenecks are network I/O
@@ -1310,6 +1334,9 @@ function startWatcher() {
         log("ok", `user_track INSERT detected for track ${trackId}`);
         enqueueTrack(trackId);
         processRepairQueue();
+        if (userId && isExplicitDecision(payload.new?.status)) {
+          scheduleDecisionRefresh(userId);
+        }
 
         // Re-seed: when a track is approved, auto-create a seed for it so
         // the pipeline discovers co-occurring tracks. The seed is scoped to
@@ -1331,10 +1358,12 @@ function startWatcher() {
         const trackId = payload.new?.track_id;
         const userId = payload.new?.user_id;
         const becameApproved = payload.new?.status === "approved" && payload.old?.status !== "approved";
-        if (!trackId || !userId || !becameApproved) return;
+        if (!trackId || !userId) return;
+        const explicitDecision = isExplicitDecision(payload.new?.status);
+        if (explicitDecision || payload.new?.super_liked !== payload.old?.super_liked) scheduleDecisionRefresh(userId);
+        if (!becameApproved) return;
         try {
           await ensureApprovalSeed(trackId, userId);
-          await materializeAllQueues(db);
         } catch (err) {
           log("fail", `Re-seed on approval UPDATE failed for track ${trackId}: ${err instanceof Error ? err.message : err}`);
         }
@@ -1452,6 +1481,25 @@ function startWatcher() {
               });
             }
           }, SIX_HOURS);
+
+          // Keep the shared Soulection series fresh independently from seed discovery.
+          let soulectionCrawlRunning = false;
+          const refreshSoulection = async () => {
+            if (shuttingDown || soulectionCrawlRunning) return;
+            soulectionCrawlRunning = true;
+            try {
+              const result = await crawlSoulection({ limit: 20, db });
+              log("ok", `[Soulection] ${result.episodes} episodes / ${result.appearances} appearances refreshed`);
+              for (const failure of result.failures) log("fail", `[Soulection] ${failure}`);
+            } catch (err) {
+              // Preserve the previous index on source/schema failure; retry next interval.
+              log("fail", `[Soulection] Refresh failed: ${err instanceof Error ? err.message : err}`);
+            } finally {
+              soulectionCrawlRunning = false;
+            }
+          };
+          setTimeout(refreshSoulection, 30_000);
+          setInterval(refreshSoulection, SIX_HOURS);
 
           // Every 2 min: drain pending-enrichment backlog from DB
           setInterval(async () => {

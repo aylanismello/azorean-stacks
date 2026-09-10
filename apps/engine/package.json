@@ -13,7 +13,8 @@
     "audit": "bun run scripts/audit.ts",
     "watcher": "bun run scripts/watcher.ts",
     "segundo-sol:bpm": "bun run scripts/backfill-segundo-sol-bpm.ts",
-    "crawl-lotradio": "bun run scripts/crawl-lotradio.ts"
+    "crawl-lotradio": "bun run scripts/crawl-lotradio.ts",
+    "crawl-soulection": "bun run scripts/crawl-soulection.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

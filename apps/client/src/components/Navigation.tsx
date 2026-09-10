@@ -11,6 +11,7 @@ import { useGlobalPlayer } from "./GlobalPlayerProvider";
 const links = [
   { href: "/stacks", label: "Stacks", icon: "◉" },
   { href: "/tracks", label: "Tracks", icon: "✓" },
+  { href: "/mixes", label: "Mixes", icon: "♬" },
   { href: "/seeds", label: "Seeds", icon: "◎" },
   { href: "/episodes", label: "Episodes", icon: "▶" },
   { href: "/curators", label: "Curators", icon: "♫" },
@@ -157,8 +158,8 @@ export function Navigation() {
         </Link>
         <div className="flex items-center gap-1">
           {links.map((link) => {
-            const isActive = link.href === "/stacks"
-              ? pathname.startsWith("/stacks")
+            const isActive = link.href === "/stacks" || link.href === "/mixes"
+              ? pathname.startsWith(link.href)
               : pathname === link.href;
             return (
               <Link
@@ -288,6 +289,14 @@ function MobileAccountButton() {
 
             <div className="px-4 pb-6 space-y-2">
               {/* Extra pages — only in mobile More sheet */}
+              <Link
+                href="/mixes"
+                onClick={() => setOpen(false)}
+                className="w-full flex items-center gap-3 px-4 py-3 bg-surface-2 rounded-xl text-sm text-foreground/80 hover:bg-surface-3 transition-colors"
+              >
+                <span className="text-base">♬</span>
+                Mixes
+              </Link>
               <Link
                 href="/seeds"
                 onClick={() => setOpen(false)}

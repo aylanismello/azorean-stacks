@@ -35,6 +35,27 @@ export interface TrackEpisodeLink {
   episode_id: string;
 }
 
+export type ExplicitDecisionStatus = "approved" | "rejected" | "skipped" | "listened";
+
+/** Deterministic explicit-label strength, with listening used only to qualify skips. */
+export function explicitOutcomeWeight(
+  status: ExplicitDecisionStatus,
+  superLiked = false,
+  listenPct?: number | null,
+): number {
+  if (superLiked) return 3;
+  if (status === "approved") return 1;
+  if (status === "rejected") return -1;
+  if (status === "listened") {
+    if (listenPct === null || listenPct === undefined || !Number.isFinite(listenPct) || listenPct < 80) return 0;
+    return 0.15;
+  }
+  if (listenPct === null || listenPct === undefined || !Number.isFinite(listenPct)) return -0.3;
+  const boundedListenPct = Math.max(0, Math.min(100, listenPct));
+  // Known depth nudges a skip by at most 0.1 around the missing-depth default.
+  return Math.round((-0.4 + boundedListenPct * 0.002) * 1000) / 1000;
+}
+
 export function indexTrackEpisodes(
   tracks: TrackLineageInput[],
   links: TrackEpisodeLink[]
@@ -65,6 +86,7 @@ export function addYield(
   outcome: number,
   recencyWeight = 1
 ): void {
+  if (outcome === 0) return;
   const weightedOutcome = Math.abs(outcome) * Math.max(0, recencyWeight);
   if (outcome > 0) accumulator.positive += weightedOutcome;
   else if (outcome < 0) accumulator.negative += weightedOutcome;
@@ -181,10 +203,12 @@ export function buildTrackSeedLineage(
 
 /** Stable show/source key: NTS show slug, otherwise normalized source + title. */
 export function episodeContextKey(episode: {
+  series_id?: string | null;
   source?: string | null;
   url?: string | null;
   title?: string | null;
 }): string | null {
+  if (episode.series_id) return `series:${episode.series_id.toLowerCase()}`;
   const source = (episode.source || "").toLowerCase().trim();
   const url = episode.url || "";
   const ntsMatch = url.match(/\/shows\/([^/]+)(?:\/|$)/i);

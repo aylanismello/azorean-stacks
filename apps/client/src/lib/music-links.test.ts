@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { diversifyTracks } from "./diversify";
+import { diversifyTracks, highConfidencePrefixLength } from "./diversify";
 import { extractSpotifyTrackId } from "./spotify-link";
 import { extractVideoId } from "./youtube";
 
@@ -31,7 +31,8 @@ describe("front-page diversification", () => {
     const result = diversifyTracks(tracks);
     expect(result).toHaveLength(tracks.length);
     expect(new Set(result.map((track) => track.id)).size).toBe(tracks.length);
-    for (let index = 2; index < result.length; index++) {
+    const prefixLength = highConfidencePrefixLength(tracks);
+    for (let index = Math.max(2, prefixLength); index < result.length; index++) {
       const triple = result.slice(index - 2, index + 1);
       expect(new Set(triple.map((track) => track.artist.toLowerCase())).size).toBeGreaterThan(1);
       expect(new Set(triple.map((track) => track.episode_id)).size).toBeGreaterThan(1);
