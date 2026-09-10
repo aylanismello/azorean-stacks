@@ -1,4 +1,4 @@
--- Segundo Sol: The CMS-ening
+-- Segundo Sol Sessions private planning studio
 -- Private per-user episode planning, track snapshots, inspiration mixes, artwork.
 
 create table if not exists segundo_sol_episodes (

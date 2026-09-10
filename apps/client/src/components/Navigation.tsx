@@ -15,7 +15,7 @@ const links = [
   { href: "/episodes", label: "Episodes", icon: "▶" },
   { href: "/curators", label: "Curators", icon: "♫" },
   { href: "/stats", label: "Stats", icon: "▤" },
-  { href: "/segundo-sol", label: "☀☀", icon: "☀☀" },
+  { href: "/segundo-sol", label: "☀☀ Sessions", icon: "☀☀" },
 ];
 
 // Fewer tabs on mobile — Segundo Sol stays visible; Seeds, Episodes + Stats live in More
@@ -23,7 +23,7 @@ const mobileLinks = [
   { href: "/", label: "Playing", icon: "▶" },
   { href: "/stacks", label: "Stacks", icon: "◉" },
   { href: "/tracks", label: "Tracks", icon: "✓" },
-  { href: "/segundo-sol", label: "Sol", icon: "☀☀" },
+  { href: "/segundo-sol", label: "Sessions", icon: "☀☀" },
 ];
 
 function ThemeToggle() {

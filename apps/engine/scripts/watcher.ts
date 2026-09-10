@@ -1666,6 +1666,159 @@ function startWatcher() {
     });
 }
 
+// ─── SEGUNDO SOL SESSIONS IMPORT WORKER ─────────────────────
+// Vercel only writes authenticated jobs. The local engine owns media retrieval,
+// PicoDrops reuse, private storage upload, and final per-track status.
+
+const SEGUNDO_SOL_SYNC_SCRIPT = `${import.meta.dir}/segundo-sol-sessions-sync.py`;
+let segundoSolImportRunning = false;
+let activeSegundoSolJob: { id: string; userId: string } | null = null;
+
+function safeSegundoSolStorageName(value: string): string {
+  return value.normalize("NFC").replace(/[/\\?%*:|"<>]/g, "-").replace(/\s+/g, " ").trim().slice(0, 180) || "untitled";
+}
+
+async function processSegundoSolImportJobs() {
+  if (segundoSolImportRunning || shuttingDown || !existsSync(SEGUNDO_SOL_SYNC_SCRIPT)) return;
+  segundoSolImportRunning = true;
+  try {
+    const { data: job, error: jobError } = await db
+      .from("segundo_sol_import_jobs")
+      .select("*")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (jobError || !job) return;
+
+    const { data: claimed } = await db
+      .from("segundo_sol_import_jobs")
+      .update({ status: "processing", started_at: new Date().toISOString(), error: null })
+      .eq("id", job.id)
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+    if (!claimed) return;
+    activeSegundoSolJob = { id: job.id, userId: job.user_id };
+
+    const { data: episode, error: episodeError } = await db
+      .from("segundo_sol_episodes")
+      .select("id, episode_number")
+      .eq("id", job.episode_id)
+      .eq("user_id", job.user_id)
+      .maybeSingle();
+    if (episodeError || !episode) throw new Error(episodeError?.message || "Episode not found");
+
+    const python = Bun.which("python3") || "/usr/bin/python3";
+    const sourceFlag = job.source_type === "spotify" ? "--spotify-url" : "--source-url";
+    const proc = Bun.spawn(
+      [python, SEGUNDO_SOL_SYNC_SCRIPT, String(episode.episode_number), sourceFlag, job.source_url, "--download"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode !== 0) throw new Error(stderr.trim().slice(-1600) || `PicoDrops sync exited ${exitCode}`);
+
+    const result = JSON.parse(stdout) as { items?: Array<Record<string, any>> };
+    const items = result.items || [];
+    const { data: last } = await db
+      .from("segundo_sol_episode_tracks")
+      .select("position")
+      .eq("episode_id", job.episode_id)
+      .eq("user_id", job.user_id)
+      .order("position", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    let nextPosition = (last?.position ?? -1) + 1;
+    let importedCount = 0;
+
+    for (const [index, item] of items.entries()) {
+      const artist = String(item.artist || "Unknown artist").normalize("NFC");
+      const title = String(item.title || "Untitled").normalize("NFC");
+      const sourceUrl = String(item.source_url || `${job.source_url}#track-${index + 1}`);
+      const localPath = String(item.file_path || "");
+      const reusable = ["exists", "copied_existing"].includes(String(item.status));
+      const ready = reusable || item.status === "downloaded";
+      let storagePath: string | null = null;
+      let audioError: string | null = ready ? null : `PicoDrops status: ${item.status || "failed"}`;
+
+      if (ready && localPath && existsSync(localPath)) {
+        storagePath = `${job.user_id}/${job.episode_id}/${safeSegundoSolStorageName(`${artist} - ${title}`)}.mp3`;
+        const { error: uploadError } = await db.storage
+          .from("segundo-sol-audio")
+          .upload(storagePath, Bun.file(localPath), { contentType: "audio/mpeg", upsert: true });
+        if (uploadError) {
+          storagePath = null;
+          audioError = uploadError.message;
+        }
+      }
+
+      const { data: existing } = await db
+        .from("segundo_sol_episode_tracks")
+        .select("id")
+        .eq("episode_id", job.episode_id)
+        .eq("user_id", job.user_id)
+        .eq("source_url", sourceUrl)
+        .maybeSingle();
+      const audioStatus = storagePath ? (reusable ? "reused" : "downloaded") : "failed";
+      const payload = {
+        artist,
+        title,
+        source_origin: "manual",
+        source_type: job.source_type,
+        source_url: sourceUrl,
+        metadata: {
+          import_job_id: job.id,
+          imported_from: job.source_url,
+          source_title: item.source_title || null,
+          spotify_uri: item.spotify_uri || null,
+          picodrops_file_path: localPath || null,
+          picodrops_status: item.status || null,
+        },
+        audio_status: audioStatus,
+        audio_storage_path: storagePath,
+        audio_error: audioError,
+        audio_requested_at: job.created_at,
+        audio_completed_at: new Date().toISOString(),
+      };
+
+      const write = existing
+        ? await db.from("segundo_sol_episode_tracks").update(payload).eq("id", existing.id).eq("user_id", job.user_id)
+        : await db.from("segundo_sol_episode_tracks").insert({
+            ...payload,
+            episode_id: job.episode_id,
+            user_id: job.user_id,
+            position: nextPosition++,
+          });
+      if (!write.error) importedCount += 1;
+    }
+
+    await db.from("segundo_sol_import_jobs").update({
+      status: "completed",
+      total_count: items.length,
+      imported_count: importedCount,
+      completed_at: new Date().toISOString(),
+    }).eq("id", job.id).eq("user_id", job.user_id);
+    log("ok", `[Segundo Sol] Imported ${importedCount}/${items.length} tracks into Session #${episode.episode_number}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (activeSegundoSolJob) {
+      await db.from("segundo_sol_import_jobs").update({
+        status: "failed",
+        error: message.slice(0, 2000),
+        completed_at: new Date().toISOString(),
+      }).eq("id", activeSegundoSolJob.id).eq("user_id", activeSegundoSolJob.userId);
+    }
+    log("fail", `[Segundo Sol] ${message}`);
+  } finally {
+    activeSegundoSolJob = null;
+    segundoSolImportRunning = false;
+  }
+}
+
 // ─── DOWNLOAD REQUEST HANDLER ────────────────────────────────
 // Watches download_requests table for INSERT events with status='pending'.
 // Downloads the track via yt-dlp, uploads to storage, updates tracks table,
@@ -1805,6 +1958,11 @@ console.log(`\n  The Stacks — Realtime Seed Watcher`);
 console.log(`  ${new Date().toISOString()}\n`);
 
 startWatcher();
+
+// Polling is intentional: it keeps the worker reliable if Realtime misses an
+// insert while the Mac mini reconnects.
+setTimeout(processSegundoSolImportJobs, 2_000);
+setInterval(processSegundoSolImportJobs, 8_000);
 
 // Keep process alive
 setInterval(() => {}, 60_000);

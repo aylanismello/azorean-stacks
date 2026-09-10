@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     episodeNumber = (latest?.episode_number || 0) + 1;
   }
 
-  const title = cleanText(body.title, 200) || `Episode ${episodeNumber}`;
+  const title = cleanText(body.title, 200) || `Segundo Sol Sessions #${episodeNumber}`;
   const { data, error } = await db
     .from("segundo_sol_episodes")
     .insert({

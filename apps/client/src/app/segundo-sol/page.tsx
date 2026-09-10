@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 
 interface EpisodeSummary {
   id: string;
@@ -26,6 +26,9 @@ interface EpisodeTrack {
   artwork_url: string | null;
   role: string | null;
   notes: string | null;
+  audio_status: "not_requested" | "pending" | "processing" | "downloaded" | "reused" | "failed";
+  audio_storage_path: string | null;
+  audio_error: string | null;
 }
 
 interface Inspiration {
@@ -65,6 +68,16 @@ interface EnrichedLink {
   metadata: Record<string, unknown>;
 }
 
+interface ImportJob {
+  id: string;
+  source_url: string;
+  source_type: "spotify" | "soundcloud" | "bandcamp" | "youtube";
+  status: "pending" | "processing" | "completed" | "failed";
+  total_count: number;
+  imported_count: number;
+  error: string | null;
+}
+
 const STATUS_LABELS: Record<EpisodeSummary["status"], string> = {
   draft: "Draft",
   assembling: "Assembling",
@@ -91,6 +104,15 @@ function Artwork({ src, alt, className }: { src: string | null; alt: string; cla
   return <img src={src} alt={alt} className={`${className} object-cover`} />;
 }
 
+function TwinSunMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={`relative shrink-0 ${compact ? "h-10 w-16" : "h-16 w-24"}`} aria-hidden="true">
+      <span className="absolute left-0 top-0 h-full aspect-square rounded-full bg-[radial-gradient(circle_at_28%_25%,#ffd166_0%,#ff8a3d_48%,#f04472_100%)] shadow-[0_0_38px_rgba(255,108,76,0.24)]" />
+      <span className="absolute right-0 top-0 h-full aspect-square rounded-full bg-[radial-gradient(circle_at_30%_25%,#ff7a65_0%,#ed3f85_54%,#a92b79_100%)] mix-blend-screen opacity-95" />
+    </div>
+  );
+}
+
 export default function SegundoSolPage() {
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -100,7 +122,7 @@ export default function SegundoSolPage() {
   const [creating, setCreating] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
-  const [builderTab, setBuilderTab] = useState<"library" | "link" | "inspiration">("library");
+  const [builderTab, setBuilderTab] = useState<"library" | "import" | "link" | "inspiration">("library");
   const [libraryKind, setLibraryKind] = useState<"all" | "super_liked" | "approved">("all");
   const [librarySearch, setLibrarySearch] = useState("");
   const [library, setLibrary] = useState<LibraryTrack[]>([]);
@@ -112,6 +134,9 @@ export default function SegundoSolPage() {
   const [inspirationLink, setInspirationLink] = useState<EnrichedLink | null>(null);
   const [enriching, setEnriching] = useState<"track" | "inspiration" | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importJob, setImportJob] = useState<ImportJob | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const loadEpisodes = useCallback(async () => {
     try {
@@ -150,7 +175,29 @@ export default function SegundoSolPage() {
   useEffect(() => {
     if (selectedId) loadEpisode(selectedId);
     else setEpisode(null);
+    setImportJob(null);
+    setImportUrl("");
   }, [selectedId, loadEpisode]);
+
+  useEffect(() => {
+    if (!episode || !importJob || !["pending", "processing"].includes(importJob.status)) return;
+    const poll = window.setInterval(async () => {
+      try {
+        const data = await requestJson<{ job: ImportJob }>(`/api/segundo-sol/episodes/${episode.id}/imports/${importJob.id}`);
+        setImportJob(data.job);
+        if (data.job.status === "completed") {
+          setImporting(false);
+          await loadEpisode(episode.id);
+        } else if (data.job.status === "failed") {
+          setImporting(false);
+          setError(data.job.error || "Source import failed");
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not read import status");
+      }
+    }, 3000);
+    return () => window.clearInterval(poll);
+  }, [episode?.id, importJob?.id, importJob?.status, loadEpisode]);
 
   const loadLibrary = useCallback(async () => {
     setLibraryLoading(true);
@@ -256,6 +303,33 @@ export default function SegundoSolPage() {
       setError(err instanceof Error ? err.message : "Artwork upload failed");
     } finally {
       setUploading(false);
+    }
+  };
+
+  const startImport = async () => {
+    if (!episode || !importUrl.trim() || importing) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const data = await requestJson<{ job: ImportJob }>(`/api/segundo-sol/episodes/${episode.id}/imports`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_url: importUrl }),
+      });
+      setImportJob(data.job);
+    } catch (err) {
+      setImporting(false);
+      setError(err instanceof Error ? err.message : "Could not queue that source");
+    }
+  };
+
+  const openAudio = async (track: EpisodeTrack) => {
+    if (!episode || !track.audio_storage_path) return;
+    try {
+      const data = await requestJson<{ url: string }>(`/api/segundo-sol/episodes/${episode.id}/tracks/${track.id}/audio`);
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open audio");
     }
   };
 
@@ -424,20 +498,35 @@ export default function SegundoSolPage() {
   };
 
   return (
-    <main className="min-h-screen pb-28 md:pb-16 relative overflow-hidden">
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-[radial-gradient(ellipse_at_20%_0%,rgba(251,191,36,0.15),transparent_52%),radial-gradient(ellipse_at_90%_20%,rgba(249,115,22,0.10),transparent_46%),radial-gradient(ellipse_at_50%_0%,rgba(56,189,248,0.06),transparent_55%)]" />
+    <main
+      className="min-h-screen pb-28 md:pb-16 relative overflow-hidden bg-surface-0 text-foreground"
+      style={{
+        "--surface-0": "15 7 18",
+        "--surface-1": "29 13 29",
+        "--surface-2": "45 20 40",
+        "--surface-3": "78 33 62",
+        "--surface-4": "112 45 78",
+        "--accent": "255 112 67",
+        "--accent-dim": "224 71 96",
+        "--accent-bright": "255 184 88",
+        "--muted": "201 166 185",
+        "--foreground": "255 248 241",
+      } as CSSProperties}
+    >
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[600px] bg-[radial-gradient(ellipse_at_15%_0%,rgba(255,153,65,0.30),transparent_48%),radial-gradient(ellipse_at_78%_5%,rgba(236,58,132,0.26),transparent_46%),linear-gradient(180deg,rgba(83,19,65,0.34),transparent_80%)]" />
       <div className="relative max-w-[1500px] mx-auto px-4 sm:px-6 py-6 sm:py-10">
-        <header className="mb-7 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-3 text-amber-300 text-xs font-semibold uppercase tracking-[0.28em] mb-2">
-              <span>☀☀</span><span>Private studio</span>
+        <header className="mb-7 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-5 rounded-3xl border border-fuchsia-300/15 bg-[#1d0d1d]/70 p-5 sm:p-7 backdrop-blur-xl shadow-[0_28px_80px_rgba(0,0,0,0.28)]">
+          <div className="flex items-center gap-5 min-w-0">
+            <TwinSunMark />
+            <div className="min-w-0">
+              <div className="text-orange-200 text-xs font-semibold uppercase tracking-[0.25em] mb-2">Private session studio</div>
+              <h1 className="text-3xl sm:text-5xl font-bold tracking-[-0.045em] leading-[0.95] text-white">
+                Segundo Sol <span className="bg-gradient-to-r from-orange-300 via-rose-400 to-fuchsia-400 bg-clip-text text-transparent">Sessions</span>
+              </h1>
+              <p className="mt-3 text-sm sm:text-base text-[#e5c9d8] max-w-2xl leading-relaxed">
+                Build each session from first spark to final running order. Stacks finds it; PicoDrops brings it home.
+              </p>
             </div>
-            <h1 className="text-3xl sm:text-5xl font-semibold tracking-[-0.04em] text-foreground">
-              Segundo Sol: <span className="text-amber-300">The CMS-ening</span>
-            </h1>
-            <p className="mt-3 text-sm sm:text-base text-muted max-w-2xl">
-              Shape each episode from inspiration to final running order. Stacks feeds the crate; PicoDrops handles the masters.
-            </p>
           </div>
           <div className="flex flex-wrap gap-2 text-xs">
             <a href="https://discord.com/channels/1483358401936363745/1483370489865834517" target="_blank" rel="noreferrer" className="px-3 py-2 rounded-full border border-amber-300/20 bg-amber-300/5 text-amber-200 hover:bg-amber-300/10">Segundo Sol ↗</a>
@@ -468,7 +557,7 @@ export default function SegundoSolPage() {
                 <div className="p-5 text-sm text-muted">Loading the archive…</div>
               ) : episodes.length === 0 ? (
                 <button onClick={createEpisode} className="w-full p-6 text-left rounded-xl border border-dashed border-amber-300/20 text-sm text-muted hover:text-foreground hover:border-amber-300/40">
-                  Start the first episode →
+                  Start Segundo Sol Sessions #1 →
                 </button>
               ) : episodes.map((item) => (
                 <button key={item.id} onClick={() => setSelectedId(item.id)} className={`min-w-[230px] xl:min-w-0 w-full text-left p-3 rounded-xl mb-0 xl:mb-1 transition-all ${selectedId === item.id ? "bg-amber-300/10 ring-1 ring-amber-300/25" : "hover:bg-surface-2"}`}>
@@ -493,7 +582,7 @@ export default function SegundoSolPage() {
           <section className="min-w-0">
             {!episode || detailLoading ? (
               <div className="rounded-2xl border border-white/10 bg-surface-1/70 min-h-[420px] flex items-center justify-center text-sm text-muted">
-                {detailLoading ? "Opening episode…" : "Create an episode to begin."}
+                {detailLoading ? "Opening session…" : "Create a Segundo Sol Session to begin."}
               </div>
             ) : (
               <div className="space-y-5">
@@ -520,7 +609,7 @@ export default function SegundoSolPage() {
                         </span>
                         <button onClick={deleteEpisode} className="ml-auto text-xs text-red-300/60 hover:text-red-300">Delete episode</button>
                       </div>
-                      <input value={episode.title} onChange={(event) => setEpisode({ ...episode, title: event.target.value })} onBlur={() => patchEpisode({ title: episode.title })} className="w-full bg-transparent text-2xl sm:text-4xl font-semibold tracking-tight text-foreground outline-none border-b border-transparent focus:border-amber-300/30 pb-1" placeholder="Episode title" />
+                      <input value={episode.title} onChange={(event) => setEpisode({ ...episode, title: event.target.value })} onBlur={() => patchEpisode({ title: episode.title })} className="w-full min-w-0 bg-transparent text-2xl sm:text-3xl font-semibold tracking-tight text-white outline-none border-b border-transparent focus:border-rose-300/50 pb-1" placeholder={`Segundo Sol Sessions #${episode.episode_number}`} />
                       <input value={episode.theme || ""} onChange={(event) => setEpisode({ ...episode, theme: event.target.value })} onBlur={() => patchEpisode({ theme: episode.theme })} className="mt-2 w-full bg-transparent text-base text-amber-200/80 outline-none border-b border-transparent focus:border-amber-300/20 pb-1" placeholder="Theme, place, feeling, or arc" />
                       <textarea value={episode.notes || ""} onChange={(event) => setEpisode({ ...episode, notes: event.target.value })} onBlur={() => patchEpisode({ notes: episode.notes })} rows={4} className="mt-4 w-full rounded-xl bg-surface-2/70 border border-surface-3 px-4 py-3 text-sm text-foreground/80 outline-none focus:border-amber-300/30 resize-y" placeholder="Episode notes, transition ideas, texture, story…" />
                     </div>
@@ -531,7 +620,8 @@ export default function SegundoSolPage() {
                   <div className="flex overflow-x-auto border-b border-surface-3 p-2 gap-1">
                     {([
                       ["library", "From Stacks"],
-                      ["link", "Paste a track"],
+                      ["import", "Import source"],
+                      ["link", "Paste one track"],
                       ["inspiration", "Inspiration mix"],
                     ] as const).map(([value, label]) => (
                       <button key={value} onClick={() => setBuilderTab(value)} className={`px-4 py-2.5 rounded-lg text-sm whitespace-nowrap ${builderTab === value ? "bg-amber-300/10 text-amber-200" : "text-muted hover:text-foreground hover:bg-surface-2"}`}>
@@ -570,6 +660,41 @@ export default function SegundoSolPage() {
                         })}
                         {!libraryLoading && library.length === 0 && <p className="p-4 text-sm text-muted">No matching likes or stars.</p>}
                       </div>
+                    </div>
+                  )}
+
+                  {builderTab === "import" && (
+                    <div className="p-4 sm:p-5">
+                      <div className="mb-4">
+                        <h3 className="text-lg font-semibold text-white">Bring a source into this session</h3>
+                        <p className="mt-1 text-sm text-[#d9b8ca]">Paste a playlist, release, or track. The local PicoDrops engine resolves it, reuses clean files when possible, downloads what is missing, and serves private session audio here.</p>
+                      </div>
+                      <div className="mb-4 flex flex-wrap gap-2 text-xs">
+                        {[
+                          ["Spotify", "playlist"],
+                          ["SoundCloud", "track or playlist"],
+                          ["Bandcamp", "track or release"],
+                          ["YouTube", "video or playlist"],
+                        ].map(([provider, kind]) => (
+                          <span key={provider} className="rounded-full border border-rose-300/20 bg-rose-300/10 px-3 py-1.5 text-rose-100">
+                            <strong>{provider}</strong> · {kind}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input value={importUrl} onChange={(event) => { setImportUrl(event.target.value); setImportJob(null); }} className="flex-1 rounded-xl bg-surface-2 border border-surface-3 px-4 py-3 text-sm text-white placeholder:text-[#bd91a8] outline-none focus:border-rose-300/50" placeholder="Paste a Spotify, SoundCloud, Bandcamp, or YouTube URL" />
+                        <button onClick={startImport} disabled={importing || !importUrl.trim()} className="px-5 py-3 rounded-xl bg-gradient-to-r from-orange-400 to-fuchsia-500 text-white text-sm font-semibold shadow-lg shadow-fuchsia-950/40 disabled:opacity-40">
+                          {importing ? "PicoDrops is working…" : "Import + download"}
+                        </button>
+                      </div>
+                      {importJob && (
+                        <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${importJob.status === "failed" ? "border-red-400/30 bg-red-400/10 text-red-100" : importJob.status === "completed" ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-100" : "border-orange-300/25 bg-orange-300/10 text-orange-100"}`}>
+                          {importJob.status === "pending" && "Queued for the PicoDrops engine…"}
+                          {importJob.status === "processing" && "Resolving the source, checking PicoDrops, and preparing audio…"}
+                          {importJob.status === "completed" && `Imported ${importJob.imported_count} of ${importJob.total_count} tracks into ${episode.title}.`}
+                          {importJob.status === "failed" && (importJob.error || "Import failed")}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -665,15 +790,27 @@ export default function SegundoSolPage() {
                           <div className="min-w-0">
                             <input value={track.title} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, title: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { title: track.title })} className="w-full bg-transparent text-sm font-medium outline-none border-b border-transparent focus:border-amber-300/30" />
                             <input value={track.artist} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, artist: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { artist: track.artist })} className="w-full bg-transparent text-xs text-muted outline-none border-b border-transparent focus:border-amber-300/20" />
-                            <div className="lg:hidden mt-2 flex items-center gap-2">
-                              <span className="text-[10px] uppercase tracking-wide text-foreground/35">{track.source_origin.replace("stacks_", "")}</span>
-                              {track.source_url && <a href={track.source_url} target="_blank" rel="noreferrer" className="text-[11px] text-sky-300">open ↗</a>}
+                            <div className="lg:hidden mt-2 flex flex-wrap items-center gap-2">
+                              <span className="text-[10px] uppercase tracking-wide text-foreground/60">{track.source_origin.replace("stacks_", "")}</span>
+                              {track.source_url && <a href={track.source_url} target="_blank" rel="noreferrer" className="text-[11px] text-sky-300">source ↗</a>}
+                              {track.audio_storage_path ? (
+                                <button onClick={() => openAudio(track)} className="text-[11px] font-semibold text-orange-200">▶ play audio</button>
+                              ) : (
+                                <span className={`text-[10px] uppercase ${track.audio_status === "failed" ? "text-red-300" : "text-[#d6a8bf]"}`}>{(track.audio_status || "not_requested").replace("not_requested", "source only")}</span>
+                              )}
                             </div>
                           </div>
                           <input value={track.role || ""} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, role: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { role: track.role })} className="hidden lg:block rounded-lg bg-surface-2 border border-surface-3 px-3 py-2 text-xs outline-none focus:border-amber-300/30" placeholder="opener / bridge…" />
                           <div className="hidden lg:block min-w-0">
-                            <p className="text-[10px] uppercase tracking-wider text-foreground/35">{track.source_origin.replace("stacks_", "")} · {track.source_type}</p>
-                            {track.source_url ? <a href={track.source_url} target="_blank" rel="noreferrer" className="text-xs text-sky-300 hover:text-sky-200 truncate block mt-1">open source ↗</a> : <span className="text-xs text-muted">snapshot only</span>}
+                            <p className="text-[10px] uppercase tracking-wider text-foreground/60">{track.source_origin.replace("stacks_", "")} · {track.source_type}</p>
+                            <div className="mt-1 flex items-center gap-3">
+                              {track.source_url ? <a href={track.source_url} target="_blank" rel="noreferrer" className="text-xs text-sky-300 hover:text-sky-200 truncate">source ↗</a> : <span className="text-xs text-muted">snapshot only</span>}
+                              {track.audio_storage_path ? (
+                                <button onClick={() => openAudio(track)} className="text-xs font-semibold text-orange-200 hover:text-orange-100">▶ play</button>
+                              ) : (
+                                <span className={`text-[10px] uppercase ${track.audio_status === "failed" ? "text-red-300" : "text-[#d6a8bf]"}`}>{(track.audio_status || "not_requested").replace("not_requested", "source only")}</span>
+                              )}
+                            </div>
                           </div>
                           <button onClick={() => removeTrack(track.id)} className="hidden lg:block text-muted/30 hover:text-red-300 px-2">×</button>
                           <div className="col-start-3 lg:col-start-3 lg:col-span-3">

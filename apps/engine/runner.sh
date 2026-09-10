@@ -17,12 +17,19 @@ mkdir -p "$(dirname "$STATUS_FILE")"
 
 cd "$ENGINE_DIR" || exit 1
 
-# Source environment
+# Source environment. The launchd service does not inherit Hermes' shell env,
+# so fall back to the private host-level environment without copying secrets
+# into the repository.
 if [ -f "$ENGINE_DIR/.env" ]; then
   set -a
   source "$ENGINE_DIR/.env"
   set +a
+elif [ -f "$HOME/.hermes/.env" ]; then
+  set -a
+  source "$HOME/.hermes/.env"
+  set +a
 fi
+export SUPABASE_URL="${SUPABASE_URL:-${NEXT_PUBLIC_SUPABASE_URL:-}}"
 
 UPTIME_SINCE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 CYCLE_COUNT=0

@@ -650,7 +650,8 @@ function StackPageContent() {
           globalPlayer.next();
           break;
         case "previous-track":
-          globalPlayer.prev();
+          if (globalPlayer.progress > 3) globalPlayer.seek(0);
+          else globalPlayer.prev();
           break;
         case "reject":
           void handleVote(currentTrack.id, "rejected");
@@ -928,7 +929,7 @@ function StackPageContent() {
         <span>← −30s</span>
         <span>→ +30s</span>
         <span>⇧→ next</span>
-        <span>⇧← previous</span>
+        <span>⇧← restart / previous</span>
         <span>x reject</span>
         <span>l like</span>
         <span>s star</span>

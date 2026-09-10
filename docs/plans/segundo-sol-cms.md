@@ -1,4 +1,4 @@
-# Segundo Sol: The CMS-ening
+# Segundo Sol Sessions
 
 ## Product boundary
 
