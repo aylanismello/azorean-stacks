@@ -175,6 +175,10 @@ function isSameTrack(a: { artist: string; title: string }, b: { artist: string; 
     a.title.toLowerCase().trim() === b.title.toLowerCase().trim();
 }
 
+function canonicalTrackKey(track: { artist: string; title: string }): string {
+  return `${track.artist.toLowerCase().trim()}::${track.title.toLowerCase().trim()}`;
+}
+
 interface Candidate {
   artist: string;
   title: string;
@@ -272,18 +276,18 @@ async function discoverFromSource(
     if (existingEp) {
       episodeId = existingEp.id;
 
-      const { count: trackCount } = await db.from("tracks")
-        .select("*", { count: "exact", head: true })
+      const { data: episodeTrackLinks } = await db.from("episode_tracks")
+        .select("track_id, tracks!inner(artist,title)")
         .eq("episode_id", episodeId);
+      const epTrackList = (episodeTrackLinks || []).flatMap((link: any) => {
+        const track = Array.isArray(link.tracks) ? link.tracks[0] : link.tracks;
+        return track ? [track] : [];
+      });
 
-      if (trackCount && trackCount > 0) {
+      if (epTrackList.length > 0) {
         // Verify match type against the actual tracklist in the DB
         const seedArtistLower = seedArtist.toLowerCase().trim();
         const seedTitleLower = seedTitle.toLowerCase().trim();
-        const { data: epTracks } = await db.from("tracks")
-          .select("artist, title")
-          .eq("episode_id", episodeId);
-        const epTrackList = epTracks || [];
         const hasFullMatch = epTrackList.some(
           (t) => t.artist?.toLowerCase().trim() === seedArtistLower && t.title?.toLowerCase().trim() === seedTitleLower
         );
@@ -295,7 +299,7 @@ async function discoverFromSource(
           { episode_id: episodeId, seed_id: seedId, match_type: verifiedMatchType },
           { onConflict: "episode_id,seed_id" }
         );
-        log("skip", `Already crawled (${trackCount} tracks, match=${verifiedMatchType}): ${context}`);
+        log("skip", `Already crawled (${epTrackList.length} tracks, match=${verifiedMatchType}): ${context}`);
         stats.skipped++;
         if (verifiedMatchType === "full") {
           stats.fullMatchEpisodeIds.push(episodeId);
@@ -466,64 +470,47 @@ async function runDiscover(): Promise<number> {
     log("info", `Top candidates: ${top3.join(", ")}`);
   }
 
-  // Dedup against DB — batch query to avoid N+1
+  // Dedup against DB without losing cross-episode identity.
   const seen = new Set<string>();
   const uniqueCandidates: Candidate[] = [];
 
-  for (const c of candidates) {
+  for (const candidate of candidates) {
     if (uniqueCandidates.length >= candidateLimit) break;
-    const key = `${c.artist.toLowerCase()}::${c.title.toLowerCase()}`;
+    const key = canonicalTrackKey(candidate);
     if (seen.has(key)) continue;
     seen.add(key);
-    uniqueCandidates.push(c);
+    uniqueCandidates.push(candidate);
   }
 
-  // Batch dedup: fetch existing tracks matching any candidate artist (case-insensitive)
-  const candidateArtists = [...new Set(uniqueCandidates.map(c => c.artist.toLowerCase().trim()))];
-  const existingTrackKeys = new Set<string>();
+  const candidateArtists = [...new Set(uniqueCandidates.map((candidate) => candidate.artist.toLowerCase().trim()))];
+  const existingTracksByKey = new Map<string, string>();
 
-  // Query artists in parallel batches of 10 to reduce N+1 overhead
-  for (let i = 0; i < candidateArtists.length; i += 10) {
-    const batch = candidateArtists.slice(i, i + 10);
+  // Query artists concurrently in bounded batches, retaining IDs so reused
+  // canonical tracks can still be linked to newly discovered episodes.
+  for (let index = 0; index < candidateArtists.length; index += 10) {
+    const batch = candidateArtists.slice(index, index + 10);
     const results = await Promise.all(
       batch.map((artistName) => {
-        // Escape ILIKE special characters to prevent wildcard injection
-        const escaped = artistName.replace(/[%_\\]/g, (c) => `\\${c}`);
-        return db.from("tracks").select("artist, title").ilike("artist", escaped).then((r: any) => r.data || []);
-      })
+        const escaped = artistName.replace(/[%_\\]/g, (character) => `\\${character}`);
+        return db.from("tracks").select("id,artist,title").ilike("artist", escaped).then((result: any) => result.data || []);
+      }),
     );
-    for (const existing of results) {
-      for (const t of existing) {
-        existingTrackKeys.add(`${(t.artist || "").toLowerCase().trim()}::${(t.title || "").toLowerCase().trim()}`);
-      }
+    for (const existing of results.flat()) {
+      existingTracksByKey.set(canonicalTrackKey(existing), existing.id);
     }
   }
 
-  const toInsert: Candidate[] = [];
-  let dupCount = 0;
-
-  for (const c of uniqueCandidates) {
-    const key = `${c.artist.toLowerCase().trim()}::${c.title.toLowerCase().trim()}`;
-    if (existingTrackKeys.has(key)) { dupCount++; continue; }
-    toInsert.push(c);
-  }
-
-  log("info", `Dedup: ${candidates.length} candidates → ${toInsert.length} new, ${dupCount} already in DB`);
-
-  // Filter out garbage tracks before insertion (uses shared filter from pipeline.ts)
-  const preFilterCount = toInsert.length;
-  const filtered = toInsert.filter((c) => {
-    if (isGarbageTrack(c.artist, c.title)) {
-      log("skip", `Filtered garbage: ${c.artist} – ${c.title}`);
+  const validCandidates = uniqueCandidates.filter((candidate) => {
+    if (isGarbageTrack(candidate.artist, candidate.title)) {
+      log("skip", `Filtered garbage: ${candidate.artist} – ${candidate.title}`);
       return false;
     }
     return true;
   });
-  if (filtered.length < preFilterCount) {
-    log("info", `Garbage filter: removed ${preFilterCount - filtered.length} tracks`);
-  }
+  const duplicateCount = validCandidates.filter((candidate) => existingTracksByKey.has(canonicalTrackKey(candidate))).length;
+  log("info", `Dedup: ${candidates.length} candidates → ${validCandidates.length - duplicateCount} new, ${duplicateCount} already in DB`);
 
-  // Propagate seed genres to co-occurrence tracks so genre filters work before enrichment
+  // Propagate seed genres to co-occurrence tracks so genre filters work before enrichment.
   let seedGenres: string[] | undefined;
   if (seed.track_id) {
     const { data: seedTrack } = await db.from("tracks").select("metadata").eq("id", seed.track_id).maybeSingle();
@@ -531,40 +518,75 @@ async function runDiscover(): Promise<number> {
     if (Array.isArray(genres) && genres.length > 0) seedGenres = genres;
   }
 
-  // Insert tracks and link to episodes with position
   let added = 0;
-  for (const c of filtered) {
-    const trackMeta: Record<string, unknown> = { co_occurrence: c.co_occurrence, seed_artist: seed.artist, seed_title: seed.title };
+  const trackIdByKey = new Map(existingTracksByKey);
+  for (const candidate of validCandidates) {
+    const key = canonicalTrackKey(candidate);
+    if (trackIdByKey.has(key)) continue;
+
+    const trackMeta: Record<string, unknown> = {
+      co_occurrence: candidate.co_occurrence,
+      seed_artist: seed.artist,
+      seed_title: seed.title,
+    };
     if (seedGenres) trackMeta.seed_genres = seedGenres;
     const { data: inserted, error } = await db.from("tracks").insert({
-      artist: c.artist,
-      title: c.title,
-      source: c.source,
-      source_url: c.source_url,
-      source_context: c.source_context,
+      artist: candidate.artist,
+      title: candidate.title,
+      source: candidate.source,
+      source_url: candidate.source_url,
+      source_context: candidate.source_context,
       metadata: trackMeta,
       status: "pending",
-      episode_id: c.episode_id,
+      episode_id: candidate.episode_id,
       seed_track_id: seed.track_id || null,
     }).select("id").single();
     if (error || !inserted) {
-      log("fail", `Insert failed: ${c.artist} – ${c.title} — ${error?.message ?? "no data"}`);
+      log("fail", `Insert failed: ${candidate.artist} – ${candidate.title} — ${error?.message ?? "no data"}`);
       continue;
     }
+    trackIdByKey.set(key, inserted.id);
     added++;
+  }
 
-    // Insert episode_tracks with position for all episodes this track appeared in
-    const key = `${c.artist.toLowerCase()}::${c.title.toLowerCase()}`;
-    for (const [epId, positions] of episodePositions) {
-      for (const p of positions) {
-        if (p.key === key) {
-          await db.from("episode_tracks").upsert(
-            { episode_id: epId, track_id: inserted.id, position: p.position },
-            { onConflict: "episode_id,track_id" }
-          );
-        }
+  // Build the junction set once and write it in batches. This replaces the
+  // previous candidate × episode × position scan and preserves associations
+  // for canonical tracks that were already in the catalog.
+  const linksByIdentity = new Map<string, { episode_id: string; track_id: string; position: number }>();
+  for (const [episodeId, positions] of episodePositions) {
+    for (const position of positions) {
+      const trackId = trackIdByKey.get(position.key);
+      if (!trackId) continue;
+      const identity = `${episodeId}:${trackId}`;
+      const existing = linksByIdentity.get(identity);
+      if (!existing || position.position < existing.position) {
+        linksByIdentity.set(identity, { episode_id: episodeId, track_id: trackId, position: position.position });
       }
     }
+  }
+  const episodeLinksToUpsert = [...linksByIdentity.values()];
+  for (let index = 0; index < episodeLinksToUpsert.length; index += 500) {
+    const { error } = await db.from("episode_tracks").upsert(
+      episodeLinksToUpsert.slice(index, index + 500),
+      { onConflict: "episode_id,track_id" },
+    );
+    if (error) log("fail", `Episode track linking failed: ${error.message}`);
+  }
+
+  // Candidate eligibility is per-user. Catalog rows are global, but a track
+  // discovered for one person's seed must not silently enter another user's
+  // queue. Ignore duplicates so prior votes are never overwritten.
+  const userTrackRows = [...new Set(
+    validCandidates
+      .map((candidate) => trackIdByKey.get(canonicalTrackKey(candidate)))
+      .filter((trackId): trackId is string => Boolean(trackId)),
+  )].map((trackId) => ({ user_id: seed.user_id, track_id: trackId, status: "pending" }));
+  for (let index = 0; index < userTrackRows.length; index += 500) {
+    const { error } = await db.from("user_tracks").upsert(
+      userTrackRows.slice(index, index + 500),
+      { onConflict: "user_id,track_id", ignoreDuplicates: true },
+    );
+    if (error) log("fail", `User candidate linking failed: ${error.message}`);
   }
 
   // Ensure the seed track itself exists in the tracks table
@@ -622,6 +644,7 @@ async function runDiscover(): Promise<number> {
     started_at: new Date().toISOString(),
     completed_at: new Date().toISOString(),
     seed_id: seed.id,
+    user_id: seed.user_id || null,
     seed_track_id: seed.track_id || null,
     sources_searched: SOURCES.map((s) => s.name),
     tracks_found: candidates.length,

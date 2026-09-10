@@ -23,6 +23,7 @@ import {
   buildTrackSeedLineage,
   emptyYield,
   estimateYield,
+  indexTrackEpisodes,
   recencyWeight,
   resolveUserId,
 } from "../lib/taste-scoring";
@@ -114,8 +115,6 @@ async function main() {
     (seedsData || []).map((s: any) => (s.artist || "").toLowerCase())
   );
 
-  const episodeIds = [...new Set((tracksData || []).map((t: any) => t.episode_id).filter(Boolean))];
-  const episodeIdSet = new Set(episodeIds);
   const seedIds = (seedsData || []).map((seed: any) => seed.id);
   const [{ data: trackEpisodeLinks, error: trackEpisodeError }, { data: episodeSeedLinks, error: episodeSeedError }] =
     await Promise.all([
@@ -128,6 +127,7 @@ async function main() {
     ]);
   if (trackEpisodeError) throw trackEpisodeError;
   if (episodeSeedError) throw episodeSeedError;
+  const actionEpisodesByTrack = indexTrackEpisodes(tracksData || [], trackEpisodeLinks || []);
   const lineageByTrack = buildTrackSeedLineage(
     tracksData || [],
     trackEpisodeLinks || [],
@@ -167,15 +167,26 @@ async function main() {
       .filter(Boolean)
   );
 
+  const allTrackEpisodeLinks: Array<{ track_id: string; episode_id: string }> = [];
+  for (let index = 0; index < votedTrackIds.length; index += 300) {
+    const { data, error } = await db
+      .from("episode_tracks")
+      .select("track_id, episode_id")
+      .in("track_id", votedTrackIds.slice(index, index + 300));
+    if (error) throw error;
+    allTrackEpisodeLinks.push(...(data || []));
+  }
+  const historyEpisodesByTrack = indexTrackEpisodes(votedTrackData, allTrackEpisodeLinks);
+
   // 5. Episode approval stats (source quality signal), scoped to this user.
   const epStats = new Map<string, { approved: number; rejected: number }>();
   for (const vote of userVotes) {
-    const episodeId = votedTrackMap.get(vote.track_id)?.episode_id;
-    if (!episodeId || !episodeIdSet.has(episodeId)) continue;
-    const s = epStats.get(episodeId) || { approved: 0, rejected: 0 };
-    if (vote.status === "approved") s.approved++;
-    else s.rejected++;
-    epStats.set(episodeId, s);
+    for (const episodeId of historyEpisodesByTrack.get(vote.track_id) || []) {
+      const stats = epStats.get(episodeId) || { approved: 0, rejected: 0 };
+      if (vote.status === "approved") stats.approved++;
+      else stats.rejected++;
+      epStats.set(episodeId, stats);
+    }
   }
 
   // 7. Compute per-signal correlations
@@ -201,7 +212,7 @@ async function main() {
   for (const t of (tracksData || []) as any[]) {
     const key = (t.artist || "").toLowerCase();
     if (!artistEpSets.has(key)) artistEpSets.set(key, new Set());
-    if (t.episode_id) artistEpSets.get(key)!.add(t.episode_id);
+    for (const episodeId of actionEpisodesByTrack.get(t.id) || []) artistEpSets.get(key)!.add(episodeId);
   }
   const maxCo = Math.max(...Array.from(artistEpSets.values()).map((s) => s.size), 1);
 
@@ -210,7 +221,7 @@ async function main() {
     if (!track) continue;
 
     const artistLower = (track.artist || "").toLowerCase();
-    const epId = track.episode_id as string | null;
+    const episodeIds = [...(actionEpisodesByTrack.get(track.id) || [])];
     const matchTypes = Array.from(lineageByTrack.get(action.track_id)?.values() || []);
     const matchType = matchTypes.includes("full")
       ? "full"
@@ -222,11 +233,10 @@ async function main() {
     const signals = {
       seed_proximity: matchType === "full" ? 1.0 : matchType === "artist" ? 0.33 : 0,
       source_quality: (() => {
-        if (!epId) return 0.5;
-        const stat = epStats.get(epId);
-        if (!stat) return 0.5;
-        const total = stat.approved + stat.rejected;
-        return total >= 3 ? stat.approved / total : 0.5;
+        const stats = episodeIds.map((episodeId) => epStats.get(episodeId)).filter(Boolean);
+        const approved = stats.reduce((sum, stat) => sum + stat!.approved, 0);
+        const total = stats.reduce((sum, stat) => sum + stat!.approved + stat!.rejected, 0);
+        return total >= 3 ? approved / total : 0.5;
       })(),
       artist_familiarity: approvedArtistsSet.has(artistLower)
         ? 1.0

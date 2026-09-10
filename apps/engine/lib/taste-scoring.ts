@@ -2,6 +2,7 @@ export interface YieldAccumulator {
   positive: number;
   negative: number;
   samples: number;
+  effectiveSamples: number;
 }
 
 export interface YieldEstimate {
@@ -34,8 +35,29 @@ export interface TrackEpisodeLink {
   episode_id: string;
 }
 
+export function indexTrackEpisodes(
+  tracks: TrackLineageInput[],
+  links: TrackEpisodeLink[]
+): Map<string, Set<string>> {
+  const episodesByTrack = new Map<string, Set<string>>();
+  for (const link of links) {
+    const episodes = episodesByTrack.get(link.track_id) || new Set<string>();
+    episodes.add(link.episode_id);
+    episodesByTrack.set(link.track_id, episodes);
+  }
+  // episode_tracks is canonical; keep the legacy pointer as an additional
+  // appearance while older rows are still being migrated.
+  for (const track of tracks) {
+    if (!track.episode_id) continue;
+    const episodes = episodesByTrack.get(track.id) || new Set<string>();
+    episodes.add(track.episode_id);
+    episodesByTrack.set(track.id, episodes);
+  }
+  return episodesByTrack;
+}
+
 export function emptyYield(): YieldAccumulator {
-  return { positive: 0, negative: 0, samples: 0 };
+  return { positive: 0, negative: 0, samples: 0, effectiveSamples: 0 };
 }
 
 export function addYield(
@@ -47,6 +69,7 @@ export function addYield(
   if (outcome > 0) accumulator.positive += weightedOutcome;
   else if (outcome < 0) accumulator.negative += weightedOutcome;
   accumulator.samples += 1;
+  accumulator.effectiveSamples += Math.max(0, recencyWeight);
 }
 
 export function recencyWeight(
@@ -68,7 +91,7 @@ export function estimateYield(
   priorStrength = 4,
   minimumSupport = 3
 ): YieldEstimate | null {
-  if (accumulator.samples < minimumSupport) return null;
+  if (accumulator.effectiveSamples < minimumSupport) return null;
   const evidence = accumulator.positive + accumulator.negative;
   const boundedPrior = Math.min(1, Math.max(0, priorRate));
   const rate = evidence + priorStrength > 0
@@ -77,8 +100,8 @@ export function estimateYield(
   return {
     rate,
     signal: Math.max(-1, Math.min(1, rate * 2 - 1)),
-    confidence: accumulator.samples / (accumulator.samples + priorStrength),
-    samples: accumulator.samples,
+    confidence: accumulator.effectiveSamples / (accumulator.effectiveSamples + priorStrength),
+    samples: Math.max(1, Math.round(accumulator.effectiveSamples)),
   };
 }
 
@@ -123,17 +146,7 @@ export function buildTrackSeedLineage(
     seedIdsByTrackId.set(seed.track_id, existing);
   }
 
-  const episodesByTrack = new Map<string, Set<string>>();
-  for (const link of trackEpisodeLinks) {
-    if (!episodesByTrack.has(link.track_id)) episodesByTrack.set(link.track_id, new Set());
-    episodesByTrack.get(link.track_id)!.add(link.episode_id);
-  }
-  for (const track of tracks) {
-    if (track.episode_id) {
-      if (!episodesByTrack.has(track.id)) episodesByTrack.set(track.id, new Set());
-      episodesByTrack.get(track.id)!.add(track.episode_id);
-    }
-  }
+  const episodesByTrack = indexTrackEpisodes(tracks, trackEpisodeLinks);
 
   const seedsByEpisode = new Map<string, EpisodeSeedLink[]>();
   for (const link of episodeSeedLinks) {

@@ -91,7 +91,7 @@ export function GlobalPlayer() {
   const showBuffering = loading || buffering;
 
   return (
-    <div className="global-player fixed left-0 right-0 bottom-0 z-40">
+    <div className="global-player fixed left-0 right-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-40 md:bottom-0">
       {/* Toast notification */}
       {toast && (
         <div className="absolute -top-10 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-surface-2 border border-surface-3 text-xs text-foreground/80 shadow-lg backdrop-enter whitespace-nowrap z-50">
@@ -106,6 +106,28 @@ export function GlobalPlayer() {
           className="group relative z-10 mb-2 flex h-4 cursor-pointer items-center touch-none"
           onMouseDown={handleSeekStart}
           onTouchStart={handleTouchSeek}
+          role="slider"
+          tabIndex={0}
+          aria-label="Playback position"
+          aria-valuemin={0}
+          aria-valuemax={Math.max(0, Math.round(duration))}
+          aria-valuenow={Math.max(0, Math.round(progress))}
+          aria-valuetext={`${fmt(progress)} of ${fmt(duration)}`}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
+              event.preventDefault();
+              seek(progress - 5);
+            } else if (event.key === "ArrowRight" || event.key === "ArrowUp") {
+              event.preventDefault();
+              seek(progress + 5);
+            } else if (event.key === "Home") {
+              event.preventDefault();
+              seek(0);
+            } else if (event.key === "End") {
+              event.preventDefault();
+              seek(duration);
+            }
+          }}
         >
           <div className="relative h-1.5 w-full overflow-visible rounded-full bg-surface-3/80 transition-all group-hover:bg-surface-3">
             <div

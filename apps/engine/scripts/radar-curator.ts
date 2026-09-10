@@ -15,6 +15,7 @@
 import { getSupabase } from "../lib/supabase";
 import { log, sleep, logEngineEvent, isGarbageTrack } from "../lib/pipeline";
 import { ntsSource } from "../lib/sources/nts";
+import { lotRadioSource } from "../lib/sources/lotradio";
 
 const db = getSupabase();
 const NTS_API = "https://www.nts.live/api/v2";
@@ -231,6 +232,7 @@ async function processEpisode(
   airedDate: string | null,
   artworkUrl: string | null,
   affinity: CuratorAffinity,
+  userId: string | null,
 ): Promise<number> {
   // Check if episode already exists in DB
   const { data: existingEp } = await db
@@ -243,16 +245,6 @@ async function processEpisode(
 
   if (existingEp) {
     episodeId = existingEp.id;
-    // Check if already has tracks
-    const { count } = await db
-      .from("tracks")
-      .select("*", { count: "exact", head: true })
-      .eq("episode_id", episodeId);
-
-    if (count && count > 0) {
-      log("skip", `Already crawled (${count} tracks): ${episodeTitle}`);
-      return 0;
-    }
   } else {
     // Insert new episode
     const { data: newEp, error: epErr } = await db
@@ -260,7 +252,7 @@ async function processEpisode(
       .insert({
         url: episodeUrl,
         title: episodeTitle || null,
-        source: "nts",
+        source: affinity.source,
         aired_date: airedDate || null,
         artwork_url: artworkUrl || null,
       })
@@ -275,7 +267,8 @@ async function processEpisode(
   }
 
   // Fetch tracklist
-  const rawTracks = await ntsSource.getTracklist(episodeUrl);
+  const sourceAdapter = affinity.source === "lotradio" ? lotRadioSource : ntsSource;
+  const rawTracks = await sourceAdapter.getTracklist(episodeUrl);
   if (rawTracks.length === 0) {
     log("warn", `Empty tracklist: ${episodeTitle}`);
     return 0;
@@ -295,47 +288,57 @@ async function processEpisode(
       .ilike("title", track.title.trim())
       .limit(1);
 
-    if (existing && existing.length > 0) continue;
+    let trackId = existing?.[0]?.id as string | undefined;
 
-    // Insert track with curator radar metadata
-    const { data: inserted, error: trackErr } = await db
-      .from("tracks")
-      .insert({
-        artist: track.artist.trim(),
-        title: track.title.trim(),
-        source: "nts",
-        source_url: episodeUrl,
-        source_context: episodeTitle,
-        status: "pending",
-        episode_id: episodeId,
-        metadata: {
-          discovery_method: "radar:curator",
-          curator_slug: affinity.showSlug,
-          curator_source: affinity.source,
-          curator_affinity: Math.round(affinity.approvalRate * 100) / 100,
-          curator_tier: affinity.tier,
-          taste_score_multiplier: 0.9,
-        },
-      })
-      .select("id")
-      .single();
+    if (!trackId) {
+      // Insert track with curator radar metadata
+      const { data: inserted, error: trackErr } = await db
+        .from("tracks")
+        .insert({
+          artist: track.artist.trim(),
+          title: track.title.trim(),
+          source: affinity.source,
+          source_url: episodeUrl,
+          source_context: episodeTitle,
+          status: "pending",
+          episode_id: episodeId,
+          metadata: {
+            discovery_method: "radar:curator",
+            curator_slug: affinity.showSlug,
+            curator_source: affinity.source,
+            curator_affinity: Math.round(affinity.approvalRate * 100) / 100,
+            curator_tier: affinity.tier,
+            taste_score_multiplier: 0.9,
+          },
+        })
+        .select("id")
+        .single();
 
-    if (trackErr || !inserted) continue;
+      if (trackErr || !inserted) continue;
+      trackId = inserted.id;
+      tracksAdded++;
+    }
 
-    // Insert episode_tracks entry
-    await db.from("episode_tracks").upsert(
-      { episode_id: episodeId, track_id: inserted.id, position: pos },
+    // Canonical tracks still need a junction row for every appearance.
+    const { error: linkError } = await db.from("episode_tracks").upsert(
+      { episode_id: episodeId, track_id: trackId, position: pos },
       { onConflict: "episode_id,track_id" },
     );
-
-    tracksAdded++;
+    if (linkError) log("fail", `Episode link failed: ${episodeTitle} — ${linkError.message}`);
+    if (userId) {
+      const { error: candidateError } = await db.from("user_tracks").upsert(
+        { user_id: userId, track_id: trackId, status: "pending" },
+        { onConflict: "user_id,track_id", ignoreDuplicates: true },
+      );
+      if (candidateError) log("fail", `User candidate link failed: ${episodeTitle} — ${candidateError.message}`);
+    }
   }
 
   log("ok", `${episodeTitle || episodeUrl} — ${rawTracks.length} tracks scraped, ${tracksAdded} new`);
   return tracksAdded;
 }
 
-async function processNtsShow(affinity: CuratorAffinity): Promise<{ episodesChecked: number; tracksAdded: number }> {
+async function processNtsShow(affinity: CuratorAffinity, userId: string | null): Promise<{ episodesChecked: number; tracksAdded: number }> {
   const episodeLimit = affinity.tier === "high" ? 12 : 8; // high-affinity: backfill more; medium: fewer new-only
   log("info", `[${affinity.tier}] Fetching NTS episodes for show: ${affinity.showSlug}`);
 
@@ -387,7 +390,7 @@ async function processNtsShow(affinity: CuratorAffinity): Promise<{ episodesChec
           ep.media?.background_large ||
           null;
 
-        return processEpisode(episodeUrl, ep.name, airedDate, artworkUrl, affinity);
+        return processEpisode(episodeUrl, ep.name, airedDate, artworkUrl, affinity, userId);
       })
     );
 
@@ -409,7 +412,7 @@ async function processNtsShow(affinity: CuratorAffinity): Promise<{ episodesChec
   return { episodesChecked, tracksAdded: totalTracksAdded };
 }
 
-async function processLotRadioShow(affinity: CuratorAffinity): Promise<{ episodesChecked: number; tracksAdded: number }> {
+async function processLotRadioShow(affinity: CuratorAffinity, userId: string | null): Promise<{ episodesChecked: number; tracksAdded: number }> {
   log("info", `[${affinity.tier}] Checking Lot Radio episodes for: ${affinity.showSlug}`);
 
   // Lot Radio episodes are crawled externally — query DB for episodes matching this show (by title)
@@ -436,7 +439,7 @@ async function processLotRadioShow(affinity: CuratorAffinity): Promise<{ episode
     const batch = episodes.slice(i, i + CONCURRENCY.episodes);
     const results = await Promise.allSettled(
       batch.map((ep: any) =>
-        processEpisode(ep.url, ep.title, ep.aired_date, ep.artwork_url, affinity)
+        processEpisode(ep.url, ep.title, ep.aired_date, ep.artwork_url, affinity, userId)
       )
     );
 
@@ -453,12 +456,12 @@ async function processLotRadioShow(affinity: CuratorAffinity): Promise<{ episode
   return { episodesChecked, tracksAdded: totalTracksAdded };
 }
 
-async function processShow(affinity: CuratorAffinity): Promise<{ episodesChecked: number; tracksAdded: number }> {
+async function processShow(affinity: CuratorAffinity, userId: string | null): Promise<{ episodesChecked: number; tracksAdded: number }> {
   if (affinity.source === "nts") {
-    return processNtsShow(affinity);
+    return processNtsShow(affinity, userId);
   }
   if (affinity.source === "lotradio") {
-    return processLotRadioShow(affinity);
+    return processLotRadioShow(affinity, userId);
   }
   log("warn", `No handler for source "${affinity.source}", skipping ${affinity.curatorKey}`);
   return { episodesChecked: 0, tracksAdded: 0 };
@@ -501,7 +504,7 @@ export async function runCuratorRadar(userId: string | null = null): Promise<voi
     // Step 2+3: Process shows in batches
     for (let i = 0; i < affinities.length; i += CONCURRENCY.shows) {
       const batch = affinities.slice(i, i + CONCURRENCY.shows);
-      const results = await Promise.allSettled(batch.map(processShow));
+      const results = await Promise.allSettled(batch.map((affinity) => processShow(affinity, userId)));
 
       for (const result of results) {
         if (result.status === "fulfilled") {

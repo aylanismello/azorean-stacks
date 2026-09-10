@@ -1,4 +1,5 @@
 -- Track download failures so the downloader can skip broken tracks
+alter table tracks add column if not exists youtube_url text;
 alter table tracks add column dl_attempts int not null default 0;
 alter table tracks add column dl_failed_at timestamptz;
 

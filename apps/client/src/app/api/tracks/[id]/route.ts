@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
+import { canEditSharedCatalog } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,12 @@ function getAuthClient(req: NextRequest) {
       },
     }
   );
+}
+
+function isPendingPipelineMigration(error: { code?: string; message?: string }): boolean {
+  const message = error.message || "";
+  return (["42703", "PGRST204"].includes(error.code || "") && message.includes("user_id"))
+    || (error.code === "PGRST202" && message.includes("enqueue_corrected_download_request"));
 }
 
 // PATCH /api/tracks/[id] — update vote (writes to user_tracks ONLY, never tracks.status)
@@ -55,22 +62,25 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
     return NextResponse.json({ ...track, status: "approved", super_liked: true, voted_at: now });
   }
 
-  // fix_source: user provided a corrected URL — update DB and let the engine re-download
+  // fix_source: a catalog editor provided a corrected URL — the local engine re-downloads it
   if (status === "fix_source" && source_url) {
-    const validPrefixes = [
-      "https://youtube.com",
-      "https://youtu.be",
-      "https://www.youtube.com",
-      "https://soundcloud.com",
-      "https://m.soundcloud.com",
-    ];
-    if (!validPrefixes.some((p) => (source_url as string).startsWith(p))) {
+    if (!canEditSharedCatalog(user.id)) {
+      return NextResponse.json({ error: "Shared source corrections require catalog-editor access" }, { status: 403 });
+    }
+
+    let parsedSource: URL;
+    try {
+      parsedSource = new URL(source_url as string);
+    } catch {
+      return NextResponse.json({ error: "Invalid URL. Must be YouTube or SoundCloud." }, { status: 400 });
+    }
+    const allowedHosts = new Set(["youtube.com", "www.youtube.com", "youtu.be", "soundcloud.com", "m.soundcloud.com"]);
+    const sourceHost = parsedSource.hostname.toLowerCase();
+    if (parsedSource.protocol !== "https:" || !allowedHosts.has(sourceHost)) {
       return NextResponse.json({ error: "Invalid URL. Must be YouTube or SoundCloud." }, { status: 400 });
     }
 
-    const isYoutube = (source_url as string).startsWith("https://youtube.com") ||
-      (source_url as string).startsWith("https://youtu.be") ||
-      (source_url as string).startsWith("https://www.youtube.com");
+    const isYoutube = ["youtube.com", "www.youtube.com", "youtu.be"].includes(sourceHost);
 
     // Fetch existing track data
     const { data: existing } = await supabase
@@ -83,12 +93,8 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       return NextResponse.json({ error: "Track not found" }, { status: 404 });
     }
 
-    // Delete old audio file from storage if it exists
-    if (existing.storage_path) {
-      await supabase.storage.from("tracks").remove([existing.storage_path]);
-    }
-
-    // Update track: set new URL, clear storage_path so engine re-downloads
+    // Keep the old object playable until the local worker replaces it. The
+    // worker removes the superseded object only after the replacement lands.
     const updatedMeta = { ...(existing.metadata as Record<string, unknown> ?? {}) };
     if (!isYoutube) {
       updatedMeta.soundcloud_url = source_url;
@@ -97,11 +103,25 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
 
     const updatePayload = {
       youtube_url: isYoutube ? source_url : null,
-      storage_path: null,
-      status: "pending" as const,
       metadata: updatedMeta,
     };
     console.log(`[fix_source] Updating track ${params.id}:`, JSON.stringify(updatePayload));
+
+    // Serialize corrections in PostgreSQL so concurrent requests cannot revive
+    // a stale source or race the worker's fenced storage commit.
+    const { error: dlReqErr } = await supabase.rpc("enqueue_corrected_download_request", {
+      p_track_id: params.id,
+      p_user_id: user.id,
+      p_source_url: source_url as string,
+    });
+    if (dlReqErr) {
+      if (isPendingPipelineMigration(dlReqErr)) {
+        return NextResponse.json({
+          error: "Source correction is temporarily unavailable while its database migration is applied",
+        }, { status: 503 });
+      }
+      return NextResponse.json({ error: dlReqErr.message }, { status: 500 });
+    }
 
     const { data: track, error } = await supabase
       .from("tracks")
@@ -115,72 +135,11 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Insert a download request so the engine picks it up immediately via Realtime
-    const sourceUrl = isYoutube ? source_url : source_url;
-    const { data: dlRequest, error: dlReqErr } = await supabase
-      .from("download_requests")
-      .insert({
-        track_id: params.id,
-        youtube_url: sourceUrl as string,
-        status: "pending",
-      })
-      .select("id")
-      .single();
-
-    if (dlReqErr || !dlRequest) {
-      console.error(`[fix_source] download_request insert failed:`, dlReqErr);
-      // Fallback: engine loop will pick it up eventually
-      return NextResponse.json({ ...track, queued: true, message: "URL updated. Track will be re-downloaded by the engine shortly." });
-    }
-
-    // Poll for completion — check every 2s for up to 45s
-    const POLL_INTERVAL = 2000;
-    const MAX_WAIT = 45000;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < MAX_WAIT) {
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-
-      const { data: reqStatus } = await supabase
-        .from("download_requests")
-        .select("status, result_audio_url, error")
-        .eq("id", dlRequest.id)
-        .single();
-
-      if (!reqStatus) break;
-
-      if (reqStatus.status === "completed") {
-        // Re-fetch the track with updated data
-        const { data: updatedTrack } = await supabase
-          .from("tracks")
-          .select("*")
-          .eq("id", params.id)
-          .single();
-
-        return NextResponse.json({
-          ...(updatedTrack || track),
-          audio_url: reqStatus.result_audio_url,
-          downloaded: true,
-          message: "Track downloaded successfully.",
-        });
-      }
-
-      if (reqStatus.status === "failed") {
-        return NextResponse.json({
-          ...track,
-          queued: false,
-          error: reqStatus.error || "Download failed",
-          message: reqStatus.error || "Download failed. You can try again.",
-        }, { status: 502 });
-      }
-    }
-
-    // Timeout — engine is still working on it
     return NextResponse.json({
       ...track,
       queued: true,
-      message: "Download in progress — check back shortly.",
-    });
+      message: "Corrected source queued for local preparation.",
+    }, { status: 202 });
   }
 
   if (!status || !["approved", "rejected", "pending", "skipped", "listened", "bad_source"].includes(status)) {
@@ -253,7 +212,11 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
 }
 
 // GET /api/tracks/[id]
-export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const authClient = getAuthClient(req);
+  const { data: { user } } = await authClient.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const params = await props.params;
   const supabase = getServiceClient();
   const { data, error } = await supabase

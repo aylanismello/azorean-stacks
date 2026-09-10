@@ -33,16 +33,25 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  // Allow public paths and API routes (engine uses service role key)
-  if (
-    PUBLIC_PATHS.some((p) => pathname.startsWith(p)) ||
-    pathname.startsWith("/api/")
-  ) {
+  // Only explicit auth entry points are public. The engine talks to Supabase
+  // directly; treating every API route as public bypassed the app's auth wall.
+  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
     return supabaseResponse;
   }
 
-  // Redirect unauthenticated users to login
+  // The engine can submit canonical catalog rows with the service-role bearer
+  // token. Let only that exact method/path reach the route, which validates the
+  // token itself; every other API endpoint still requires a user session here.
+  if (pathname === "/api/tracks" && request.method === "POST" && request.headers.has("authorization")) {
+    return supabaseResponse;
+  }
+
   if (!user) {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Browser pages retain the login redirect UX.
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", pathname);

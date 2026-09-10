@@ -21,3 +21,11 @@ export async function getRequestUser(req: NextRequest) {
 
   return user;
 }
+
+export function canEditSharedCatalog(userId: string): boolean {
+  return (process.env.AZOREAN_CATALOG_EDITOR_IDS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(userId);
+}

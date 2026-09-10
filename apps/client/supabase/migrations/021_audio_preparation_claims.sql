@@ -1,5 +1,27 @@
 -- Cross-process leases for bounded audio preparation and conservative queue eviction.
 
+-- download_requests existed in production before this migration but was not in
+-- the replayable app migration history. Define it before eviction references it.
+create table if not exists download_requests (
+  id uuid primary key default gen_random_uuid(),
+  track_id uuid not null references tracks(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete set null,
+  youtube_url text not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'downloading', 'completed', 'failed')),
+  result_audio_url text,
+  error text,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz,
+  claimed_at timestamptz
+);
+
+-- These legacy catalog flags predated migration tracking. The eviction
+-- function below references them, so define them before creating the function.
+alter table tracks add column if not exists is_seed boolean not null default false;
+alter table tracks add column if not exists is_re_seed boolean not null default false;
+alter table tracks add column if not exists is_artist_seed boolean not null default false;
+
 create table if not exists audio_preparation_claims (
   track_id uuid primary key references tracks(id) on delete cascade,
   owner_token uuid not null,

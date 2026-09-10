@@ -46,27 +46,23 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
     return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
   }
 
-  // Only allow updating seeds owned by the current user.
-  // Legacy seeds with user_id=NULL are claimed on first update.
+  // Only allow updating seeds already owned by the current user. Legacy
+  // unowned rows require an explicit administrative migration, not claiming
+  // through a browser mutation.
   const { data: existing } = await supabase
     .from("seeds")
-    .select("user_id")
+    .select("id")
     .eq("id", params.id)
-    .single();
+    .eq("user_id", user.id)
+    .maybeSingle();
 
-  if (existing && existing.user_id && existing.user_id !== user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  // Claim unowned seeds on update
-  if (existing && !existing.user_id) {
-    updates.user_id = user.id;
-  }
+  if (!existing) return NextResponse.json({ error: "Seed not found" }, { status: 404 });
 
   const { data, error } = await supabase
     .from("seeds")
     .update(updates)
     .eq("id", params.id)
+    .eq("user_id", user.id)
     .select()
     .single();
 
@@ -89,103 +85,25 @@ export async function DELETE(req: NextRequest, props: { params: Promise<{ id: st
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // ── Cascade cleanup ──
-
-  // 1. Delete discovery_runs (no FK cascade)
-  await supabase.from("discovery_runs").delete().eq("seed_id", params.id);
-
-  // 2. Get the seed's track_id so we can find tracks discovered via this seed
-  const { data: seed } = await supabase
+  // Authorize before any mutation. Legacy NULL-owner seeds cannot be claimed
+  // through this destructive route.
+  const { data: seed, error: seedError } = await supabase
     .from("seeds")
-    .select("track_id")
+    .select("id")
     .eq("id", params.id)
-    .single();
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (seedError) return NextResponse.json({ error: seedError.message }, { status: 500 });
+  if (!seed) return NextResponse.json({ error: "Seed not found" }, { status: 404 });
 
-  const seedTrackId = seed?.track_id || null;
-
-  // 3. Delete pending tracks discovered by this seed (keep voted ones for taste signals)
-  if (seedTrackId) {
-    // Delete storage files for pending tracks before removing them
-    const { data: pendingTracks } = await supabase
-      .from("tracks")
-      .select("id, storage_path")
-      .eq("seed_track_id", seedTrackId)
-      .eq("status", "pending");
-
-    if (pendingTracks?.length) {
-      // Remove storage files
-      const storagePaths = pendingTracks
-        .map((t: any) => t.storage_path)
-        .filter(Boolean);
-      if (storagePaths.length > 0) {
-        await supabase.storage.from("tracks").remove(storagePaths);
-      }
-
-      // Delete the pending tracks
-      const pendingIds = pendingTracks.map((t: any) => t.id);
-      await supabase.from("episode_tracks").delete().in("track_id", pendingIds);
-      await supabase.from("user_tracks").delete().in("track_id", pendingIds);
-      await supabase.from("tracks").delete().in("id", pendingIds);
-    }
-
-    // Null out seed_track_id on remaining voted tracks (they keep metadata.seed_artist/title)
-    await supabase
-      .from("tracks")
-      .update({ seed_track_id: null })
-      .eq("seed_track_id", seedTrackId);
-  }
-
-  // 4. Remove episode_seeds links for this seed
-  const { data: episodeLinks } = await supabase
-    .from("episode_seeds")
-    .select("episode_id")
-    .eq("seed_id", params.id);
-
-  await supabase.from("episode_seeds").delete().eq("seed_id", params.id);
-
-  // 5. Clean up orphaned episodes (no remaining seed links)
-  // Skip independently-crawled sources (e.g. lotradio) — they exist regardless of seeds
-  if (episodeLinks?.length) {
-    for (const link of episodeLinks) {
-      const { data: episode } = await supabase
-        .from("episodes")
-        .select("source")
-        .eq("id", link.episode_id)
-        .single();
-
-      if (episode?.source === "lotradio") continue;
-
-      const { count } = await supabase
-        .from("episode_seeds")
-        .select("*", { count: "exact", head: true })
-        .eq("episode_id", link.episode_id);
-
-      if (count === 0) {
-        // Check if episode still has any tracks (voted ones we kept)
-        const { count: trackCount } = await supabase
-          .from("tracks")
-          .select("*", { count: "exact", head: true })
-          .eq("episode_id", link.episode_id);
-
-        if (trackCount === 0) {
-          // Fully orphaned — delete episode
-          await supabase.from("episode_tracks").delete().eq("episode_id", link.episode_id);
-          await supabase.from("episodes").delete().eq("id", link.episode_id);
-        }
-      }
-    }
-  }
-
-  // 6. Delete the seed itself
-  const { error } = await supabase
-    .from("seeds")
-    .delete()
-    .eq("id", params.id)
-    .or(`user_id.eq.${user.id},user_id.is.null`);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+  // The RPC keeps lineage cleanup atomic and deliberately leaves shared
+  // catalog tracks, audio, votes, queue records, and ranking history intact.
+  const { data: deleted, error } = await supabase.rpc("delete_owned_seed", {
+    p_seed_id: params.id,
+    p_user_id: user.id,
+  });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!deleted) return NextResponse.json({ error: "Seed not found" }, { status: 404 });
 
   return NextResponse.json({ deleted: true });
 }

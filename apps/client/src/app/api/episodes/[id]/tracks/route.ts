@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase";
-import { createServerClient } from "@supabase/ssr";
+import { getRequestUser } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/episodes/[id]/tracks
 export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const user = await getRequestUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const params = await props.params;
   const db = getServiceClient();
   // Query through episode_tracks junction table, order by tracklist position
@@ -27,33 +30,21 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
 
   const trackIds = data.map((t: any) => t.id);
 
-  // Get super_liked + vote status from user_tracks (try to get authed user)
+  // Get super_liked + vote status from this user's rows only.
   const superLikedIds = new Set<string>();
   const voteStatusMap = new Map<string, string>();
-  try {
-    const authClient = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() { return req.cookies.getAll(); },
-          setAll() {},
-        },
-      }
-    );
-    const { data: { user } } = await authClient.auth.getUser();
-    if (user && trackIds.length > 0) {
-      const { data: utRows } = await db
+  if (trackIds.length > 0) {
+      const { data: utRows, error: votesError } = await db
         .from("user_tracks")
         .select("track_id, super_liked, status")
         .eq("user_id", user.id)
         .in("track_id", trackIds);
+      if (votesError) return NextResponse.json({ error: votesError.message }, { status: 500 });
       for (const ut of (utRows || []) as any[]) {
         if (ut.super_liked) superLikedIds.add(ut.track_id);
         if (ut.status) voteStatusMap.set(ut.track_id, ut.status);
       }
-    }
-  } catch {}
+  }
 
   // Generate signed URLs for tracks with storage_path
   const tracks = data || [];

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase";
+import { canEditSharedCatalog, getRequestUser } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +9,12 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const user = await getRequestUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!canEditSharedCatalog(user.id)) {
+    return NextResponse.json({ error: "Shared episode changes require catalog-editor access" }, { status: 403 });
+  }
+
   const supabase = getServiceClient();
   const { id } = await params;
   const body = await req.json();
@@ -30,43 +37,6 @@ export async function PATCH(
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  // When skipping, reject all pending tracks and delete their audio from storage
-  if (body.skipped) {
-    const now = new Date().toISOString();
-
-    // Find tracks that have audio files to clean up
-    const { data: tracksWithAudio } = await supabase
-      .from("tracks")
-      .select("id, storage_path")
-      .eq("episode_id", id)
-      .eq("status", "pending")
-      .not("storage_path", "is", null);
-
-    // Delete audio files from bucket
-    if (tracksWithAudio && tracksWithAudio.length > 0) {
-      const paths = tracksWithAudio.map((t: { storage_path: string }) => t.storage_path);
-      const { error: storageError } = await supabase.storage
-        .from("tracks")
-        .remove(paths);
-
-      if (storageError) {
-        console.error("Failed to delete storage files on episode skip:", storageError);
-      }
-    }
-
-    // Reject all pending tracks and clear storage references
-    await supabase
-      .from("tracks")
-      .update({
-        status: "rejected",
-        voted_at: now,
-        storage_path: null,
-        download_url: null,
-      })
-      .eq("episode_id", id)
-      .eq("status", "pending");
   }
 
   return NextResponse.json({ ok: true });

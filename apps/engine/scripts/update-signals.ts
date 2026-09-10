@@ -6,6 +6,7 @@ import {
   emptyYield,
   episodeContextKey,
   estimateYield,
+  indexTrackEpisodes,
   recencyWeight,
   resolveUserId,
   type YieldAccumulator,
@@ -161,6 +162,12 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     ? globalYield.positive / (globalYield.positive + globalYield.negative)
     : 0.5;
 
+  const trackIds = tracks.map((track: any) => track.id);
+  const trackEpisodeRows = trackIds.length > 0
+    ? await selectInBatches(db, "episode_tracks", "track_id, episode_id", "track_id", trackIds)
+    : [];
+  const episodesByTrack = indexTrackEpisodes(tracks, trackEpisodeRows);
+
   for (const track of tracks) {
     const weight = trackWeight(track);
 
@@ -193,11 +200,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   if (seedsError) throw seedsError;
 
   if (seeds && seeds.length > 0) {
-    const trackIds = tracks.map((track: any) => track.id);
     const seedIds = seeds.map((seed: any) => seed.id);
-    const trackEpisodeRows = trackIds.length > 0
-      ? await selectInBatches(db, "episode_tracks", "track_id, episode_id", "track_id", trackIds)
-      : [];
     const episodeSeedRows = seedIds.length > 0
       ? await selectInBatches(db, "episode_seeds", "episode_id, seed_id, match_type", "seed_id", seedIds)
       : [];
@@ -235,7 +238,9 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     .select("id, slug");
   if (curatorsError) throw curatorsError;
   console.log(`Computing episode and show yield signals...`);
-  const votedEpisodeIds = Array.from(new Set(tracks.map((track: any) => track.episode_id).filter(Boolean)));
+  const votedEpisodeIds = Array.from(new Set(
+    tracks.flatMap((track: any) => [...(episodesByTrack.get(track.id) || [])]),
+  ));
   const { data: votedEpisodes, error: votedEpisodesError } = votedEpisodeIds.length > 0
     ? await db.from("episodes").select("id, curator_id, source, url, title").in("id", votedEpisodeIds)
     : { data: [], error: null };
@@ -245,26 +250,43 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   const curatorStats = new Map<string, YieldAccumulator>();
   const contextStats = new Map<string, YieldAccumulator>();
   const episodeStats = new Map<string, YieldAccumulator>();
+  const artistStats = new Map<string, YieldAccumulator>();
 
   for (const track of tracks) {
-    if (!track.episode_id) continue;
-    const episode = episodeMap.get(track.episode_id);
     const outcome = trackWeight(track);
     const decay = recencyWeight(track._voted_at);
-    const epAcc = episodeStats.get(track.episode_id) || emptyYield();
-    addYield(epAcc, outcome, decay);
-    episodeStats.set(track.episode_id, epAcc);
+    if (track.artist) {
+      const artistKey = track.artist.toLowerCase().trim();
+      const artistAcc = artistStats.get(artistKey) || emptyYield();
+      addYield(artistAcc, outcome, decay);
+      artistStats.set(artistKey, artistAcc);
+    }
+    const episodeIds = [...(episodesByTrack.get(track.id) || [])];
+    if (!episodeIds.length) continue;
+    const episodeOutcome = outcome / episodeIds.length;
+    const contexts = new Set<string>();
+    const curatorSlugs = new Set<string>();
 
-    const contextKey = episode ? episodeContextKey(episode) : null;
-    if (contextKey) {
+    for (const episodeId of episodeIds) {
+      const episode = episodeMap.get(episodeId);
+      const epAcc = episodeStats.get(episodeId) || emptyYield();
+      addYield(epAcc, episodeOutcome, decay);
+      episodeStats.set(episodeId, epAcc);
+
+      const contextKey = episode ? episodeContextKey(episode) : null;
+      if (contextKey) contexts.add(contextKey);
+      const slug = episode?.curator_id ? curatorSlugMap.get(episode.curator_id) : null;
+      if (slug) curatorSlugs.add(slug);
+    }
+
+    for (const contextKey of contexts) {
       const acc = contextStats.get(contextKey) || emptyYield();
-      addYield(acc, outcome, decay);
+      addYield(acc, outcome / contexts.size, decay);
       contextStats.set(contextKey, acc);
     }
-    const slug = episode?.curator_id ? curatorSlugMap.get(episode.curator_id) : null;
-    if (slug) {
+    for (const slug of curatorSlugs) {
       const acc = curatorStats.get(slug) || emptyYield();
-      addYield(acc, outcome, decay);
+      addYield(acc, outcome / curatorSlugs.size, decay);
       curatorStats.set(slug, acc);
     }
   }
@@ -286,21 +308,21 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
   // Artists appearing across multiple seed episodes → positive signal
   console.log(`Computing co-occurrence signals...`);
 
-  // Build artist → set of episode IDs from voted tracks
+  // Build artist → set of canonical episode IDs from voted tracks
   const artistEpisodes = new Map<string, Set<string>>();
   for (const track of tracks) {
-    if (!track.artist || !track.episode_id) continue;
+    if (!track.artist) continue;
     const key = track.artist.toLowerCase().trim();
     if (!artistEpisodes.has(key)) artistEpisodes.set(key, new Set());
-    artistEpisodes.get(key)!.add(track.episode_id);
+    for (const episodeId of episodesByTrack.get(track.id) || []) {
+      artistEpisodes.get(key)!.add(episodeId);
+    }
   }
 
   for (const [artistKey, epSet] of artistEpisodes) {
-    if (epSet.size >= 2) {
-      // Normalize: log scale so 2 episodes = moderate, 5+ = strong
-      const strength = Math.min(1.0, Math.log2(epSet.size) / 3);
-      addSignal("co_occurrence", artistKey, strength);
-    }
+    if (epSet.size < 2) continue;
+    const estimate = estimateYield(artistStats.get(artistKey) || emptyYield(), globalRate, 5, 3);
+    if (estimate) setYieldSignal("co_occurrence", artistKey, estimate);
   }
 
   console.log(`Computed ${signals.size} unique signals`);
@@ -423,21 +445,28 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     signalConfidenceMap.set(key, samples / (samples + CONFIDENCE_PRIOR));
   }
 
-  // Fetch all pending tracks (paginate past 1000-row cap)
-  const pending: any[] = [];
-  let page = 0;
-  while (true) {
-    const { data: batch, error } = await db
-      .from("tracks")
-      .select("id, artist, metadata, episode_id, seed_track_id")
+  // Score only this user's pending candidate set. Shared catalog rows are not
+  // queue eligibility and must never make another user's discoveries visible.
+  const eligiblePendingIds: string[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db.from("user_tracks")
+      .select("track_id")
+      .eq("user_id", userId)
       .eq("status", "pending")
-      .range(page * 1000, (page + 1) * 1000 - 1);
+      .range(from, from + 999);
     if (error) throw error;
-    if (!batch || batch.length === 0) break;
-    pending.push(...batch);
-    if (batch.length < 1000) break;
-    page++;
+    eligiblePendingIds.push(...(data || []).map((row: any) => row.track_id));
+    if (!data || data.length < 1000) break;
   }
+  const pending = eligiblePendingIds.length > 0
+    ? (await selectInBatches<any>(
+        db,
+        "tracks",
+        "id, artist, metadata, episode_id, seed_track_id, status",
+        "id",
+        eligiblePendingIds,
+      )).filter((track) => track.status === "pending")
+    : [];
 
   console.log(`Scoring ${pending.length} pending tracks`);
 
@@ -455,50 +484,30 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
     scopedEpisodeSeedRows,
     seeds || []
   );
+  const pendingEpisodesByTrack = indexTrackEpisodes(pending, pendingEpisodeRows);
 
   // Build per-episode vote stats for negative penalties
   const episodeVoteStats = new Map<string, { approved: number; rejected: number }>();
   for (const track of tracks) {
-    if (!track.episode_id) continue;
-    const w = trackWeight(track);
-    const acc = episodeVoteStats.get(track.episode_id) || { approved: 0, rejected: 0 };
-    if (w > 0) acc.approved++;
-    else if (w < -0.5) acc.rejected++; // rejected (not skipped)
-    episodeVoteStats.set(track.episode_id, acc);
-  }
-
-  // Build episode → best match_type lookup for match_type scoring boost
-  // "full" match = seed track was in the tracklist, "artist" = only the artist appeared
-  const episodeMatchType = new Map<string, string>();
-  {
-    let mtPage = 0;
-    while (true) {
-      if (seedIds.length === 0) break;
-      const { data: mtBatch, error } = await db
-        .from("episode_seeds")
-        .select("episode_id, match_type")
-        .in("seed_id", seedIds)
-        .range(mtPage * 1000, (mtPage + 1) * 1000 - 1);
-      if (error) throw error;
-      if (!mtBatch || mtBatch.length === 0) break;
-      for (const row of mtBatch as any[]) {
-        const existing = episodeMatchType.get(row.episode_id);
-        // "full" is stronger than "artist" or "unknown"
-        if (!existing || row.match_type === "full") {
-          episodeMatchType.set(row.episode_id, row.match_type || "unknown");
-        }
-      }
-      if (mtBatch.length < 1000) break;
-      mtPage++;
+    const weight = trackWeight(track);
+    for (const episodeId of episodesByTrack.get(track.id) || []) {
+      const accumulator = episodeVoteStats.get(episodeId) || { approved: 0, rejected: 0 };
+      if (weight > 0) accumulator.approved++;
+      else if (weight < -0.5) accumulator.rejected++; // rejected (not skipped)
+      episodeVoteStats.set(episodeId, accumulator);
     }
-    console.log(`Loaded match_type for ${episodeMatchType.size} episodes`);
   }
 
-  // Build episode → curator lookup for pending tracks
-  const { data: epCuratorLinks, error: epCuratorError } = await db
-    .from("episodes")
-    .select("id, curator_id, source, url, title");
-  if (epCuratorError) throw epCuratorError;
+  // Match quality comes from the same user-scoped canonical lineage used for
+  // seed affinity; no second global episode lookup is necessary.
+
+  // Build episode → curator/context lookup for every canonical appearance.
+  const pendingEpisodeIds = Array.from(new Set(
+    pending.flatMap((track: any) => [...(pendingEpisodesByTrack.get(track.id) || [])]),
+  ));
+  const epCuratorLinks = pendingEpisodeIds.length > 0
+    ? await selectInBatches<any>(db, "episodes", "id, curator_id, source, url, title", "id", pendingEpisodeIds)
+    : [];
 
   const epToCuratorMap = new Map<string, string>();
   const epToContextMap = new Map<string, string>();
@@ -529,6 +538,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
 
   for (const track of pending) {
     const meta = (track.metadata || {}) as Record<string, unknown>;
+    const episodeIds = [...(pendingEpisodesByTrack.get(track.id) || [])];
     const components: Array<{ weight: number; typeWeight: number }> = [];
     const componentConfidences: Array<{ confidence: number; typeWeight: number }> = [];
 
@@ -582,44 +592,52 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
       scoreComponents.seed = Math.round(seedAffinity * 1000) / 1000;
     }
 
-    // Curator signal (0.12)
-    if (track.episode_id) {
-      const curatorId = epToCuratorMap.get(track.episode_id);
-      if (curatorId) {
-        const slug = curatorIdToSlug.get(curatorId);
-        if (slug) {
-          const curatorKey = `curator::${slug.toLowerCase()}`;
-          const curatorWeight = signalMap.get(curatorKey);
-          if (curatorWeight !== undefined) {
-            components.push({ weight: curatorWeight, typeWeight: 0.12 });
-            componentConfidences.push({ confidence: signalConfidenceMap.get(curatorKey) || 0, typeWeight: 0.12 });
-            scoreComponents.curator = Math.round(curatorWeight * 1000) / 1000;
-          }
-        }
-      }
+    // Curator signal (0.12), averaged across canonical appearances.
+    const curatorKeys = new Set(episodeIds.flatMap((episodeId) => {
+      const curatorId = epToCuratorMap.get(episodeId);
+      const slug = curatorId ? curatorIdToSlug.get(curatorId) : null;
+      return slug ? [`curator::${slug.toLowerCase()}`] : [];
+    }));
+    const curatorValues = [...curatorKeys]
+      .map((key) => ({ value: signalMap.get(key), confidence: signalConfidenceMap.get(key) || 0 }))
+      .filter((item): item is { value: number; confidence: number } => item.value !== undefined);
+    if (curatorValues.length) {
+      const curatorWeight = curatorValues.reduce((sum, item) => sum + item.value, 0) / curatorValues.length;
+      const curatorConfidence = curatorValues.reduce((sum, item) => sum + item.confidence, 0) / curatorValues.length;
+      components.push({ weight: curatorWeight, typeWeight: 0.12 });
+      componentConfidences.push({ confidence: curatorConfidence, typeWeight: 0.12 });
+      scoreComponents.curator = Math.round(curatorWeight * 1000) / 1000;
     }
 
     // Stable show/source context (0.18), distinct from a specific episode.
-    if (track.episode_id) {
-      const context = epToContextMap.get(track.episode_id);
-      const contextKey = context ? `source_context::${context}` : null;
-      const contextWeight = contextKey ? signalMap.get(contextKey) : undefined;
-      if (contextKey && contextWeight !== undefined) {
-        components.push({ weight: contextWeight, typeWeight: 0.18 });
-        componentConfidences.push({ confidence: signalConfidenceMap.get(contextKey) || 0, typeWeight: 0.18 });
-        scoreComponents.source_context = Math.round(contextWeight * 1000) / 1000;
-      }
+    const contextKeys = new Set(episodeIds.flatMap((episodeId) => {
+      const context = epToContextMap.get(episodeId);
+      return context ? [`source_context::${context}`] : [];
+    }));
+    const contextValues = [...contextKeys]
+      .map((key) => ({ value: signalMap.get(key), confidence: signalConfidenceMap.get(key) || 0 }))
+      .filter((item): item is { value: number; confidence: number } => item.value !== undefined);
+    if (contextValues.length) {
+      const contextWeight = contextValues.reduce((sum, item) => sum + item.value, 0) / contextValues.length;
+      const contextConfidence = contextValues.reduce((sum, item) => sum + item.confidence, 0) / contextValues.length;
+      components.push({ weight: contextWeight, typeWeight: 0.18 });
+      componentConfidences.push({ confidence: contextConfidence, typeWeight: 0.18 });
+      scoreComponents.source_context = Math.round(contextWeight * 1000) / 1000;
     }
 
     // Bayesian-smoothed episode yield (0.12; legacy signal name retained).
-    if (track.episode_id) {
-      const epDensityKey = `episode_density::${track.episode_id.toLowerCase()}`;
-      const epDensityWeight = signalMap.get(epDensityKey);
-      if (epDensityWeight !== undefined) {
-        components.push({ weight: epDensityWeight, typeWeight: 0.12 });
-        componentConfidences.push({ confidence: signalConfidenceMap.get(epDensityKey) || 0, typeWeight: 0.12 });
-        scoreComponents.episode_density = Math.round(epDensityWeight * 1000) / 1000;
-      }
+    const densityValues = episodeIds
+      .map((episodeId) => {
+        const key = `episode_density::${episodeId.toLowerCase()}`;
+        return { value: signalMap.get(key), confidence: signalConfidenceMap.get(key) || 0 };
+      })
+      .filter((item): item is { value: number; confidence: number } => item.value !== undefined);
+    if (densityValues.length) {
+      const densityWeight = densityValues.reduce((sum, item) => sum + item.value, 0) / densityValues.length;
+      const densityConfidence = densityValues.reduce((sum, item) => sum + item.confidence, 0) / densityValues.length;
+      components.push({ weight: densityWeight, typeWeight: 0.12 });
+      componentConfidences.push({ confidence: densityConfidence, typeWeight: 0.12 });
+      scoreComponents.episode_density = Math.round(densityWeight * 1000) / 1000;
     }
 
     // Co-occurrence signal (0.08)
@@ -631,41 +649,24 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
       scoreComponents.co_occurrence = Math.round(coOccWeight * 1000) / 1000;
     }
 
-    // Discovery co-occurrence boost: tracks found in multiple seed episodes
-    // get a confidence boost (stored in metadata.co_occurrence by discover.ts)
-    const discoveryCoOcc = typeof meta.co_occurrence === "number" ? meta.co_occurrence : 0;
-    if (discoveryCoOcc > 1) {
-      // Normalize: log scale, capped at 0.15 for tracks in 4+ episodes
-      const coOccBoost = Math.min(0.15, Math.log2(discoveryCoOcc) * 0.08);
-      scoreComponents.discovery_co_occ = Math.round(coOccBoost * 1000) / 1000;
-    }
-
-    // Composite score: weighted average of components
-    let score = 0;
-    if (components.length > 0) {
-      const totalTypeWeight = components.reduce((s, c) => s + c.typeWeight, 0);
-      score = components.reduce((s, c) => s + c.weight * c.typeWeight, 0) / totalTypeWeight;
-      score = Math.round(score * 1000) / 1000;
-    }
-
-    // Apply discovery co-occurrence boost after weighted average
-    if (scoreComponents.discovery_co_occ) {
-      score += scoreComponents.discovery_co_occ;
-    }
+    // Missing evidence is neutral, not a reason to renormalize a single weak
+    // signal to full strength. Model weights sum to one when all components
+    // are present, so a straight weighted sum naturally shrinks sparse rows.
+    let score = Math.round(
+      components.reduce((sum, component) => sum + component.weight * component.typeWeight, 0) * 1000,
+    ) / 1000;
 
     // ── Match type boost ──────────────────────────────────────────────
     // Tracks from "full" match episodes (seed song was actually in the tracklist)
     // get a boost. "artist"-only matches get a small penalty since the connection
     // is weaker — the DJ played the artist but not necessarily the seed song.
-    if (track.episode_id) {
-      const mt = episodeMatchType.get(track.episode_id);
-      if (mt === "full") {
-        score += 0.10;
-        scoreComponents.match_type = 0.10;
-      } else if (mt === "artist") {
-        score -= 0.05;
-        scoreComponents.match_type = -0.05;
-      }
+    const lineageMatchTypes = [...(pendingLineage.get(track.id)?.values() || [])];
+    if (lineageMatchTypes.includes("full")) {
+      score += 0.10;
+      scoreComponents.match_type = 0.10;
+    } else if (lineageMatchTypes.includes("artist")) {
+      score -= 0.05;
+      scoreComponents.match_type = -0.05;
     }
 
     // ── Negative penalties ──────────────────────────────────────────────
@@ -677,29 +678,19 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
       penalty += 0.15; // heavily rejected artist
     }
 
-    // Bad episode penalty (>50% rejection rate from episode density data)
-    if (track.episode_id) {
-      const epStats = episodeVoteStats.get(track.episode_id);
-      if (epStats) {
-        const epTotal = epStats.approved + epStats.rejected;
-        if (epTotal >= 3 && epStats.rejected / epTotal > 0.5) {
-          penalty += 0.20; // bad episode
-        }
-      }
+    // Bad episode penalty (>50% rejection rate across canonical appearances).
+    const relevantEpisodeStats = episodeIds
+      .map((episodeId) => episodeVoteStats.get(episodeId))
+      .filter((stats): stats is { approved: number; rejected: number } => Boolean(stats));
+    const episodeDecisions = relevantEpisodeStats.reduce((sum, stats) => sum + stats.approved + stats.rejected, 0);
+    const episodeRejections = relevantEpisodeStats.reduce((sum, stats) => sum + stats.rejected, 0);
+    if (episodeDecisions >= 3 && episodeRejections / episodeDecisions > 0.5) {
+      penalty += 0.20;
     }
 
     // Bad curator penalty
-    if (track.episode_id) {
-      const curatorId = epToCuratorMap.get(track.episode_id);
-      if (curatorId) {
-        const slug = curatorIdToSlug.get(curatorId);
-        if (slug) {
-          const curatorSig = signalMap.get(`curator::${slug.toLowerCase()}`);
-          if (curatorSig !== undefined && curatorSig < -0.3) {
-            penalty += 0.10; // bad curator
-          }
-        }
-      }
+    if ([...curatorKeys].some((key) => (signalMap.get(key) ?? 0) < -0.3)) {
+      penalty += 0.10;
     }
 
     score = Math.round((score - penalty) * 1000) / 1000;
@@ -707,10 +698,10 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
 
     // Keep explainability per-user. The shared tracks row must not be mutated
     // with one user's score or component snapshot.
-    const confidenceWeight = componentConfidences.reduce((sum, component) => sum + component.typeWeight, 0);
-    const scoreConfidence = confidenceWeight > 0
-      ? componentConfidences.reduce((sum, component) => sum + component.confidence * component.typeWeight, 0) / confidenceWeight
-      : 0;
+    const scoreConfidence = componentConfidences.reduce(
+      (sum, component) => sum + component.confidence * component.typeWeight,
+      0,
+    );
     updates.push({
       id: track.id,
       taste_score: score,

@@ -28,89 +28,54 @@ function requireOk(result: any, label: string): any[] {
   return Array.isArray(result.data) ? result.data : [];
 }
 
-async function fallbackRankedTracks(db: Db, userId: string, limit: number): Promise<QueueCandidate[]> {
-  const candidateResult = await db.from("tracks")
-    .select("*")
-    .eq("status", "pending")
-    .order("taste_score", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(Math.max(limit * 3, limit));
-  const candidates = requireOk(candidateResult, "fallback track ranking");
-  if (!candidates.length) return [];
-
-  const opinionsResult = await db.from("user_tracks")
-    .select("track_id,status")
-    .eq("user_id", userId)
-    .in("track_id", candidates.map((track: any) => track.id));
-  const opinions = requireOk(opinionsResult, "fallback user opinion lookup");
-  const excluded = new Set(
-    opinions.filter((row: any) => row.status !== "pending").map((row: any) => row.track_id),
-  );
-  return candidates.filter((track: any) => !excluded.has(track.id)).slice(0, limit);
+async function pendingUserTrackIds(db: Db, userId: string): Promise<string[]> {
+  const trackIds: string[] = [];
+  for (let start = 0; ; start += 1000) {
+    const result = await db.from("user_tracks")
+      .select("track_id")
+      .eq("user_id", userId)
+      .eq("status", "pending")
+      .range(start, start + 999);
+    const rows = requireOk(result, "queue candidate eligibility");
+    trackIds.push(...rows.map((row: any) => row.track_id));
+    if (rows.length < 1000) break;
+  }
+  return trackIds;
 }
 
 async function rankedTracks(db: Db, userId: string, limit: number): Promise<QueueCandidate[]> {
-  // Prefer truly per-user scores, including metadata-only candidates that have
-  // not been downloaded yet. This is what makes predictive preparation useful.
-  const personalized = await db.from("user_track_scores")
-    .select("score,confidence,components,track:tracks!inner(*)")
-    .eq("user_id", userId)
-    .eq("track.status", "pending")
-    .order("score", { ascending: false })
-    .order("confidence", { ascending: false })
-    .limit(Math.max(limit * 3, limit));
+  const eligibleTrackIds = await pendingUserTrackIds(db, userId);
+  if (!eligibleTrackIds.length) return [];
 
-  if (!personalized.error && Array.isArray(personalized.data)) {
-    const candidates = personalized.data
-      .map((row: any) => {
-        const track = Array.isArray(row.track) ? row.track[0] : row.track;
-        if (!track) return null;
-        return {
-          ...track,
-          taste_score: Number(row.score || 0),
-          metadata: {
-            ...(track.metadata || {}),
-            _score_components: row.components || {},
-            _score_confidence: Number(row.confidence || 0),
-          },
-        };
-      })
-      .filter(Boolean) as QueueCandidate[];
-    if (candidates.length) {
-      const opinionsResult = await db.from("user_tracks")
-        .select("track_id,status")
-        .eq("user_id", userId)
-        .in("track_id", candidates.map((track) => track.id));
-      const opinions = requireOk(opinionsResult, "personalized queue opinion lookup");
-      const excluded = new Set(opinions.filter((row: any) => row.status !== "pending").map((row: any) => row.track_id));
-      return candidates.filter((track) => !excluded.has(track.id)).slice(0, limit);
-    }
-  } else if (!/could not find the table|does not exist|schema cache/i.test(personalized.error?.message || "")) {
-    throw new Error(`personalized track ranking: ${personalized.error?.message}`);
+  const candidates: QueueCandidate[] = [];
+  for (let start = 0; start < eligibleTrackIds.length; start += 300) {
+    const result = await db.from("user_track_scores")
+      .select("score,confidence,components,track:tracks!inner(*)")
+      .eq("user_id", userId)
+      .in("track_id", eligibleTrackIds.slice(start, start + 300))
+      .eq("track.status", "pending");
+    const rows = requireOk(result, "personalized track ranking");
+    candidates.push(...rows.map((row: any) => {
+      const track = Array.isArray(row.track) ? row.track[0] : row.track;
+      if (!track) return null;
+      return {
+        ...track,
+        taste_score: Number(row.score || 0),
+        metadata: {
+          ...(track.metadata || {}),
+          _score_components: row.components || {},
+          _score_confidence: Number(row.confidence || 0),
+        },
+      };
+    }).filter(Boolean));
   }
 
-  // Migration-free fallback for staged rollout. This RPC generally returns
-  // playable tracks only, so use it for continuity but supplement metadata-only
-  // candidates from persisted legacy scores below.
-  const rpc = await db.rpc("get_fyp_tracks", {
-    p_user_id: userId,
-    p_limit: limit,
-    p_offset: 0,
-    p_seed_id: null,
-    p_genre: null,
-    p_seed_artist: null,
-    p_hide_low: false,
-  });
-  const rpcRows = !rpc.error && Array.isArray(rpc.data) ? rpc.data as QueueCandidate[] : [];
-  const fallback = await fallbackRankedTracks(db, userId, limit);
-  const merged = new Map<string, QueueCandidate>();
-  for (const track of [...rpcRows, ...fallback]) if (!merged.has(track.id)) merged.set(track.id, track);
-  if (merged.size) return Array.from(merged.values()).slice(0, limit);
+  candidates.sort((left, right) =>
+    Number(right.taste_score || 0) - Number(left.taste_score || 0)
+      || Number((right.metadata as any)?._score_confidence || 0) - Number((left.metadata as any)?._score_confidence || 0),
+  );
 
-  // Local schemas do not always contain the production RPC. Ranking remains available
-  // from persisted taste_score rather than making queue maintenance fail closed.
-  console.warn(`[queue] get_fyp_tracks unavailable for ${userId}; using taste_score fallback: ${rpc.error?.message || "invalid response"}`);
-  return fallback;
+  return candidates.slice(0, limit);
 }
 
 export async function listQueueUsers(db: Db = getSupabase()): Promise<string[]> {
@@ -128,7 +93,12 @@ export async function materializeUserQueue(
   db: Db = getSupabase(),
   target = QUEUE_TARGET,
 ): Promise<number> {
-  const tracks = await rankedTracks(db, userId, target);
+  // Over-fetch before excluding exhausted downloads so failed tracks do not
+  // occupy warm-cache slots forever. Explicit retries reset dl_attempts first.
+  const ranked = await rankedTracks(db, userId, target * 3);
+  const tracks = ranked
+    .filter((track) => Boolean(track.storage_path) || Number(track.dl_attempts || 0) < MAX_DL_ATTEMPTS)
+    .slice(0, target);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + QUEUE_TTL_DAYS * 86_400_000).toISOString();
 

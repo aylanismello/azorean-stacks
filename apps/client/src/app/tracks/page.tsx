@@ -77,28 +77,22 @@ export default function TracksPage() {
     return () => clearTimeout(debounceRef.current);
   }, [search]);
 
-  // Fetch counts for all tabs (lightweight)
+  // Fetch all tab counts in one user-scoped request.
   const fetchCounts = useCallback(async () => {
-    const tabs: Tab[] = ["super_liked", "approved", "pending", "rejected", "skipped"];
-    const results = await Promise.all(
-      tabs.map(async (t) => {
-        try {
-          const res = await fetch(`/api/tracks?status=${t}&limit=0&offset=0`);
-          if (!res.ok) return null;
-          const data = await res.json();
-          return data.total ?? null;
-        } catch {
-          return null;
-        }
-      })
-    );
-    setTabCounts({
-      super_liked: results[0],
-      approved: results[1],
-      pending: results[2],
-      rejected: results[3],
-      skipped: results[4],
-    });
+    try {
+      const response = await fetch("/api/tracks/stats");
+      if (!response.ok) return;
+      const data = await response.json();
+      setTabCounts({
+        super_liked: data.super_liked ?? null,
+        approved: data.approved ?? null,
+        pending: data.pending ?? null,
+        rejected: data.rejected ?? null,
+        skipped: data.skipped ?? null,
+      });
+    } catch {
+      // Counts are decorative; keep the current values on a transient failure.
+    }
   }, []);
 
   useEffect(() => {
@@ -211,6 +205,7 @@ export default function TracksPage() {
         coverArtUrl: safeCoverUrl(track.cover_art_url),
         spotifyUrl: track.spotify_url,
         audioUrl: track.audio_url || track.preview_url || null,
+        audioRefreshUrl: `/api/tracks/${track.id}/download`,
       }, "/tracks");
     }
   }, [globalPlayer]);
@@ -232,13 +227,20 @@ export default function TracksPage() {
         setError(data.error || "Couldn't find audio");
         return;
       }
-      setTracks((prev) =>
-        prev.map((t) =>
-          t.id === track.id
-            ? { ...t, storage_path: data.storage_path || "fetched", audio_url: data.audio_url, dl_failed_at: null, dl_attempts: 0 }
-            : t
-        )
-      );
+      let ready = data;
+      for (let attempt = 0; res.status === 202 && attempt < 30; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const statusResponse = await fetch(`/api/tracks/${track.id}/download`);
+        ready = await statusResponse.json();
+        if (statusResponse.ok && ready.url) break;
+        if (ready.status === "failed") throw new Error(ready.error || "Audio preparation failed");
+      }
+      const audioUrl = ready.audio_url || ready.url;
+      if (!audioUrl) throw new Error("Audio is still being prepared");
+      setTracks((prev) => prev.map((item) => item.id === track.id
+        ? { ...item, audio_url: audioUrl, dl_failed_at: null, dl_attempts: 0 }
+        : item));
+      globalPlayer.replaceAudioUrl(track.id, audioUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Download failed");
     } finally {
@@ -332,19 +334,6 @@ export default function TracksPage() {
     return opts;
   };
 
-  // Space to toggle play/pause
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === " ") {
-        e.preventDefault();
-        globalPlayer.togglePlayPause();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [globalPlayer]);
 
   const handleGoToStack = useCallback((track: Track) => {
     if (!track.episode_id) return;

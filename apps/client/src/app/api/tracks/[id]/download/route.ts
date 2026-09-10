@@ -1,208 +1,145 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getRequestUser } from "@/lib/server-auth";
 import { getServiceClient } from "@/lib/supabase";
-import { execFile } from "child_process";
-import { readFileSync, unlinkSync, existsSync, mkdirSync, readdirSync } from "fs";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/tracks/[id]/download — get download URL
-export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
-  const params = await props.params;
-  const supabase = getServiceClient();
-  const { data: track, error } = await supabase
-    .from("tracks")
-    .select("id, storage_path, download_url, artist, title")
-    .eq("id", params.id)
-    .single();
+type Context = { params: Promise<{ id: string }> };
 
-  if (error || !track) {
-    return NextResponse.json({ error: "Track not found" }, { status: 404 });
+function isPendingPipelineMigration(error: { code?: string; message?: string }): boolean {
+  return ["42703", "PGRST204"].includes(error.code || "")
+    && (error.message || "").includes("user_id");
+}
+
+async function getOwnedTrack(req: NextRequest, trackId: string) {
+  const user = await getRequestUser(req);
+  if (!user) {
+    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
 
-  // If we have a file in Supabase Storage, generate a signed URL
+  const db = getServiceClient();
+  const { data: userTrack, error } = await db
+    .from("user_tracks")
+    .select("track_id, tracks!inner(id,storage_path,download_url,youtube_url,spotify_url,source_url,artist,title)")
+    .eq("user_id", user.id)
+    .eq("track_id", trackId)
+    .maybeSingle();
+
+  if (error) return { error: NextResponse.json({ error: error.message }, { status: 500 }) };
+  if (!userTrack) {
+    return { error: NextResponse.json({ error: "Track not found in your library" }, { status: 404 }) };
+  }
+
+  const track = Array.isArray(userTrack.tracks) ? userTrack.tracks[0] : userTrack.tracks;
+  return { db, track, user };
+}
+
+async function signedTrackResponse(
+  db: ReturnType<typeof getServiceClient>,
+  track: { storage_path: string | null; download_url?: string | null; artist: string; title: string },
+) {
+  const filename = `${track.artist} - ${track.title}`.replace(/[/\\?%*:|"<>]/g, "");
   if (track.storage_path) {
-    const { data: signed, error: signError } = await supabase.storage
-      .from("tracks")
-      .createSignedUrl(track.storage_path, 3600); // 1 hour
-
-    if (signError || !signed) {
-      return NextResponse.json(
-        { error: "Failed to generate download URL" },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json({
-      url: signed.signedUrl,
-      filename: `${track.artist} - ${track.title}`.replace(/[/\\?%*:|"<>]/g, ""),
-    });
-  }
-
-  // If we have an external download URL
-  if (track.download_url) {
-    return NextResponse.json({
-      url: track.download_url,
-      filename: `${track.artist} - ${track.title}`.replace(/[/\\?%*:|"<>]/g, ""),
-    });
-  }
-
-  return NextResponse.json(
-    { error: "No download available yet", queued: true },
-    { status: 202 }
-  );
-}
-
-// Simple in-memory lock to prevent concurrent downloads of the same track
-const activeDownloads = new Set<string>();
-
-function sanitize(s: string): string {
-  return s
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\w\s\-.,()&+]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 100) || "unknown";
-}
-
-function ytdlp(url: string, outPath: string): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const proc = execFile(
-      "yt-dlp",
-      ["-x", "--audio-format", "mp3", "--audio-quality", "0", "--no-playlist", "--no-warnings", "-o", outPath, url],
-      { timeout: 120_000 },
-      (err) => {
-        if (err && "code" in err && typeof err.code === "number") {
-          resolve(err.code);
-        } else if (err) {
-          reject(err);
-        } else {
-          resolve(0);
-        }
-      }
-    );
-  });
-}
-
-// POST /api/tracks/[id]/download — attempt on-demand download
-export async function POST(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
-  const params = await props.params;
-  const supabase = getServiceClient();
-  const { data: track, error } = await supabase
-    .from("tracks")
-    .select("id, storage_path, youtube_url, artist, title, dl_attempts, dl_failed_at")
-    .eq("id", params.id)
-    .single();
-
-  if (error || !track) {
-    return NextResponse.json({ error: "Track not found" }, { status: 404 });
-  }
-
-  // Prevent concurrent downloads for the same track
-  if (activeDownloads.has(track.id)) {
-    return NextResponse.json({ error: "Download already in progress" }, { status: 409 });
-  }
-
-  // Already has audio
-  if (track.storage_path) {
-    const { data: signed } = await supabase.storage
+    const { data: signed, error } = await db.storage
       .from("tracks")
       .createSignedUrl(track.storage_path, 3600);
-    return NextResponse.json({ success: true, audio_url: signed?.signedUrl });
+    if (error || !signed?.signedUrl) {
+      return NextResponse.json({ error: "Failed to generate download URL" }, { status: 500 });
+    }
+    return NextResponse.json({ success: true, status: "ready", url: signed.signedUrl, audio_url: signed.signedUrl, filename });
   }
 
-  // No youtube URL to try
-  if (!track.youtube_url) {
-    await supabase.from("tracks").update({
-      dl_attempts: (track.dl_attempts || 0) + 1,
-      dl_failed_at: new Date().toISOString(),
-    }).eq("id", track.id);
-    return NextResponse.json({ error: "No source URL available to download" }, { status: 404 });
+  if (track.download_url) {
+    return NextResponse.json({ success: true, status: "ready", url: track.download_url, audio_url: track.download_url, filename });
   }
 
-  // Attempt download
-  activeDownloads.add(track.id);
-  const tmpDir = "/tmp/stacks-api";
-  if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
+  return null;
+}
 
-  const videoId = `dl-${track.id.slice(0, 8)}`;
-  const outPath = `${tmpDir}/${videoId}.%(ext)s`;
-  const expectedPath = `${tmpDir}/${videoId}.mp3`;
+// Returns a signed URL only for tracks visible to the authenticated user.
+export async function GET(req: NextRequest, props: Context) {
+  const { id } = await props.params;
+  const owned = await getOwnedTrack(req, id);
+  if (owned.error) return owned.error;
 
-  try {
-    const exitCode = await ytdlp(track.youtube_url, outPath);
+  const ready = await signedTrackResponse(owned.db, owned.track);
+  if (ready) return ready;
 
-    if (exitCode !== 0) {
-      await supabase.from("tracks").update({
-        dl_attempts: (track.dl_attempts || 0) + 1,
-        dl_failed_at: new Date().toISOString(),
-      }).eq("id", track.id);
-      return NextResponse.json({ error: "Download failed" }, { status: 502 });
-    }
+  const { data: preparation } = await owned.db
+    .from("audio_preparation_queue")
+    .select("state,last_error")
+    .eq("user_id", owned.user.id)
+    .eq("track_id", id)
+    .maybeSingle();
 
-    // Find the output file
-    let localPath = expectedPath;
-    if (!existsSync(localPath)) {
-      const f = readdirSync(tmpDir).find((f) => f.startsWith(videoId));
-      if (f) localPath = `${tmpDir}/${f}`;
-      else {
-        await supabase.from("tracks").update({
-          dl_attempts: (track.dl_attempts || 0) + 1,
-          dl_failed_at: new Date().toISOString(),
-        }).eq("id", track.id);
-        return NextResponse.json({ error: "Download produced no file" }, { status: 502 });
-      }
-    }
+  return NextResponse.json({
+    status: preparation?.state || "not_requested",
+    error: preparation?.last_error || null,
+  }, { status: 202 });
+}
 
-    // Upload to Supabase Storage
-    const storagePath = `${sanitize(track.artist)}/${sanitize(track.title)}.mp3`;
-    const { error: uploadError } = await supabase.storage
-      .from("tracks")
-      .upload(storagePath, readFileSync(localPath), {
-        contentType: "audio/mpeg",
-        upsert: true,
-      });
+// Queue local acquisition. Vercel is the control plane; the local engine owns
+// yt-dlp, transcoding, and storage so requests survive serverless timeouts.
+export async function POST(req: NextRequest, props: Context) {
+  const { id } = await props.params;
+  const owned = await getOwnedTrack(req, id);
+  if (owned.error) return owned.error;
+  const { db, track, user } = owned;
 
-    // Clean up temp file
-    try { unlinkSync(localPath); } catch {}
+  const ready = await signedTrackResponse(db, track);
+  if (ready) return ready;
 
-    if (uploadError) {
-      await supabase.from("tracks").update({
-        dl_attempts: (track.dl_attempts || 0) + 1,
-        dl_failed_at: new Date().toISOString(),
-      }).eq("id", track.id);
-      return NextResponse.json({ error: "Upload to storage failed" }, { status: 500 });
-    }
-
-    // Generate signed URL
-    const { data: signed } = await supabase.storage
-      .from("tracks")
-      .createSignedUrl(storagePath, 3600);
-
-    // Update track record
-    await supabase.from("tracks").update({
-      storage_path: storagePath,
-      download_url: signed?.signedUrl || "",
-      downloaded_at: new Date().toISOString(),
-      dl_attempts: 0,
-      dl_failed_at: null,
-    }).eq("id", track.id);
-
-    return NextResponse.json({
-      success: true,
-      audio_url: signed?.signedUrl,
-      storage_path: storagePath,
-    });
-  } catch (err) {
-    await supabase.from("tracks").update({
-      dl_attempts: (track.dl_attempts || 0) + 1,
-      dl_failed_at: new Date().toISOString(),
-    }).eq("id", track.id);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Download failed" },
-      { status: 500 }
-    );
-  } finally {
-    activeDownloads.delete(track.id);
+  const sourceUrl = track.youtube_url || track.spotify_url || track.source_url;
+  if (!sourceUrl) {
+    return NextResponse.json({ error: "No downloadable source is available for this track yet" }, { status: 409 });
   }
+
+  const now = new Date().toISOString();
+  const { error: requestError } = await db.from("download_requests").insert({
+    track_id: id,
+    user_id: user.id,
+    youtube_url: sourceUrl,
+    status: "pending",
+  });
+  if (requestError && requestError.code !== "23505") {
+    if (isPendingPipelineMigration(requestError)) {
+      return NextResponse.json({
+        error: "Audio preparation is temporarily unavailable while its database migration is applied",
+      }, { status: 503 });
+    }
+    return NextResponse.json({ error: requestError.message }, { status: 500 });
+  }
+
+  const { error: resetError } = await db
+    .from("tracks")
+    .update({ dl_attempts: 0, dl_failed_at: null })
+    .eq("id", id);
+  if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
+
+  const { error: queueError } = await db.from("audio_preparation_queue").upsert({
+    user_id: user.id,
+    track_id: id,
+    state: "ranked",
+    rank: 1,
+    score: 10_000,
+    score_components: { explicit_play_request: true },
+    scoring_version: "explicit_play_request_v1",
+    ranked_at: now,
+    preparing_at: null,
+    ready_at: null,
+    failed_at: null,
+    last_error: null,
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    updated_at: now,
+  }, { onConflict: "user_id,track_id" });
+  if (queueError) return NextResponse.json({ error: queueError.message }, { status: 500 });
+
+  const { error: intentError } = await db
+    .from("user_tracks")
+    .update({ local_download_intent: true })
+    .eq("user_id", user.id)
+    .eq("track_id", id);
+  if (intentError) return NextResponse.json({ error: intentError.message }, { status: 500 });
+
+  return NextResponse.json({ status: "pending", message: "Audio queued" }, { status: 202 });
 }

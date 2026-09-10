@@ -67,6 +67,14 @@ export async function POST(req: NextRequest, props: Context) {
   if (track.storage_path) return NextResponse.json({ status: "ready" });
 
   const now = new Date().toISOString();
+  const { error: resetError } = await db
+    .from("tracks")
+    .update({ dl_attempts: 0, dl_failed_at: null })
+    .eq("id", trackId);
+  if (resetError) {
+    return NextResponse.json({ error: resetError.message }, { status: 500 });
+  }
+
   const { error: preparationError } = await db.from("audio_preparation_queue").upsert({
     user_id: user.id,
     track_id: trackId,
@@ -87,16 +95,20 @@ export async function POST(req: NextRequest, props: Context) {
     return NextResponse.json({ error: preparationError.message }, { status: 500 });
   }
 
-  await db
+  const { error: intentError } = await db
     .from("user_tracks")
     .update({ local_download_intent: true })
     .eq("user_id", user.id)
     .eq("track_id", trackId);
+  if (intentError) {
+    return NextResponse.json({ error: intentError.message }, { status: 500 });
+  }
 
   const acquisitionSource = track.youtube_url || track.spotify_url || track.source_url;
   if (acquisitionSource) {
     const { error: requestError } = await db.from("download_requests").insert({
       track_id: trackId,
+      user_id: user.id,
       youtube_url: acquisitionSource,
       status: "pending",
     });

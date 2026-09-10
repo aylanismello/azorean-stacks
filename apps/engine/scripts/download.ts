@@ -25,6 +25,7 @@ import {
   type PreparationTrack,
 } from "../lib/predictive-queue";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, readdirSync } from "fs";
+import { downloadConcurrency, ytDlpAudioArgs } from "../lib/yt-dlp";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -41,7 +42,7 @@ const force = values.force === true;
 const durationMinutes = values.duration ? parseInt(String(values.duration), 10) : null;
 const deadline = durationMinutes ? Date.now() + durationMinutes * 60_000 : null;
 const db = getSupabase();
-const DL_CONCURRENCY = 15;
+const DL_CONCURRENCY = downloadConcurrency();
 const TMP_DIR = "/tmp/stacks";
 const DL_TIMEOUT = 90_000;
 const MAX_ATTEMPTS = 3;
@@ -64,21 +65,23 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 }
 
 async function markFailed(track: PreparationTrack, message = "download failed"): Promise<void> {
-  await db.from("tracks").update({
+  const failure = await db.from("tracks").update({
     dl_attempts: (track.dl_attempts || 0) + 1,
     dl_failed_at: new Date().toISOString(),
   }).eq("id", track.id);
+  if (failure.error) throw new Error(`Could not record failed attempt: ${failure.error.message}`);
   await markPreparationState(track, "failed", message, db);
 }
 
 async function markSuccess(track: PreparationTrack, storagePath: string, signedUrl: string): Promise<void> {
-  await db.from("tracks").update({
+  const completion = await db.from("tracks").update({
     storage_path: storagePath,
     download_url: signedUrl,
     downloaded_at: new Date().toISOString(),
     dl_attempts: 0,
     dl_failed_at: null,
   }).eq("id", track.id);
+  if (completion.error) throw new Error(`Could not record completed download: ${completion.error.message}`);
   await markPreparationState(track, "ready", null, db);
 }
 
@@ -86,11 +89,7 @@ async function tryDownloadUrl(url: string, videoId: string, label: string): Prom
   const outPath = `${TMP_DIR}/${videoId}.%(ext)s`;
 
   const dlProc = Bun.spawn(
-    [YT_DLP_BIN, "-x", "--audio-format", "mp3", "--audio-quality", "0",
-     "--no-playlist", "--no-warnings",
-     "--retries", "3", "--fragment-retries", "3",
-     "--socket-timeout", "30", "--extractor-retries", "3",
-     "-o", outPath, url],
+    [YT_DLP_BIN, ...ytDlpAudioArgs(url, outPath)],
     { stdout: "ignore", stderr: "pipe" },
   );
 
@@ -170,7 +169,7 @@ async function downloadOne(track: PreparationTrack): Promise<boolean> {
     }
   }
 
-  const storagePath = `${sanitize(track.artist)}/${sanitize(track.title)}.mp3`;
+  const storagePath = `${sanitize(track.artist)}/${sanitize(track.title)}--${track.id}.mp3`;
   const { error } = await db.storage.from("tracks").upload(storagePath, readFileSync(localPath), {
     contentType: "audio/mpeg", upsert: true,
   });
@@ -180,7 +179,13 @@ async function downloadOne(track: PreparationTrack): Promise<boolean> {
   }
 
   const { data: signed } = await db.storage.from("tracks").createSignedUrl(storagePath, 7 * 24 * 3600);
-  await markSuccess(track, storagePath, signed?.signedUrl || "");
+  try {
+    await markSuccess(track, storagePath, signed?.signedUrl || "");
+  } catch (error) {
+    const cleanup = await db.storage.from("tracks").remove([storagePath]);
+    if (cleanup.error) console.error(`    Orphan cleanup failed for ${storagePath}: ${cleanup.error.message}`);
+    throw error;
+  }
 
   try { unlinkSync(localPath); } catch {}
   return true;

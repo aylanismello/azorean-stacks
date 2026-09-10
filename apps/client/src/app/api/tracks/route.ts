@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks } from "@/lib/diversify";
+import { getRequestUser } from "@/lib/server-auth";
+import { parsePagination } from "@/lib/pagination";
 
 export const dynamic = "force-dynamic";
 
@@ -33,18 +34,6 @@ async function attachMatchTypes(tracks: any[]) {
   }
 }
 
-function getAuthClient(req: NextRequest) {
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() { return req.cookies.getAll(); },
-        setAll() {},
-      },
-    }
-  );
-}
 
 // Normalize track joins and generate signed URLs
 async function normalizeAndSign(tracks: any[]) {
@@ -102,8 +91,13 @@ async function getUserTrackIds(db: ReturnType<typeof getServiceClient>, userId: 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const status = searchParams.get("status") || "pending";
-  const limit = parseInt(searchParams.get("limit") || "20", 10);
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  let limit: number;
+  let offset: number;
+  try {
+    ({ limit, offset } = parsePagination(searchParams, { defaultLimit: 20 }));
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid pagination" }, { status: 400 });
+  }
   const search = searchParams.get("search");
   const source = searchParams.get("source");
   const episodeId = searchParams.get("episode_id");
@@ -115,9 +109,8 @@ export async function GET(req: NextRequest) {
 
   const isPending = status === "pending";
 
-  // Get current user
-  const auth = getAuthClient(req);
-  const { data: { user } } = await auth.auth.getUser();
+  const user = await getRequestUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const db = getServiceClient();
 
@@ -165,11 +158,11 @@ export async function GET(req: NextRequest) {
 
   // Super-liked tab: resolve track IDs from user_tracks for current user
   if (status === "super_liked") {
-    let utQuery = db
+    const utQuery = db
       .from("user_tracks")
       .select("track_id")
-      .eq("super_liked", true);
-    if (user) utQuery = utQuery.eq("user_id", user.id);
+      .eq("super_liked", true)
+      .eq("user_id", user.id);
     const { data: utRows, error: utError } = await utQuery
       .order("voted_at", { ascending: false });
 
@@ -193,8 +186,8 @@ export async function GET(req: NextRequest) {
 
   // ── User-isolated status views ──────────────────────────────────────────
 
-  // For approved/rejected: fetch from user_tracks, then load those tracks
-  if (user && (status === "approved" || status === "rejected")) {
+  // User curation states always come from user_tracks, never shared tracks.status.
+  if (["approved", "rejected", "skipped", "listened", "bad_source"].includes(status)) {
     const utIds = await getUserTrackIds(db, user.id, [status]);
     if (utIds.length === 0) return NextResponse.json({ tracks: [], total: 0 });
 
@@ -224,19 +217,73 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ tracks, total: utIds.length });
   }
 
-  // For pending: fetch tracks the user HASN'T voted on
-  // Get all track_ids this user has voted on (any non-pending status)
-  let excludedTrackIds = new Set<string>();
-  if (user && isPending) {
-    const votedIds = await getUserTrackIds(db, user.id, ["approved", "rejected", "skipped", "listened", "bad_source"]);
-    excludedTrackIds = new Set(votedIds);
+  // Pending is eligibility-scoped: a shared catalog row is not visible merely
+  // because another user's discovery created it.
+  if (isPending) {
+    const pendingTrackIds = await getUserTrackIds(db, user.id, ["pending"]);
+    if (pendingTrackIds.length === 0) {
+      return NextResponse.json({ tracks: [], total: 0 });
+    }
+
+    const allPending: any[] = [];
+    const scoreMap = new Map<string, { score: number; components: Record<string, number> }>();
+    for (let start = 0; start < pendingTrackIds.length; start += 300) {
+      const ids = pendingTrackIds.slice(start, start + 300);
+      let pendingQuery = db
+        .from("tracks")
+        .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date, artwork_url, url), seeds!track_id(id)")
+        .in("id", ids)
+        .eq("status", "pending")
+        .or("storage_path.not.is.null,preview_url.not.is.null");
+      if (search) {
+        const escaped = search.replace(/[%_\\]/g, (c) => `\\${c}`);
+        pendingQuery = pendingQuery.or(`artist.ilike.%${escaped}%,title.ilike.%${escaped}%`);
+      }
+      if (source) pendingQuery = pendingQuery.eq("source", source);
+      if (genre) pendingQuery = pendingQuery.contains("metadata", { genres: [genre] });
+      if (seedId) pendingQuery = pendingQuery.eq("seed_track_id", seedId);
+      if (seedArtist) pendingQuery = pendingQuery.contains("metadata", { seed_artist: seedArtist });
+
+      const [trackResult, scoreResult] = await Promise.all([
+        pendingQuery,
+        db.from("user_track_scores")
+          .select("track_id, score, components")
+          .eq("user_id", user.id)
+          .in("track_id", ids),
+      ]);
+      if (trackResult.error) return NextResponse.json({ error: trackResult.error.message }, { status: 500 });
+      if (scoreResult.error) return NextResponse.json({ error: scoreResult.error.message }, { status: 500 });
+      allPending.push(...(trackResult.data || []));
+      for (const score of scoreResult.data || []) {
+        scoreMap.set(score.track_id, {
+          score: Number(score.score || 0),
+          components: (score.components || {}) as Record<string, number>,
+        });
+      }
+    }
+
+    let eligible = hideLow && orderBy === "taste_score"
+      ? allPending.filter((track) => (scoreMap.get(track.id)?.score ?? 0) > -0.3)
+      : allPending;
+    eligible.sort((a, b) => orderBy === "taste_score"
+      ? (scoreMap.get(b.id)?.score ?? 0) - (scoreMap.get(a.id)?.score ?? 0)
+      : String(a.created_at || "").localeCompare(String(b.created_at || "")));
+    const total = eligible.length;
+    if (orderBy === "taste_score") eligible = diversifyTracks(eligible);
+    const tracks = eligible.slice(offset, offset + limit);
+    await normalizeAndSign(tracks);
+    for (const track of tracks) {
+      const personalized = scoreMap.get(track.id);
+      track.status = "pending";
+      track._ranked_score = personalized?.score ?? 0;
+      track._score_components = personalized?.components ?? {};
+    }
+    await attachMatchTypes(tracks);
+    return NextResponse.json({ tracks, total });
   }
 
-  const orderCol = orderBy === "taste_score"
-    ? "taste_score"
-    : isPending ? "created_at" : "created_at";
-
-  const ascending = orderBy === "taste_score" ? false : isPending;
+  const orderCol = orderBy === "taste_score" ? "taste_score" : "created_at";
+  const ascending = orderBy !== "taste_score";
   const isTasteMode = orderBy === "taste_score";
   const targetCount = isTasteMode ? limit * 2 : limit;
   const batchSize = 40;
@@ -251,12 +298,7 @@ export async function GET(req: NextRequest) {
       .from("tracks")
       .select("*, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date, artwork_url, url), seeds!track_id(id)", { count: "exact" });
 
-    if (isPending) {
-      query = query.eq("status", "pending");
-      query = query.or("storage_path.not.is.null,preview_url.not.is.null");
-    } else {
-      query = query.eq("status", status);
-    }
+    query = query.eq("status", status);
 
     query = query.order(orderCol, { ascending, nullsFirst: false })
       .range(cursor, cursor + batchSize - 1);
@@ -288,8 +330,7 @@ export async function GET(req: NextRequest) {
 
     if (totalCount === null) totalCount = count;
 
-    const batch = (data || []).filter((t: any) => !excludedTrackIds.has(t.id));
-    allTracks.push(...batch);
+    allTracks.push(...(data || []));
 
     // Stop if we have enough or DB is exhausted
     if (allTracks.length >= targetCount) break;
@@ -316,7 +357,7 @@ export async function POST(req: NextRequest) {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   // Simple auth: require service role key as bearer token
-  if (!authHeader || authHeader !== `Bearer ${serviceKey}`) {
+  if (!serviceKey || !authHeader || authHeader !== `Bearer ${serviceKey}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

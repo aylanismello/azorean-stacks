@@ -6,10 +6,20 @@
     "apps/client",
     "apps/engine"
   ],
+  "overrides": {
+    "baseline-browser-mapping": ">=2.11.0",
+    "browserslist": ">=4.28.7",
+    "nanoid": ">=3.3.16",
+    "picomatch": ">=4.0.4",
+    "postcss": ">=8.5.23",
+    "postcss-selector-parser": ">=6.1.3",
+    "undici": ">=7.29.0",
+    "ws": ">=8.20.1"
+  },
   "scripts": {
-    "dev": "npm run dev --workspace=apps/client",
-    "build": "npm run build --workspace=apps/client",
-    "dev:engine": "npm run watcher --workspace=apps/engine",
-    "dev:all": "npm run dev --workspace=apps/client & npm run watcher --workspace=apps/engine"
+    "dev": "bun run --cwd apps/client dev",
+    "build": "bun run --cwd apps/client build",
+    "dev:engine": "bun run --cwd apps/engine watcher",
+    "dev:all": "bun run --cwd apps/client dev & bun run --cwd apps/engine watcher"
   }
 }

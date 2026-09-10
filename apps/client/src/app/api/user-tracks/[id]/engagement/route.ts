@@ -40,8 +40,8 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   const db = getServiceClient();
   const trackId = params.id;
 
-  // Upsert: create row if missing (with status=pending), always update engagement fields.
-  // Only update engagement fields if they have non-null values.
+  // Engagement must never overwrite an explicit vote. Update the existing
+  // row first; only create a pending row when one does not exist.
   const updates: Record<string, unknown> = {};
   if (listen_pct !== undefined) updates.listen_pct = listen_pct;
   if (listen_duration_ms !== undefined) updates.listen_duration_ms = listen_duration_ms;
@@ -51,20 +51,40 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
     return NextResponse.json({ ok: true });
   }
 
-  const { error } = await db
+  const updateResult = await db
     .from("user_tracks")
-    .upsert(
-      {
-        user_id: user.id,
-        track_id: trackId,
-        status: "pending",
-        ...updates,
-      },
-      { onConflict: "user_id,track_id" }
-    );
+    .update(updates)
+    .eq("user_id", user.id)
+    .eq("track_id", trackId)
+    .select("track_id")
+    .maybeSingle();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  if (updateResult.error) {
+    return NextResponse.json({ error: updateResult.error.message }, { status: 500 });
+  }
+
+  if (!updateResult.data) {
+    const insertResult = await db.from("user_tracks").insert({
+      user_id: user.id,
+      track_id: trackId,
+      status: "pending",
+      ...updates,
+    });
+
+    // A vote may have inserted the row between our UPDATE and INSERT. In that
+    // race, retry only the engagement fields and preserve the vote status.
+    if (insertResult.error?.code === "23505") {
+      const retryResult = await db
+        .from("user_tracks")
+        .update(updates)
+        .eq("user_id", user.id)
+        .eq("track_id", trackId);
+      if (retryResult.error) {
+        return NextResponse.json({ error: retryResult.error.message }, { status: 500 });
+      }
+    } else if (insertResult.error) {
+      return NextResponse.json({ error: insertResult.error.message }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ ok: true });

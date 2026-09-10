@@ -1,362 +1,270 @@
 #!/usr/bin/env bun
 /**
- * The Stacks — Lot Radio Crawler
+ * Incremental Lot Radio archive indexer.
  *
- * Crawls The Lot Radio episode archive and indexes tracklists into our DB.
- * Episodes are stored with source="lotradio" and their tracklist in the
- * metadata JSONB column for seed-matching at discovery time.
- *
- * Uses the Lot Radio Next.js server action API to enumerate episodes
- * (the index page is fully client-side rendered — static HTML has no links).
- *
- * Usage: bun run scripts/crawl-lotradio.ts [--limit 50] [--offset 0]
- *
- * Rate limit: 1 request per second (polite crawling).
- * Resume: skips episodes already in DB.
+ * The public index renders its first cursor page into the RSC HTML. The next
+ * pages use a deployment-specific Next server action, so this crawler discovers
+ * and validates that action from the current JS bundle instead of pinning a hash.
  */
 import { parseArgs } from "util";
 import { load } from "cheerio";
 import { getSupabase } from "../lib/supabase";
-import { log, sleep } from "../lib/pipeline";
 
-const { values } = parseArgs({
-  args: Bun.argv.slice(2),
-  options: {
-    limit: { type: "string", default: "50" },
-    offset: { type: "string", default: "0" },
-  },
-  strict: false,
-});
-
-const crawlLimit = parseInt(String(values.limit || "50"), 10);
-const crawlOffset = parseInt(String(values.offset || "0"), 10);
-
-const db = getSupabase();
 const LOT_BASE = "https://www.thelotradio.com";
-const RATE_LIMIT_MS = 1_000;
+const INDEX_URL = `${LOT_BASE}/the-index`;
+const RATE_LIMIT_MS = 500;
 
-// Next.js server action ID for the index pagination endpoint.
-// This is derived from the action function hash and may change on redeployment.
-// If crawling returns 0 results, inspect network requests on /the-index to find the new ID.
-const INDEX_ACTION_ID = "c0525175425bb70fffcabc46ac6f1ed53392c63452";
-const INDEX_RSC_TREE = "%5B%22%22%2C%7B%22children%22%3A%5B%22(website)%22%2C%7B%22children%22%3A%5B%22the-index%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%2Ctrue%5D";
-
-async function fetchHtml(url: string, timeoutMs = 20_000): Promise<string | null> {
-  try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; AzoreanStacks/1.0)",
-        "Accept": "text/html,application/xhtml+xml",
-      },
-    });
-    if (!res.ok) {
-      log("fail", `HTTP ${res.status}: ${url}`);
-      return null;
-    }
-    return await res.text();
-  } catch (err) {
-    log("fail", `Fetch error: ${url} — ${err instanceof Error ? err.message : err}`);
-    return null;
-  }
+function log(kind: "ok" | "info", message: string): void {
+  console.log(`${kind === "ok" ? "  ✓" : "  →"} ${message}`);
 }
 
-/**
- * Fetch a page of episodes from the Lot Radio index via the Next.js server action.
- * The site is fully client-side rendered — the server action is the only way to
- * enumerate episodes without a headless browser.
- *
- * Returns { items, total } where items are episode objects with url/title/date.
- */
-async function fetchIndexPage(skip: number, limit: number, since: string): Promise<{
-  items: Array<{ url: string; title: string; date: string | null; artwork: string | null }>;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface LotTrack {
+  artist: string;
+  title: string;
+  timestamp?: string | null;
+}
+
+interface LotEpisode {
+  sys: { id: string };
+  title?: string | null;
+  slug: string;
+  date?: string | null;
+  startTimestamp?: string | null;
+  show?: { slug?: string | null; photo?: { url?: string | null } | null } | null;
+  image?: { url?: string | null } | null;
+  tracklist?: LotTrack[] | null;
+  transcodedFile?: { hls?: string | null; mp4?: unknown[] } | null;
+}
+
+interface IndexPage {
+  items: LotEpisode[];
   total: number;
-} | null> {
-  try {
-    const body = JSON.stringify([{
-      limit,
-      skip,
-      order: "date:desc",
-      filters: "$undefined",
-      staffChoice: "$undefined",
-      since,
-    }]);
-
-    const res = await fetch(`${LOT_BASE}/the-index`, {
-      method: "POST",
-      signal: AbortSignal.timeout(30_000),
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; AzoreanStacks/1.0)",
-        "Accept": "text/x-component",
-        "Content-Type": "text/plain;charset=UTF-8",
-        "next-action": INDEX_ACTION_ID,
-        "next-router-state-tree": INDEX_RSC_TREE,
-      },
-      body,
-    });
-
-    if (!res.ok) {
-      log("fail", `Index API HTTP ${res.status} (skip=${skip})`);
-      return null;
-    }
-
-    const text = await res.text();
-    // RSC format: each line is `{index}:{json}` — line "1:" has the payload
-    const dataLine = text.split("\n").find((l) => l.startsWith("1:"));
-    if (!dataLine) {
-      log("fail", `Index API: no data line in response (skip=${skip})`);
-      return null;
-    }
-
-    const payload = JSON.parse(dataLine.slice(2)) as {
-      total: number;
-      items: Array<{
-        title: string;
-        slug: string;
-        date: string;
-        show: { slug: string } | null;
-        image: { url: string } | null;
-      }>;
-    };
-
-    const items = payload.items.map((item) => {
-      const showSlug = item.show?.slug ?? "special-guests";
-      const url = `${LOT_BASE}/shows/${showSlug}/${item.slug}`;
-      const dateMatch = item.slug.match(/^(\d{4}-\d{2}-\d{2})/);
-      return {
-        url,
-        title: item.title,
-        date: dateMatch ? dateMatch[1] : null,
-        artwork: item.image?.url ?? null,
-      };
-    });
-
-    return { items, total: payload.total };
-  } catch (err) {
-    log("fail", `Index API error (skip=${skip}): ${err instanceof Error ? err.message : err}`);
-    return null;
-  }
+  pages: { next?: string | null; prev?: string | null };
 }
 
-/**
- * Parse tracklist from episode page HTML.
- *
- * Buttons structure:
- * <button>
- *   <div class="grid grid-cols-6">
- *     <span class="col-span-1">00:05:23</span>
- *     <span class="col-span-4 flex flex-col">
- *       <span>Track Title</span>
- *       <span class="opacity-40">Artist</span>
- *     </span>
- *   </div>
- * </button>
- */
-function parseTracklist(html: string): Array<{ artist: string; title: string; timestamp: string }> {
+function positiveInteger(raw: unknown, fallback: number, name: string): number {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative integer`);
+  return parsed || fallback;
+}
+
+function parseBalancedObject(text: string, start: number): string {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index++) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "{") depth++;
+    else if (character === "}" && --depth === 0) return text.slice(start, index + 1);
+  }
+  throw new Error("Unterminated initialData object in Lot Radio response");
+}
+
+export function extractInitialPage(html: string): IndexPage {
   const $ = load(html);
-  const tracks: Array<{ artist: string; title: string; timestamp: string }> = [];
-
-  $("button").each((_, btn) => {
-    const gridDiv = $(btn).find("div.grid-cols-6, div[class*='grid-cols-6']").first();
-    if (!gridDiv.length) return;
-
-    const spans = gridDiv.find("span");
-    if (spans.length < 3) return;
-
-    const timestamp = $(spans[0]).text().trim();
-    if (!/^\d{2}:\d{2}:\d{2}$/.test(timestamp)) return;
-
-    const contentSpan = gridDiv.find("span.col-span-4, span[class*='col-span-4']").first();
-    if (!contentSpan.length) return;
-
-    const childSpans = contentSpan.find("span");
-    if (childSpans.length < 2) return;
-
-    const titleText = $(childSpans[0]).text().trim();
-    const artistText = $(childSpans[1]).text().trim();
-
-    if (!titleText || !artistText) return;
-
-    tracks.push({ artist: artistText, title: titleText, timestamp });
+  let flight = "";
+  $("script").each((_, script) => {
+    const body = $(script).html() || "";
+    const match = body.match(/^self\.__next_f\.push\((.*)\)$/s);
+    if (!match) return;
+    try {
+      const value = JSON.parse(match[1]);
+      if (Array.isArray(value) && typeof value[1] === "string") flight += value[1];
+    } catch {
+      // Other inline scripts are unrelated to the RSC payload.
+    }
   });
-
-  return tracks;
+  const marker = flight.indexOf('"initialData":');
+  if (marker < 0) throw new Error("Lot Radio index did not contain initialData");
+  const start = flight.indexOf("{", marker);
+  if (start < 0) throw new Error("Lot Radio initialData was malformed");
+  const page = JSON.parse(parseBalancedObject(flight, start)) as IndexPage;
+  if (!Array.isArray(page.items) || typeof page.total !== "number") {
+    throw new Error("Lot Radio initialData had an unexpected shape");
+  }
+  return page;
 }
 
-/**
- * Parse episode title and artwork from page HTML.
- */
-function parseEpisodeMeta(html: string): { title: string | null; artwork: string | null } {
-  const $ = load(html);
-
-  const ogTitle = $('meta[property="og:title"]').attr("content") || null;
-  const h1Title = $("h1").first().text().trim() || null;
-  const title = ogTitle || h1Title;
-
-  const ogImage = $('meta[property="og:image"]').attr("content") || null;
-  const twitterImage = $('meta[name="twitter:image"]').attr("content") || null;
-  const artwork = ogImage || twitterImage;
-
-  return { title, artwork };
+export function extractEpisodesAction(bundle: string): string | null {
+  const match = bundle.match(/createServerReference\)\("([a-f0-9]{32,64})"[^;]{0,300}"getEpisodes"\)/);
+  return match?.[1] || null;
 }
 
-async function crawlEpisode(url: string, title: string, date: string | null, prefetchedArtwork?: string | null): Promise<boolean> {
-  const html = await fetchHtml(url);
-  if (!html) {
-    log("fail", `Could not fetch episode: ${url}`);
-    return false;
-  }
-
-  const tracklist = parseTracklist(html);
-  const meta = parseEpisodeMeta(html);
-
-  const episodeTitle = meta.title || title;
-  const artwork = prefetchedArtwork ?? meta.artwork;
-
-  log("info", `  ${episodeTitle || url} — ${tracklist.length} tracks`);
-
-  // Skip episodes with no tracklist — they're useless for matching
-  if (tracklist.length === 0) {
-    // Mark as crawled so we don't re-visit, but don't store in episodes table
-    await db.from("episodes").upsert(
-      {
-        url,
-        title: episodeTitle,
-        source: "lotradio",
-        aired_date: date,
-        artwork_url: artwork,
-        skipped: true,
-        metadata: { tracklist_count: 0, crawled_at: new Date().toISOString(), no_tracklist: true },
-      },
-      { onConflict: "url" },
-    );
-    return true; // counted as success so we don't retry
-  }
-
-  // Upsert episode record with tracklist in metadata
-  const { error } = await db.from("episodes").upsert(
-    {
-      url,
-      title: episodeTitle,
-      source: "lotradio",
-      aired_date: date,
-      artwork_url: artwork,
-      skipped: false,
-      metadata: {
-        tracklist: tracklist.map((t) => ({
-          artist: t.artist,
-          title: t.title,
-          timestamp: t.timestamp,
-        })),
-        tracklist_count: tracklist.length,
-        crawled_at: new Date().toISOString(),
-      },
+async function fetchText(url: string, init?: RequestInit): Promise<string> {
+  const response = await fetch(url, {
+    ...init,
+    signal: AbortSignal.timeout(30_000),
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; AzoreanStacks/1.0)",
+      ...(init?.headers || {}),
     },
-    { onConflict: "url" },
-  );
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
+  return response.text();
+}
 
-  if (error) {
-    log("fail", `DB upsert failed for ${url}: ${error.message}`);
-    return false;
+async function loadIndex(): Promise<{ html: string; page: IndexPage }> {
+  const html = await fetchText(INDEX_URL, { headers: { Accept: "text/html,application/xhtml+xml" } });
+  return { html, page: extractInitialPage(html) };
+}
+
+async function discoverEpisodesAction(html: string): Promise<string> {
+  const $ = load(html);
+  const urls = $("script[src]").map((_, script) => new URL($(script).attr("src")!, LOT_BASE).href).get();
+  const bundles = await Promise.all(urls.map((url) => fetchText(url).catch(() => "")));
+  for (const bundle of bundles) {
+    const action = extractEpisodesAction(bundle);
+    if (action) return action;
   }
+  throw new Error("Could not discover the current Lot Radio getEpisodes action");
+}
 
-  return true;
+export function parseRscPage(text: string): IndexPage {
+  for (const line of text.split("\n")) {
+    if (!/^\d+:\{/.test(line)) continue;
+    try {
+      const page = JSON.parse(line.slice(line.indexOf(":") + 1)) as IndexPage;
+      if (Array.isArray(page.items) && typeof page.total === "number") return page;
+    } catch {
+      // Flight responses may contain unrelated or deferred rows.
+    }
+  }
+  throw new Error("Lot Radio action response had no episode page");
+}
+
+async function fetchNextPage(action: string, cursor: string, limit: number): Promise<IndexPage> {
+  const text = await fetchText(INDEX_URL, {
+    method: "POST",
+    headers: {
+      Accept: "text/x-component",
+      "Content-Type": "text/plain;charset=UTF-8",
+      "next-action": action,
+    },
+    body: JSON.stringify([{ limit, cursor, order: "date:desc", filters: {}, staffChoice: false }]),
+  });
+  return parseRscPage(text);
+}
+
+function timestampOffset(trackTimestamp: string | null | undefined, startTimestamp: string | null | undefined): string | null {
+  if (!trackTimestamp) return null;
+  if (/^\d{2}:\d{2}:\d{2}$/.test(trackTimestamp)) return trackTimestamp;
+  if (!startTimestamp) return null;
+  const elapsed = Math.max(0, Date.parse(trackTimestamp) - Date.parse(startTimestamp));
+  if (!Number.isFinite(elapsed)) return null;
+  const seconds = Math.floor(elapsed / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return [hours, minutes, seconds % 60].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
+export function episodeRow(episode: LotEpisode) {
+  const showSlug = episode.show?.slug || "special-guests";
+  const url = `${LOT_BASE}/shows/${showSlug}/${episode.slug}`;
+  const hasTracklistData = Array.isArray(episode.tracklist);
+  const tracklist = (episode.tracklist || [])
+    .filter((track) => track.artist?.trim() && track.title?.trim())
+    .map((track) => ({
+      artist: track.artist.trim(),
+      title: track.title.trim(),
+      timestamp: timestampOffset(track.timestamp, episode.startTimestamp),
+    }));
+  const dateMatch = episode.slug.match(/^(\d{4}-\d{2}-\d{2})/);
+  const base = {
+    url,
+    title: episode.title?.trim() || null,
+    source: "lotradio",
+    aired_date: dateMatch?.[1] || episode.date?.slice(0, 10) || null,
+    artwork_url: episode.image?.url || episode.show?.photo?.url || null,
+  };
+  if (!hasTracklistData) return { ...base, hasTracklistData: false as const };
+  return {
+    ...base,
+    hasTracklistData: true as const,
+    skipped: tracklist.length === 0,
+    metadata: {
+      source_episode_id: episode.sys.id,
+      tracklist,
+      tracklist_count: tracklist.length,
+      source_audio_url: episode.transcodedFile?.hls || null,
+      crawled_at: new Date().toISOString(),
+      no_tracklist: tracklist.length === 0,
+    },
+  };
+}
+
+async function enumerateEpisodes(limit: number, offset: number): Promise<{ episodes: LotEpisode[]; total: number }> {
+  const { html, page: firstPage } = await loadIndex();
+  const needed = offset + limit;
+  const episodes = [...firstPage.items];
+  let page = firstPage;
+  let action: string | null = null;
+
+  while (episodes.length < needed && page.pages?.next) {
+    action ||= await discoverEpisodesAction(html);
+    await sleep(RATE_LIMIT_MS);
+    page = await fetchNextPage(action, page.pages.next, Math.min(32, needed - episodes.length));
+    if (!page.items.length) break;
+    episodes.push(...page.items);
+  }
+  return { episodes: episodes.slice(offset, needed), total: firstPage.total };
 }
 
 async function main() {
+  const { values } = parseArgs({
+    args: Bun.argv.slice(2),
+    options: {
+      limit: { type: "string", default: "64" },
+      offset: { type: "string", default: "0" },
+    },
+    strict: false,
+  });
+  const limit = positiveInteger(values.limit, 64, "limit");
+  const offset = Number(values.offset || 0);
+  if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
+
   console.log(`\n  The Stacks — Lot Radio Crawler`);
   console.log(`  ${new Date().toISOString()}`);
-  console.log(`  Options: limit=${crawlLimit}, offset=${crawlOffset}\n`);
+  console.log(`  Options: limit=${limit}, offset=${offset}\n`);
 
-  const since = new Date().toISOString();
-
-  // Fetch the first page to get total count and first batch of episodes
-  log("info", `Fetching Lot Radio index via server action (offset=${crawlOffset})`);
-  await sleep(RATE_LIMIT_MS);
-
-  const firstPage = await fetchIndexPage(crawlOffset, Math.min(crawlLimit, 16), since);
-  if (!firstPage) {
-    log("fail", "Could not fetch Lot Radio index — action ID may have changed");
-    log("info", "To find the new action ID: open /the-index in browser devtools → Network → filter POST → copy next-action header");
-    process.exit(1);
-  }
-
-  log("ok", `Total episodes available: ${firstPage.total}`);
-
-  // Collect all episodes up to crawlLimit (in pages of 100)
-  const allEpisodes = [...firstPage.items];
-  const pageSize = 100;
-  let skip = crawlOffset + firstPage.items.length;
-
-  while (allEpisodes.length < crawlLimit && skip < firstPage.total) {
-    const remaining = crawlLimit - allEpisodes.length;
-    const page = await fetchIndexPage(skip, Math.min(remaining, pageSize), since);
-    if (!page || page.items.length === 0) break;
-    allEpisodes.push(...page.items);
-    skip += page.items.length;
-    log("info", `  Fetched ${allEpisodes.length}/${Math.min(crawlLimit, firstPage.total)} episode URLs...`);
-  }
-
-  log("info", `Fetched ${allEpisodes.length} episode URLs from index`);
-
-  // Check which episodes are already in the DB (paginate .in() to avoid 1000-row cap)
-  const urls = allEpisodes.map((e) => e.url);
-  const allExisting: any[] = [];
-  const PAGE = 1000;
-  for (let i = 0; i < urls.length; i += PAGE) {
-    const batch = urls.slice(i, i + PAGE);
-    const { data: page } = await db.from("episodes")
-      .select("url")
-      .in("url", batch)
-      .eq("source", "lotradio");
-    if (page) allExisting.push(...page);
-  }
-
-  const existingUrls = new Set(allExisting.map((e: any) => e.url));
-  log("info", `${existingUrls.size} episodes already in DB — will skip`);
-
-  let crawled = 0;
-  let skipped = 0;
-  let failed = 0;
-
-  // Filter out already-crawled episodes
-  const toCrawl = allEpisodes.filter((ep) => {
-    if (existingUrls.has(ep.url)) {
-      skipped++;
-      return false;
+  const { episodes, total } = await enumerateEpisodes(limit, offset);
+  log("ok", `Enumerated ${episodes.length}/${total} archive episodes`);
+  const rows = episodes.map(episodeRow);
+  let written = 0;
+  for (let index = 0; index < rows.length; index += 100) {
+    const batch = rows.slice(index, index + 100);
+    const completeRows = batch
+      .filter((row) => row.hasTracklistData)
+      .map(({ hasTracklistData: _hasTracklistData, ...row }) => row);
+    const metadataOnlyRows = batch
+      .filter((row) => !row.hasTracklistData)
+      .map(({ hasTracklistData: _hasTracklistData, ...row }) => row);
+    for (const candidateRows of [completeRows, metadataOnlyRows]) {
+      if (!candidateRows.length) continue;
+      const { error } = await getSupabase().from("episodes").upsert(candidateRows, { onConflict: "url" });
+      if (error) throw new Error(`Lot Radio episode upsert failed: ${error.message}`);
+      written += candidateRows.length;
     }
-    return true;
-  });
-
-  log("info", `Crawling ${toCrawl.length} new episodes with concurrency=10`);
-
-  // Process in concurrent batches of 10
-  const CRAWL_CONCURRENCY = 10;
-  for (let i = 0; i < toCrawl.length; i += CRAWL_CONCURRENCY) {
-    const batch = toCrawl.slice(i, i + CRAWL_CONCURRENCY);
-    const results = await Promise.allSettled(
-      batch.map(async (ep) => {
-        const ok = await crawlEpisode(ep.url, ep.title, ep.date, ep.artwork);
-        if (ok) {
-          crawled++;
-          log("ok", `[${crawled}/${toCrawl.length}] ${ep.title || ep.url}`);
-        } else {
-          failed++;
-        }
-        return ok;
-      }),
-    );
   }
-
-  console.log(`\n  ── Done ──`);
-  console.log(`  Crawled:  ${crawled}`);
-  console.log(`  Skipped:  ${skipped} (already in DB)`);
-  console.log(`  Failed:   ${failed}`);
-  console.log(`  Total episodes indexed: ${crawled + skipped}\n`);
+  const useful = rows.filter((row) => row.hasTracklistData && !row.skipped).length;
+  const confirmedEmpty = rows.filter((row) => row.hasTracklistData && row.skipped).length;
+  const missing = rows.length - useful - confirmedEmpty;
+  log("ok", `Indexed ${written} episodes (${useful} with tracklists, ${confirmedEmpty} confirmed empty, ${missing} missing tracklist data)`);
 }
 
-main().catch((err) => {
-  console.error("\n  !! Crawler crashed !!");
-  console.error(`  ${err instanceof Error ? err.stack || err.message : err}`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error(`\n  Lot Radio crawl failed: ${error instanceof Error ? error.stack || error.message : error}`);
+    process.exit(1);
+  });
+}

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks } from "@/lib/diversify";
+import { parsePagination } from "@/lib/pagination";
 
 export const dynamic = "force-dynamic";
 
@@ -139,8 +140,13 @@ async function getPersonalizedTracks(
 
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
-  const limit = parseInt(searchParams.get("limit") || "20", 10);
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  let limit: number;
+  let offset: number;
+  try {
+    ({ limit, offset } = parsePagination(searchParams, { defaultLimit: 20 }));
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid pagination" }, { status: 400 });
+  }
   const seedId = searchParams.get("seed_id") || null;
   const genre = searchParams.get("genre") || null;
   const seedArtist = searchParams.get("seed_artist") || null;
@@ -157,7 +163,16 @@ export async function GET(req: NextRequest) {
   let rows: any[];
 
   if (isFiltered) {
-    // Preserve the established RPC semantics for seed/genre views.
+    if (seedId) {
+      const { data: ownedSeed, error: seedError } = await db.from("seeds")
+        .select("id")
+        .eq("id", seedId)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (seedError) return NextResponse.json({ error: seedError.message }, { status: 500 });
+      if (!ownedSeed) return NextResponse.json({ error: "Seed not found" }, { status: 404 });
+    }
+
     const { data: tracks, error } = await db.rpc("get_fyp_tracks", {
       p_user_id: user.id,
       p_limit: limit,
@@ -172,8 +187,18 @@ export async function GET(req: NextRequest) {
     }
     rows = tracks || [];
 
-    // Filtered RPC rows retain their existing behavior, including personalized
-    // score display when a snapshot exists for the returned candidates.
+    if (rows.length > 0) {
+      const { data: eligible, error: eligibilityError } = await db.from("user_tracks")
+        .select("track_id")
+        .eq("user_id", user.id)
+        .eq("status", "pending")
+        .in("track_id", rows.map((track: any) => track.id));
+      if (eligibilityError) return NextResponse.json({ error: eligibilityError.message }, { status: 500 });
+      const eligibleIds = new Set((eligible || []).map((row) => row.track_id));
+      rows = rows.filter((track: any) => eligibleIds.has(track.id));
+    }
+
+    // Filtered rows retain personalized score display when a snapshot exists.
     if (rows.length > 0) {
       const personalized = await db.from("user_track_scores")
         .select("track_id,score,confidence,components")
@@ -211,9 +236,9 @@ export async function GET(req: NextRequest) {
   // Resolve episode lineage only through this user's canonical seeds. The
   // service client bypasses RLS, so both seed ownership and link IDs are
   // constrained explicitly.
-  const userSeedsRes = episodeIds.length > 0
-    ? await db.from("seeds").select("id,artist,title").eq("user_id", user.id)
-    : { data: [], error: null };
+  const userSeedsRes = await db.from("seeds")
+    .select("id,artist,title,track_id,source,active")
+    .eq("user_id", user.id);
   if (userSeedsRes.error) {
     return NextResponse.json({ error: userSeedsRes.error.message }, { status: 500 });
   }
@@ -244,6 +269,9 @@ export async function GET(req: NextRequest) {
   const seedTrackMap = new Map((seedTrackRes.data || []).map((seed: any) => [seed.id, seed]));
   const episodeMap = new Map((episodeRes.data || []).map((episode: any) => [episode.id, episode]));
   const userSeedMap = new Map(userSeeds.map((seed: any) => [seed.id, seed]));
+  const directSeedByTrack = new Map(
+    userSeeds.filter((seed: any) => seed.active && seed.track_id).map((seed: any) => [seed.track_id, seed]),
+  );
 
   // Prefer the requested seed in a seed-filtered view, otherwise the strongest
   // canonical match when an episode has multiple links for this user.
@@ -274,8 +302,9 @@ export async function GET(req: NextRequest) {
     track._seed_name = lineage ? `${lineage.seed.artist} — ${lineage.seed.title}` : undefined;
     track._seed_artist = lineage?.seed.artist;
     track._seed_title = lineage?.seed.title;
-    track.is_seed = track.is_seed ?? false;
-    track.is_re_seed = track.is_re_seed ?? false;
+    const directSeed = directSeedByTrack.get(track.id);
+    track.is_seed = Boolean(directSeed && directSeed.source !== "re-seed");
+    track.is_re_seed = directSeed?.source === "re-seed";
     track.is_artist_seed = track.is_artist_seed ?? false;
     const meta = (track.metadata || {}) as Record<string, unknown>;
     track._score_components = (meta._score_components as Record<string, number>) || {};

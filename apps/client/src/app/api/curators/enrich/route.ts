@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase";
+import { canEditSharedCatalog, getRequestUser } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,12 @@ async function fetchNTSShow(slug: string): Promise<NTSShow | null> {
 // POST /api/curators/enrich — enrich unenriched curators from NTS API
 // Optional body: { slug: "specific-slug" } to enrich one, or omit for batch
 export async function POST(req: NextRequest) {
+  const user = await getRequestUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!canEditSharedCatalog(user.id)) {
+    return NextResponse.json({ error: "Curator enrichment requires catalog-editor access" }, { status: 403 });
+  }
+
   const db = getServiceClient();
   const body = await req.json().catch(() => ({}));
   const specificSlug = body.slug as string | undefined;

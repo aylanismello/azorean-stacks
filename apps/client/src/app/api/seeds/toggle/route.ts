@@ -67,18 +67,12 @@ export async function POST(req: NextRequest) {
     if (action === "ensure") {
       return NextResponse.json({ action: "existing", seed_id: existingSeed.id });
     }
-    // Remove it
-    await db.from("seeds").delete().eq("id", existingSeed.id);
-    // Clear re-seed flag on the matching track
-    if (track_id) {
-      await db.from("tracks").update({ is_re_seed: false }).eq("id", track_id);
-    } else {
-      await db
-        .from("tracks")
-        .update({ is_re_seed: false })
-        .ilike("artist", artist.trim())
-        .ilike("title", title.trim());
-    }
+    const { data: removed, error } = await db.rpc("delete_owned_seed", {
+      p_seed_id: existingSeed.id,
+      p_user_id: user.id,
+    });
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!removed) return NextResponse.json({ error: "Seed not found" }, { status: 404 });
     return NextResponse.json({ action: "removed", seed_id: existingSeed.id });
   }
 
@@ -99,16 +93,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Mark the track as a re-seed
-  if (track_id) {
-    await db.from("tracks").update({ is_re_seed: true }).eq("id", track_id);
-  } else {
-    await db
-      .from("tracks")
-      .update({ is_re_seed: true })
-      .ilike("artist", artist.trim())
-      .ilike("title", title.trim());
-  }
 
   let discoverTriggered = false;
   let discoverError: string | null = null;
@@ -117,11 +101,13 @@ export async function POST(req: NextRequest) {
     const discoverUrl = new URL("/api/discover", req.url);
     const response = await fetch(discoverUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        cookie: req.headers.get("cookie") || "",
+      },
       cache: "no-store",
       body: JSON.stringify({
         seed_id: newSeed.id,
-        user_id: user.id,
       }),
     });
     discoverTriggered = response.ok;

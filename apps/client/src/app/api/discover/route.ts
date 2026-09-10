@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase";
+import { getRequestUser } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -85,18 +86,21 @@ function isSameTrack(
 
 // POST /api/discover
 export async function POST(req: NextRequest) {
+  const user = await getRequestUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const db = getServiceClient();
   let seed_id: string | undefined;
-  let user_id: string | undefined;
+  const user_id = user.id;
   try {
-    ({ seed_id, user_id } = await req.json());
+    ({ seed_id } = await req.json());
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  if (!seed_id || !user_id) {
+  if (!seed_id) {
     return NextResponse.json(
-      { error: "seed_id and user_id are required" },
+      { error: "seed_id is required" },
       { status: 400 }
     );
   }
@@ -106,6 +110,7 @@ export async function POST(req: NextRequest) {
     .from("seeds")
     .select("id, artist, title, track_id")
     .eq("id", seed_id)
+    .eq("user_id", user.id)
     .single();
 
   if (!seed || seedErr) {
@@ -190,6 +195,7 @@ export async function POST(req: NextRequest) {
       started_at: new Date().toISOString(),
       completed_at: new Date().toISOString(),
       seed_id: seed_id,
+      user_id,
       seed_track_id: seed.track_id || null,
       sources_searched: sourcesSearched,
       tracks_found: totalNew + totalExisting,

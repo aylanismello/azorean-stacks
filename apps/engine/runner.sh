@@ -1,153 +1,149 @@
-#!/usr/bin/env bash
-# Azorean Stacks Engine — persistent runner
-# Runs discover/enrich, then spends most of the cycle draining downloads.
+#!/bin/bash
+# Azorean Stacks persistent engine supervisor.
+# Realtime watcher owns acquisition; this process schedules discovery and
+# restarts the watcher if it exits.
 
-set -o pipefail
+set -uo pipefail
 
-ENGINE_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_DIR="$HOME/.hermes/logs"
+ENGINE_DIR="/Users/pico/repos/azorean-stacks/apps/engine"
+ENV_FILE="${AZOREAN_ENGINE_ENV_FILE:-/Users/pico/.config/azorean-stacks/engine.env}"
+LOG_DIR="/Users/pico/.hermes/logs"
 LOG_FILE="$LOG_DIR/azorean-engine.log"
-STATUS_FILE="$HOME/.hermes/data/azorean-engine-status.json"
-MAX_LOG_LINES=10000
-BUN="/opt/homebrew/bin/bun"
-YT_DLP_BIN="${YT_DLP_BIN:-$(command -v yt-dlp 2>/dev/null || true)}"
+STATUS_FILE="/Users/pico/.hermes/data/azorean-engine-status.json"
+LOCK_DIR="/tmp/azorean-stacks-engine.lock"
+WATCHER_PID=""
+JOB_PID=""
 
-mkdir -p "$LOG_DIR"
-mkdir -p "$(dirname "$STATUS_FILE")"
+mkdir -p "$LOG_DIR" "$(dirname "$STATUS_FILE")"
 
-cd "$ENGINE_DIR" || exit 1
-
-# Source environment. The launchd service does not inherit Hermes' shell env,
-# so fall back to the private host-level environment without copying secrets
-# into the repository.
-if [ -f "$ENGINE_DIR/.env" ]; then
-  set -a
-  source "$ENGINE_DIR/.env"
-  set +a
-elif [ -f "$HOME/.hermes/.env" ]; then
-  set -a
-  source "$HOME/.hermes/.env"
-  set +a
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  existing_pid="$(/bin/cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+    printf '[%s] runner already active as PID %s; exiting duplicate\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$existing_pid" >> "$LOG_FILE"
+    exit 0
+  fi
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR"
 fi
-export SUPABASE_URL="${SUPABASE_URL:-${NEXT_PUBLIC_SUPABASE_URL:-}}"
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
 
-UPTIME_SINCE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-CYCLE_COUNT=0
-
-log() {
-  echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] $*" >> "$LOG_FILE"
-}
-
-truncate_log() {
-  if [ -f "$LOG_FILE" ]; then
-    local line_count
-    line_count=$(wc -l < "$LOG_FILE")
-    if [ "$line_count" -gt "$MAX_LOG_LINES" ]; then
-      local tmp
-      tmp=$(mktemp)
-      tail -n "$MAX_LOG_LINES" "$LOG_FILE" > "$tmp" && mv "$tmp" "$LOG_FILE"
-      log "Log truncated to $MAX_LOG_LINES lines"
-    fi
+rotate_log() {
+  local size
+  size="$(stat -f%z "$LOG_FILE" 2>/dev/null || printf '0')"
+  if [ "$size" -gt 5242880 ]; then
+    /usr/bin/tail -n 10000 "$LOG_FILE" > "$LOG_FILE.tmp"
+    /bin/cp "$LOG_FILE.tmp" "$LOG_FILE"
+    /bin/rm -f "$LOG_FILE.tmp"
   fi
 }
 
 write_status() {
-  local running="${1:-true}"
-  cat > "$STATUS_FILE" <<EOF
-{
-  "running": $running,
-  "last_discover_at": "$LAST_DISCOVER_AT",
-  "last_download_at": "$LAST_DOWNLOAD_AT",
-  "last_discover_result": $LAST_DISCOVER_RESULT,
-  "last_download_result": $LAST_DOWNLOAD_RESULT,
-  "uptime_since": "$UPTIME_SINCE",
-  "cycle_count": $CYCLE_COUNT,
-  "watcher_pid": ${WATCHER_PID:-0}
+  local phase="$1"
+  local status="$2"
+  local watcher_alive=false
+  if [ -n "$WATCHER_PID" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then
+    watcher_alive=true
+  fi
+  printf '{"last_run":"%s","phase":"%s","status":"%s","running":%s,"pid":%s,"watcher_pid":%s,"watcher_alive":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" "$status" "$watcher_alive" "$$" "${WATCHER_PID:-null}" "$watcher_alive" > "$STATUS_FILE"
 }
-EOF
+
+load_env() {
+  if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+  elif [ -f "$ENGINE_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$ENGINE_DIR/.env"
+    set +a
+  fi
+  export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+  export NODE_ENV=production
+}
+
+start_watcher() {
+  rotate_log
+  printf '[%s] starting Realtime watcher\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
+  bun run watcher >> "$LOG_FILE" 2>&1 &
+  WATCHER_PID=$!
+  write_status "watcher" "running"
+}
+
+ensure_watcher() {
+  if [ -z "$WATCHER_PID" ] || ! kill -0 "$WATCHER_PID" 2>/dev/null; then
+    local old_pid="${WATCHER_PID:-none}"
+    printf '[%s] watcher PID %s exited; restarting\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$old_pid" >> "$LOG_FILE"
+    start_watcher
+  fi
+}
+
+run_job() {
+  local phase="$1"
+  shift
+  "$@" >> "$LOG_FILE" 2>&1 &
+  JOB_PID=$!
+  while kill -0 "$JOB_PID" 2>/dev/null; do
+    sleep 5
+    ensure_watcher
+  done
+  wait "$JOB_PID"
+  local code=$?
+  JOB_PID=""
+  return "$code"
 }
 
 cleanup() {
-  log "Runner stopping (received signal)"
-  if [ -n "$WATCHER_PID" ] && [ "$WATCHER_PID" -gt 0 ] 2>/dev/null; then
-    log "Stopping watcher (PID: $WATCHER_PID)"
-    kill "$WATCHER_PID" 2>/dev/null
-    wait "$WATCHER_PID" 2>/dev/null
+  write_status "stopped" "stopped"
+  if [ -n "$JOB_PID" ] && kill -0 "$JOB_PID" 2>/dev/null; then
+    kill "$JOB_PID" 2>/dev/null || true
+    wait "$JOB_PID" 2>/dev/null || true
   fi
-  write_status "false"
+  if [ -n "$WATCHER_PID" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then
+    kill "$WATCHER_PID" 2>/dev/null || true
+    wait "$WATCHER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$LOCK_DIR"
+}
+handle_signal() {
   exit 0
 }
+trap cleanup EXIT
+trap handle_signal INT TERM
 
-trap cleanup SIGTERM SIGINT SIGHUP
+cd "$ENGINE_DIR" || exit 1
+load_env
+start_watcher
 
-LAST_DISCOVER_AT=""
-LAST_DOWNLOAD_AT=""
-LAST_DISCOVER_RESULT='{"tracks_found":"unknown","error":null}'
-LAST_DOWNLOAD_RESULT='{"tracks_downloaded":"unknown","error":null}'
-WATCHER_PID=0
-
-log "=== Azorean Stacks Engine starting ==="
-log "Engine directory: $ENGINE_DIR"
-log "Bun: $BUN"
-log "yt-dlp: ${YT_DLP_BIN:-missing}"
-
-if [ -n "$YT_DLP_BIN" ]; then
-  export YT_DLP_BIN
-fi
-
-# Spawn Realtime watcher in background
-log "Starting Realtime watcher..."
-"$BUN" run scripts/watcher.ts >> "$LOG_FILE" 2>&1 &
-WATCHER_PID=$!
-log "Watcher started (PID: $WATCHER_PID)"
-write_status
+printf '[%s] persistent engine supervisor started (PID %s)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" >> "$LOG_FILE"
 
 while true; do
-  CYCLE_COUNT=$((CYCLE_COUNT + 1))
-  log "--- Cycle $CYCLE_COUNT ---"
-
-  # Discover
-  log "Running discover..."
-  LAST_DISCOVER_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  if output=$("$BUN" run discover 2>&1); then
-    # Parse "  {N} candidates found" from discover output
-    tracks_found=$(echo "$output" | grep -oE '[0-9]+ candidates found' | grep -oE '[0-9]+' | head -1)
-    if [ -n "$tracks_found" ]; then
-      LAST_DISCOVER_RESULT="{\"tracks_found\":${tracks_found},\"error\":null}"
-    else
-      LAST_DISCOVER_RESULT="{\"tracks_found\":\"unknown\",\"error\":null}"
-    fi
-    log "Discover completed successfully (tracks_found=$tracks_found)"
+  ensure_watcher
+  rotate_log
+  write_status "lotradio" "running"
+  printf '[%s] refreshing Lot Radio index\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
+  if run_job "lotradio" bun run crawl-lotradio --limit 64; then
+    :
   else
-    err_line=$(echo "$output" | tail -1 | sed 's/"/\\"/g')
-    LAST_DISCOVER_RESULT="{\"tracks_found\":0,\"error\":\"$err_line\"}"
-    log "Discover failed: $output"
+    code=$?
+    printf '[%s] Lot Radio refresh failed with exit %s; retaining existing source data\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code" >> "$LOG_FILE"
   fi
-  write_status
 
-  # Download
-  log "Running download..."
-  LAST_DOWNLOAD_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  if output=$("$BUN" run download --duration 55 --limit 200 2>&1); then
-    # Parse "  Downloaded: {N}" from download output
-    tracks_downloaded=$(echo "$output" | grep -oE 'Downloaded: [0-9]+' | grep -oE '[0-9]+' | head -1)
-    if [ -n "$tracks_downloaded" ]; then
-      LAST_DOWNLOAD_RESULT="{\"tracks_downloaded\":${tracks_downloaded},\"error\":null}"
-    else
-      LAST_DOWNLOAD_RESULT="{\"tracks_downloaded\":\"unknown\",\"error\":null}"
-    fi
-    log "Download completed successfully (tracks_downloaded=$tracks_downloaded)"
+  write_status "discovery" "running"
+  printf '[%s] starting discovery cycle\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
+  if run_job "discovery" bun run discover --once; then
+    write_status "idle" "ok"
   else
-    err_line=$(echo "$output" | tail -1 | sed 's/"/\\"/g')
-    LAST_DOWNLOAD_RESULT="{\"tracks_downloaded\":0,\"error\":\"$err_line\"}"
-    log "Download failed: $output"
+    code=$?
+    printf '[%s] discovery failed with exit %s; retrying next cycle\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$code" >> "$LOG_FILE"
+    write_status "idle" "degraded"
   fi
-  write_status
 
-  # Truncate log periodically
-  truncate_log
-
-  log "Sleeping 5 seconds..."
-  sleep 5 &
-  wait $!
+  # Thirty-minute discovery cadence, with watcher supervision every 30s.
+  for _ in $(seq 1 60); do
+    sleep 30
+    ensure_watcher
+  done
 done

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useGlobalPlayer, type PlayerTrack } from "@/components/GlobalPlayerProvider";
 import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
 
@@ -161,6 +161,7 @@ export default function SegundoSolPage() {
   const [reordering, setReordering] = useState(false);
   const [loadingAudioIdentity, setLoadingAudioIdentity] = useState<string | null>(null);
   const [bpmDrafts, setBpmDrafts] = useState<Record<string, string>>({});
+  const episodeRequestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -210,9 +211,15 @@ export default function SegundoSolPage() {
   }, []);
 
   const loadEpisode = useCallback(async (id: string) => {
+    episodeRequestRef.current?.abort();
+    const controller = new AbortController();
+    episodeRequestRef.current = controller;
     setDetailLoading(true);
     try {
-      const data = await requestJson<{ episode: EpisodeDetail }>(`/api/segundo-sol/episodes/${id}`);
+      const data = await requestJson<{ episode: EpisodeDetail }>(`/api/segundo-sol/episodes/${id}`, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
       setEpisode({
         ...data.episode,
         track_count: data.episode.tracks.length,
@@ -220,11 +227,17 @@ export default function SegundoSolPage() {
       });
       setError(null);
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : "Failed to load episode");
     } finally {
-      setDetailLoading(false);
+      if (episodeRequestRef.current === controller) {
+        episodeRequestRef.current = null;
+        setDetailLoading(false);
+      }
     }
   }, []);
+
+  useEffect(() => () => episodeRequestRef.current?.abort(), []);
 
   useEffect(() => {
     loadEpisodes();

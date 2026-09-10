@@ -23,6 +23,9 @@ apps/engine/cleanup-manifests/
 # vercel
 .vercel
 
+# local Supabase CLI state
+apps/client/supabase/.temp/
+
 # playwright screenshots/logs
 .playwright-mcp/
 

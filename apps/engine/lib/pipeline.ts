@@ -3,6 +3,7 @@
  * so watcher.ts (and future consumers) can reuse them without duplication.
  */
 import { getSupabase } from "./supabase";
+import { ytDlpAudioArgs } from "./yt-dlp";
 
 const db = getSupabase();
 const YT_DLP_BIN =
@@ -63,10 +64,16 @@ export function normalizeForSearch(artist: string, title: string) {
 }
 
 export function stringSimilarity(a: string, b: string): number {
-  const na = a.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  const nb = b.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  if (na === nb) return 100;
+  const normalize = (value: string) => value
+    .normalize("NFKC")
+    .toLocaleLowerCase("und")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const na = normalize(a);
+  const nb = normalize(b);
   if (!na || !nb) return 0;
+  if (na === nb) return 100;
   const maxLen = Math.max(na.length, nb.length);
   if (na.includes(nb) || nb.includes(na)) {
     const minLen = Math.min(na.length, nb.length);
@@ -123,6 +130,10 @@ const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
 const SPOTIFY_API = "https://api.spotify.com/v1";
 let cachedToken: string | null = null;
 let tokenExpiry = 0;
+
+function spotifyConfigured(): boolean {
+  return Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET);
+}
 
 export async function getSpotifyToken(): Promise<string> {
   if (cachedToken && Date.now() < tokenExpiry - 60_000) return cachedToken;
@@ -268,6 +279,8 @@ async function ytDlpSearch(
   searchPrefix: string,
   searchQuery: string,
   timeoutLabel: string,
+  artist: string,
+  title: string,
 ): Promise<{ chosen: any } | null> {
   const proc = Bun.spawn(
     [YT_DLP_BIN, "--dump-json", "--no-download", "--flat-playlist", "--no-warnings",
@@ -279,18 +292,39 @@ async function ytDlpSearch(
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  if (exitCode !== 0 || !stdout.trim()) return null;
-  const results = stdout.trim().split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  const filtered = results.filter((r: any) => {
-    const dur = r.duration || 0;
-    const t = (r.title || "").toLowerCase();
-    if (dur > 0 && (dur < 60 || dur > 900)) return false;
-    if (t.includes("live at") || t.includes("live from")) return false;
+  if (exitCode !== 0) throw new Error(`${timeoutLabel} exited ${exitCode}`);
+  if (!stdout.trim()) return null;
+  const results = stdout.trim().split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+  const filtered = results.filter((result: any) => {
+    const duration = result.duration || 0;
+    const candidateTitle = (result.title || "").toLowerCase();
+    if (duration > 0 && (duration < 60 || duration > 900)) return false;
+    if (candidateTitle.includes("live at") || candidateTitle.includes("live from")) return false;
     return true;
   });
-  const chosen = filtered[0] || results[0];
-  if (!chosen?.webpage_url) return null;
-  return { chosen };
+  const best = filtered
+    .map((candidate: any) => ({ candidate, ...scoreMediaCandidate(candidate, artist, title) }))
+    .sort((a, b) => b.score - a.score)[0];
+  if (!best?.accepted || !best.candidate?.webpage_url) return null;
+  return { chosen: best.candidate };
+}
+
+export function scoreMediaCandidate(
+  candidate: { title?: string; uploader?: string; channel?: string },
+  artist: string,
+  title: string,
+): { score: number; artistScore: number; titleScore: number; accepted: boolean } {
+  const candidateTitle = stripVideoNoise(String(candidate.title || ""));
+  const uploader = String(candidate.uploader || candidate.channel || "");
+  const artistScore = Math.max(
+    stringSimilarity(artist, candidateTitle),
+    stringSimilarity(artist, uploader),
+  );
+  const titleScore = stringSimilarity(title, candidateTitle);
+  const combinedScore = stringSimilarity(`${artist} ${title}`, candidateTitle);
+  const score = Math.round(Math.max(combinedScore, artistScore * 0.4 + titleScore * 0.6));
+  const accepted = score >= 60 && ((artistScore >= 45 && titleScore >= 45) || combinedScore >= 68);
+  return { score, artistScore, titleScore, accepted };
 }
 
 function extractThumbnail(chosen: any): string | null {
@@ -306,14 +340,14 @@ export async function youtubeLookup(artist: string, title: string): Promise<YouT
     const searchQuery = `${primaryArtist} ${cleanTitle}`;
 
     // Try YouTube first
-    const ytResult = await ytDlpSearch("ytsearch3", searchQuery, "yt-search");
+    const ytResult = await ytDlpSearch("ytsearch5", searchQuery, "yt-search", artist, title);
     if (ytResult) {
       return { url: ytResult.chosen.webpage_url, thumbnail: extractThumbnail(ytResult.chosen), source: "youtube" };
     }
     log("skip", `YouTube: no results for "${searchQuery}" — trying SoundCloud`);
 
     // Fallback: try SoundCloud
-    const scResult = await ytDlpSearch("scsearch3", searchQuery, "sc-search");
+    const scResult = await ytDlpSearch("scsearch5", searchQuery, "sc-search", artist, title);
     if (scResult) {
       log("ok", `SoundCloud: found match for "${searchQuery}"`);
       return { url: scResult.chosen.webpage_url, thumbnail: extractThumbnail(scResult.chosen), source: "soundcloud" };
@@ -322,7 +356,7 @@ export async function youtubeLookup(artist: string, title: string): Promise<YouT
     return null;
   } catch (err) {
     log("fail", `YouTube lookup error: ${err instanceof Error ? err.message : err}`);
-    return null;
+    throw err;
   }
 }
 
@@ -454,7 +488,7 @@ export async function enrichTrack(track: any): Promise<boolean> {
   let mbResult: MusicBrainzResult | null = null;
   const [spotResult, ytResult, _mbResult] = await Promise.allSettled([
     // Spotify lookup (best-effort — rate limited, non-critical, 15s max)
-    !track.spotify_url
+    !track.spotify_url && spotifyConfigured()
       ? withTimeout(spotifyLookup(track.artist, track.title).then(async (spot) => {
           if (spot) {
             spotFound = true;
@@ -476,7 +510,6 @@ export async function enrichTrack(track: any): Promise<boolean> {
           }
         }), 15_000, `spotify:${label}`).catch((err) => {
           log("fail", `Spotify error for ${label}: ${err instanceof Error ? err.message : err}`);
-          updates.spotify_url = "";
         })
       : Promise.resolve(),
     // YouTube lookup (primary — no auth, no rate limits)
@@ -557,11 +590,13 @@ export async function enrichTrackFast(track: any): Promise<boolean> {
   const updates: Record<string, unknown> = {};
   let ytFound = !!track.youtube_url;
   let ytSource: "youtube" | "soundcloud" = "youtube";
+  let ytLookupCompleted = false;
 
   // Only do YouTube + SoundCloud lookup — no Spotify, no MusicBrainz
   if (!track.youtube_url) {
     try {
       const yt = await youtubeLookup(track.artist, track.title);
+      ytLookupCompleted = true;
       if (yt) {
         updates.youtube_url = yt.url;
         ytFound = true;
@@ -572,10 +607,10 @@ export async function enrichTrackFast(track: any): Promise<boolean> {
     }
   }
 
-  // If nothing found, mark as searched so we don't retry
-  if (!ytFound) {
+  // Never mutate Spotify state from this YouTube-only path. Cache only a
+  // clean no-result; transient lookup failures remain retryable.
+  if (!ytFound && ytLookupCompleted) {
     updates.youtube_url = "";
-    updates.spotify_url = "";
   }
 
   // Track enrichment sources
@@ -605,7 +640,7 @@ export async function enrichTrackMetadata(track: any): Promise<boolean> {
   // Run Spotify and MusicBrainz in parallel
   await Promise.allSettled([
     // Spotify lookup (5s timeout)
-    !track.spotify_url
+    !track.spotify_url && spotifyConfigured()
       ? withTimeout(spotifyLookup(track.artist, track.title).then(async (spot) => {
           if (spot) {
             spotFound = true;
@@ -627,7 +662,6 @@ export async function enrichTrackMetadata(track: any): Promise<boolean> {
           }
         }), 5_000, `spotify:${label}`).catch((err) => {
           log("fail", `Spotify error for ${label}: ${err instanceof Error ? err.message : err}`);
-          updates.spotify_url = "";
         })
       : Promise.resolve(),
     // MusicBrainz lookup (rate limited)
@@ -698,22 +732,35 @@ function sanitize(s: string): string {
     .replace(/[^\w\s\-.,()&+]/g, "").replace(/\s+/g, " ").trim().slice(0, 100) || "unknown";
 }
 
-export async function downloadTrack(track: any): Promise<boolean> {
+function cleanupTempFiles(prefix: string): void {
+  if (!existsSync(TMP_DIR)) return;
+  for (const file of readdirSync(TMP_DIR)) {
+    if (!file.startsWith(prefix)) continue;
+    try { unlinkSync(`${TMP_DIR}/${file}`); } catch {}
+  }
+}
+
+export class DownloadSupersededError extends Error {
+  constructor() {
+    super("Download request was superseded before commit");
+    this.name = "DownloadSupersededError";
+  }
+}
+
+type DownloadTrackOptions = {
+  commit?: (artifact: { storagePath: string; downloadUrl: string }) => Promise<boolean>;
+};
+
+export async function downloadTrack(track: any, options: DownloadTrackOptions = {}): Promise<boolean> {
   if (!track.youtube_url) return false;
   if (!existsSync(TMP_DIR)) mkdirSync(TMP_DIR, { recursive: true });
 
-  const videoId = `dl-${track.id.slice(0, 8)}`;
+  const videoId = `dl-${track.id.slice(0, 8)}-${crypto.randomUUID().slice(0, 8)}`;
   const outPath = `${TMP_DIR}/${videoId}.%(ext)s`;
   const expectedPath = `${TMP_DIR}/${videoId}.mp3`;
 
   const dlProc = Bun.spawn(
-    [YT_DLP_BIN, "-x", "--audio-format", "mp3", "--audio-quality", "0",
-     "--no-playlist", "--no-warnings",
-     "--extractor-args", "youtube:player_client=mweb",
-     "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
-     "--retries", "3", "--fragment-retries", "3",
-     "--socket-timeout", "30", "--extractor-retries", "3",
-     "-o", outPath, track.youtube_url],
+    [YT_DLP_BIN, ...ytDlpAudioArgs(track.youtube_url, outPath)],
     { stdout: "ignore", stderr: "ignore" },
   );
 
@@ -721,11 +768,18 @@ export async function downloadTrack(track: any): Promise<boolean> {
   try {
     exitCode = await withTimeout(dlProc.exited, DL_TIMEOUT, `${track.artist} - ${track.title}`);
   } catch (err) {
-    // Kill the orphaned yt-dlp process on timeout
+    // Kill the orphaned yt-dlp process on timeout and persist the attempt.
     try { dlProc.kill(); } catch {}
+    cleanupTempFiles(videoId);
+    const failure = await db.from("tracks").update({
+      dl_attempts: (track.dl_attempts || 0) + 1,
+      dl_failed_at: new Date().toISOString(),
+    }).eq("id", track.id);
+    if (failure.error) log("fail", `Could not record timeout for ${track.id}: ${failure.error.message}`);
     throw err;
   }
   if (exitCode !== 0) {
+    cleanupTempFiles(videoId);
     await db.from("tracks").update({
       dl_attempts: (track.dl_attempts || 0) + 1,
       dl_failed_at: new Date().toISOString(),
@@ -738,6 +792,7 @@ export async function downloadTrack(track: any): Promise<boolean> {
     const f = readdirSync(TMP_DIR).find((f) => f.startsWith(videoId));
     if (f) localPath = `${TMP_DIR}/${f}`;
     else {
+      cleanupTempFiles(videoId);
       await db.from("tracks").update({
         dl_attempts: (track.dl_attempts || 0) + 1,
         dl_failed_at: new Date().toISOString(),
@@ -746,11 +801,14 @@ export async function downloadTrack(track: any): Promise<boolean> {
     }
   }
 
-  const storagePath = `${sanitize(track.artist)}/${sanitize(track.title)}.mp3`;
+  // Every acquisition gets a new object. A source correction must never
+  // overwrite the currently playable object before the DB pointer commits.
+  const storagePath = `${sanitize(track.artist)}/${sanitize(track.title)}--${track.id}--${Date.now()}.mp3`;
   const { error } = await db.storage.from("tracks").upload(storagePath, readFileSync(localPath), {
-    contentType: "audio/mpeg", upsert: true,
+    contentType: "audio/mpeg", upsert: false,
   });
   if (error) {
+    cleanupTempFiles(videoId);
     await db.from("tracks").update({
       dl_attempts: (track.dl_attempts || 0) + 1,
       dl_failed_at: new Date().toISOString(),
@@ -759,15 +817,40 @@ export async function downloadTrack(track: any): Promise<boolean> {
   }
 
   const { data: signed } = await db.storage.from("tracks").createSignedUrl(storagePath, 7 * 24 * 3600);
-  await db.from("tracks").update({
-    storage_path: storagePath,
-    download_url: signed?.signedUrl || "",
-    downloaded_at: new Date().toISOString(),
-    dl_attempts: 0,
-    dl_failed_at: null,
-  }).eq("id", track.id);
+  const downloadUrl = signed?.signedUrl || "";
+  if (options.commit) {
+    let committed = false;
+    try {
+      committed = await options.commit({ storagePath, downloadUrl });
+    } catch (error) {
+      const cleanup = await db.storage.from("tracks").remove([storagePath]);
+      if (cleanup.error) log("fail", `Orphan cleanup failed for ${storagePath}: ${cleanup.error.message}`);
+      cleanupTempFiles(videoId);
+      throw error;
+    }
+    if (!committed) {
+      const cleanup = await db.storage.from("tracks").remove([storagePath]);
+      if (cleanup.error) log("fail", `Superseded object cleanup failed for ${storagePath}: ${cleanup.error.message}`);
+      cleanupTempFiles(videoId);
+      throw new DownloadSupersededError();
+    }
+  } else {
+    const completion = await db.from("tracks").update({
+      storage_path: storagePath,
+      download_url: downloadUrl,
+      downloaded_at: new Date().toISOString(),
+      dl_attempts: 0,
+      dl_failed_at: null,
+    }).eq("id", track.id);
+    if (completion.error) {
+      const cleanup = await db.storage.from("tracks").remove([storagePath]);
+      if (cleanup.error) log("fail", `Orphan cleanup failed for ${storagePath}: ${cleanup.error.message}`);
+      cleanupTempFiles(videoId);
+      throw new Error(`Track completion update failed: ${completion.error.message}`);
+    }
+  }
 
-  try { unlinkSync(localPath); } catch {}
+  cleanupTempFiles(videoId);
   return true;
 }
 

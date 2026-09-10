@@ -12,7 +12,7 @@ import { getSupabase } from "../lib/supabase";
 import {
   log, elapsed, sleep,
   isSameTrack,
-  enrichTrack, enrichTrackFast, enrichTrackMetadata, downloadTrack,
+  enrichTrack, enrichTrackFast, enrichTrackMetadata, downloadTrack, DownloadSupersededError,
   spotifyLookup,
   logEngineEvent,
   GARBAGE_TITLES, GARBAGE_PATTERNS, isGarbageTrack,
@@ -28,6 +28,7 @@ import {
   selectPreparationBatch,
 } from "../lib/predictive-queue";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import { downloadConcurrency, preferredAcquisitionUrl, ytDlpAudioArgs } from "../lib/yt-dlp";
 
 const db = getSupabase();
 const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json`;
@@ -36,13 +37,13 @@ const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json
 // Tuned for M4 Mac Mini — all bottlenecks are network I/O
 const CONCURRENCY = {
   enrich: 3,          // Spotify + YouTube lookups per batch (low to avoid Spotify 429s)
-  download: 8,        // yt-dlp audio downloads per batch
+  download: 4,        // yt-dlp audio downloads per batch
   repair: 20,         // Background track repair tasks
   superLike: 2,       // Simultaneous super-like downloads
   ntsMaxEpisodes: 10, // Max episodes to check per source per seed
 } as const;
 
-const PRIORITY_DOWNLOAD_CONCURRENCY = 20; // Max concurrent downloads for priority pipeline
+const PRIORITY_DOWNLOAD_CONCURRENCY = downloadConcurrency();
 const PRIORITY_ENRICH_CONCURRENCY = 3;    // Max concurrent enrichments (low to avoid Spotify 429s)
 
 // GARBAGE_TITLES, GARBAGE_PATTERNS, and isGarbageTrack imported from pipeline.ts
@@ -54,10 +55,10 @@ let lastEventAt: string | null = null;
 let lastRealtimeEventAt: string | null = null;
 let currentChannel: ReturnType<typeof db.channel> | null = null;
 let intervalsStarted = false;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ─── CONNECTION FAILURE TRACKING ────────────────────────────
 let reconnectFailures = 0;
-let firstFailureAt = 0;
 
 function updateStatusFile() {
   try {
@@ -199,15 +200,6 @@ async function processSeed(seedId: string) {
 
       if (existingEp) {
         episodeId = existingEp.id;
-
-        const { count } = await db.from("tracks")
-          .select("*", { count: "exact", head: true })
-          .eq("episode_id", episodeId);
-
-        if (count && count > 0) {
-          log("skip", `Already crawled (${count} tracks): ${context}`);
-          continue;
-        }
       } else {
         const artworkUrl = await source.getArtwork(episodeUrl);
         const { data: newEp, error: epErr } = await db.from("episodes").upsert({
@@ -262,30 +254,38 @@ async function processSeed(seedId: string) {
         const escArtist = track.artist.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
         const escTitle = track.title.trim().replace(/[%_\\]/g, (c) => `\\${c}`);
         const { data: existing } = await db.from("tracks")
-          .select("id").ilike("artist", escArtist).ilike("title", escTitle).limit(1);
-        if (existing && existing.length > 0) continue;
+          .select("*").ilike("artist", escArtist).ilike("title", escTitle).limit(1);
+        let candidate = existing?.[0] || null;
+        if (!candidate) {
+          const { data: inserted, error } = await db.from("tracks").insert({
+            artist: track.artist.trim(),
+            title: track.title.trim(),
+            source: source.name,
+            source_url: episodeUrl,
+            source_context: context,
+            metadata: { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title },
+            status: "pending",
+            episode_id: episodeId,
+            seed_track_id: seed.track_id || null,
+          }).select("*").single();
+          if (error || !inserted) continue;
+          candidate = inserted;
+          insertedTracks.push(inserted);
+          tracksAdded++;
+        }
 
-        const { data: inserted, error } = await db.from("tracks").insert({
-          artist: track.artist.trim(),
-          title: track.title.trim(),
-          source: source.name,
-          source_url: episodeUrl,
-          source_context: context,
-          metadata: { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title },
-          status: "pending",
-          episode_id: episodeId,
-          seed_track_id: seed.track_id || null,
-        }).select("*").single();
-
-        if (error || !inserted) continue;
-
-        await db.from("episode_tracks").upsert(
-          { episode_id: episodeId, track_id: inserted.id, position: pos },
+        const { error: episodeTrackError } = await db.from("episode_tracks").upsert(
+          { episode_id: episodeId, track_id: candidate.id, position: pos },
           { onConflict: "episode_id,track_id" },
         );
-
-        insertedTracks.push(inserted);
-        tracksAdded++;
+        if (episodeTrackError) log("fail", `Episode link failed for ${candidate.id}: ${episodeTrackError.message}`);
+        if (seed.user_id) {
+          const { error: userTrackError } = await db.from("user_tracks").upsert(
+            { user_id: seed.user_id, track_id: candidate.id, status: "pending" },
+            { onConflict: "user_id,track_id", ignoreDuplicates: true },
+          );
+          if (userTrackError) log("fail", `User candidate link failed for ${candidate.id}: ${userTrackError.message}`);
+        }
       }
 
       if (episodeProcessed === null) episodeProcessed = context;
@@ -296,6 +296,7 @@ async function processSeed(seedId: string) {
         started_at: new Date(t0).toISOString(),
         completed_at: new Date().toISOString(),
         seed_id: seedId,
+        user_id: seed.user_id || null,
         seed_track_id: seed.track_id || null,
         sources_searched: [source.name],
         tracks_found: rawTracks.length,
@@ -655,6 +656,7 @@ async function processSuperLike(trackId: string) {
       message: `Super Like: no YouTube URL for ${label}`,
       metadata: { track_id: trackId },
     });
+    markSuperLikeFailed(trackId);
     return;
   }
 
@@ -678,10 +680,10 @@ async function processSuperLike(trackId: string) {
   log("info", `Super Like: downloading "${outFilename}" via yt-dlp`);
 
   const dlProc = Bun.spawn(
-    [YT_DLP_BIN, "-x", "--audio-format", "mp3", "--audio-quality", "0",
-     "--no-playlist", "--no-warnings", "-o", outTemplate, ytUrl],
-    { stdout: "ignore", stderr: "ignore" },
+    [YT_DLP_BIN, ...ytDlpAudioArgs(ytUrl, outTemplate)],
+    { stdout: "ignore", stderr: "pipe" },
   );
+  const stderrPromise = new Response(dlProc.stderr).text();
 
   let exitCode: number;
   try {
@@ -693,6 +695,7 @@ async function processSuperLike(trackId: string) {
     ]);
   } catch (err) {
     try { dlProc.kill(); } catch {} // kill orphaned yt-dlp process
+    markSuperLikeFailed(trackId);
     log("fail", `Super Like: yt-dlp timed out for ${label}`);
     await logEngineEvent("error", "failed", {
       message: `Super Like: download timeout for ${label}`,
@@ -702,7 +705,8 @@ async function processSuperLike(trackId: string) {
   }
 
   if (exitCode !== 0) {
-    log("fail", `Super Like: yt-dlp exited with ${exitCode} for ${label}`);
+    const stderr = (await stderrPromise).trim().slice(-1200);
+    log("fail", `Super Like: yt-dlp exited with ${exitCode} for ${label}${stderr ? ` — ${stderr}` : ""}`);
     markSuperLikeFailed(trackId);
     await logEngineEvent("error", "failed", {
       message: `Super Like: yt-dlp failed (exit ${exitCode}) for ${label}`,
@@ -942,48 +946,60 @@ async function processPrioritySeed(seedId: string) {
       const escArtist = track.artist.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
       const escTitle = track.title.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
       const { data: existing } = await db.from("tracks")
-        .select("id").ilike("artist", escArtist).ilike("title", escTitle).limit(1);
-      if (existing && existing.length > 0) continue;
+        .select("*").ilike("artist", escArtist).ilike("title", escTitle).limit(1);
+      let candidate = existing?.[0] || null;
+      if (!candidate) {
+        const { data: inserted } = await db.from("tracks").insert({
+          artist: track.artist.trim(),
+          title: track.title.trim(),
+          source: best.sourceName,
+          source_url: best.url,
+          source_context: context,
+          metadata: { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title },
+          status: "pending",
+          episode_id: episodeId,
+          seed_track_id: seed.track_id || null,
+        }).select("*").single();
+        if (!inserted) continue;
+        candidate = inserted;
+        tracksToProcess.push(inserted);
+      }
 
-      const { data: inserted } = await db.from("tracks").insert({
-        artist: track.artist.trim(),
-        title: track.title.trim(),
-        source: best.sourceName,
-        source_url: best.url,
-        source_context: context,
-        metadata: { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title },
-        status: "pending",
-        episode_id: episodeId,
-        seed_track_id: seed.track_id || null,
-      }).select("*").single();
-
-      if (!inserted) continue;
-
-      await db.from("episode_tracks").upsert(
-        { episode_id: episodeId, track_id: inserted.id, position: pos },
+      const { error: episodeTrackError } = await db.from("episode_tracks").upsert(
+        { episode_id: episodeId, track_id: candidate.id, position: pos },
         { onConflict: "episode_id,track_id" },
       );
-      tracksToProcess.push(inserted);
+      if (episodeTrackError) log("fail", `Priority episode link failed for ${candidate.id}: ${episodeTrackError.message}`);
+      if (seed.user_id) {
+        const { error: userTrackError } = await db.from("user_tracks").upsert(
+          { user_id: seed.user_id, track_id: candidate.id, status: "pending" },
+          { onConflict: "user_id,track_id", ignoreDuplicates: true },
+        );
+        if (userTrackError) log("fail", `Priority user candidate link failed for ${candidate.id}: ${userTrackError.message}`);
+      }
     }
   } else {
-    // Episode already existed — fetch pending (un-enriched) tracks AND enriched-but-not-downloaded tracks
-    const { data: pendingTracks } = await db.from("tracks")
-      .select("*")
-      .eq("episode_id", episodeId)
-      .eq("status", "pending");
-    const { data: needsDownload } = await db.from("tracks")
-      .select("*")
-      .eq("episode_id", episodeId)
-      .not("youtube_url", "is", null)
-      .is("storage_path", null);
-    const allTracks = [...(pendingTracks || []), ...(needsDownload || [])];
-    // Deduplicate by id
-    const seen = new Set<string>();
-    tracksToProcess = allTracks.filter((t) => {
-      if (seen.has(t.id)) return false;
-      seen.add(t.id);
-      return true;
-    });
+    const { data: links, error: linksError } = await db.from("episode_tracks")
+      .select("track_id")
+      .eq("episode_id", episodeId);
+    if (linksError) log("fail", `Priority episode lookup failed: ${linksError.message}`);
+    const trackIds = [...new Set((links || []).map((link) => link.track_id))];
+    if (trackIds.length > 0) {
+      const { data: episodeTracks, error: tracksError } = await db.from("tracks")
+        .select("*")
+        .in("id", trackIds);
+      if (tracksError) log("fail", `Priority track lookup failed: ${tracksError.message}`);
+      tracksToProcess = (episodeTracks || []).filter((track) =>
+        track.status === "pending" || (track.youtube_url && !track.storage_path)
+      );
+      if (seed.user_id) {
+        const { error: userTrackError } = await db.from("user_tracks").upsert(
+          trackIds.map((trackId) => ({ user_id: seed.user_id, track_id: trackId, status: "pending" })),
+          { onConflict: "user_id,track_id", ignoreDuplicates: true },
+        );
+        if (userTrackError) log("fail", `Priority user candidate batch failed: ${userTrackError.message}`);
+      }
+    }
   }
 
   if (tracksToProcess.length === 0) {
@@ -1372,7 +1388,10 @@ function startWatcher() {
     .subscribe(async (status) => {
       if (status === "SUBSCRIBED") {
         reconnectFailures = 0;
-        firstFailureAt = 0;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
         watcherConnectedAt = new Date().toISOString();
         log("ok", "Realtime subscription active — watching for new seeds");
         logEngineEvent("watcher_connected", "info", {
@@ -1399,7 +1418,6 @@ function startWatcher() {
         processRepairQueue();
         processSuperLikeQueue();
         processDownloadRequestQueue();
-        processPriorityQueue();
 
         // Start polling + health-check intervals only once (survive reconnects)
         if (!intervalsStarted) {
@@ -1531,7 +1549,8 @@ function startWatcher() {
                   metadata: { count: downloadable.length },
                 });
                 let downloaded = 0;
-                // Process in batches of 15 concurrently
+                // Keep acquisition concurrency bounded; excessive yt-dlp workers
+                // make YouTube throttling and local transcoding slower, not faster.
                 for (let i = 0; i < downloadable.length; i += PRIORITY_DOWNLOAD_CONCURRENCY) {
                   if (shuttingDown) break;
                   const batch = downloadable.slice(i, i + PRIORITY_DOWNLOAD_CONCURRENCY);
@@ -1577,7 +1596,7 @@ function startWatcher() {
               } finally {
                 downloadDrainRunning = false;
               }
-            }, 15_000); // Every 15s — small fast batches
+            }, 2 * 60_000); // Periodic reconciliation; Realtime handles the fast path
           }, 5_000); // Start 5s after watcher connects
 
           // Every 60s: backfill metadata (Spotify + MusicBrainz) for tracks
@@ -1623,45 +1642,25 @@ function startWatcher() {
             }
           }, 60_000);
 
-          // Every 10 min: warn + resubscribe if no Realtime events received
-          setInterval(() => {
-            if (shuttingDown) return;
-            const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
-            if (!lastRealtimeEventAt || new Date(lastRealtimeEventAt).getTime() < tenMinutesAgo) {
-              log("warn", "[Health] No Realtime events in 10 min — attempting resubscribe");
-              logEngineEvent("watcher_reconnect", "info", {
-                message: "Proactive resubscribe: no Realtime events in 10 minutes",
-              });
-              if (currentChannel) {
-                db.removeChannel(currentChannel);
-                currentChannel = null;
-              }
-              startWatcher();
-            }
-          }, 10 * 60 * 1000);
         }
       } else if (status === "CLOSED" || status === "CHANNEL_ERROR") {
         reconnectFailures++;
-        if (reconnectFailures === 1) firstFailureAt = Date.now();
         log("warn", `Realtime channel ${status} — will attempt reconnect (failure ${reconnectFailures})`);
         logEngineEvent("watcher_disconnected", "info", {
           message: `Channel ${status} (failure ${reconnectFailures})`,
         });
 
-        // Fatal exit if too many consecutive failures within 5 minutes
-        if (reconnectFailures >= 5 && Date.now() - firstFailureAt < 5 * 60_000) {
-          log("fail", `[FATAL] ${reconnectFailures} reconnect failures in ${Math.round((Date.now() - firstFailureAt) / 1000)}s — exiting for launchd restart`);
-          await logEngineEvent("watcher_fatal_exit", "failed", {
-            message: `Exiting after ${reconnectFailures} consecutive Realtime failures`,
-          });
-          process.exit(1);
+        // Replace the failed channel once. Quiet channels are healthy; only
+        // explicit channel errors trigger reconnects.
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(async () => {
+            reconnectTimer = null;
+            log("info", "Replacing failed Realtime channel...");
+            if (currentChannel) await db.removeChannel(currentChannel);
+            currentChannel = null;
+            if (!shuttingDown) startWatcher();
+          }, Math.min(30_000, 5_000 * reconnectFailures));
         }
-
-        // Manual reconnect fallback after 5s
-        setTimeout(() => {
-          log("info", "Attempting manual reconnect...");
-          currentChannel?.subscribe();
-        }, 5_000);
       }
     });
 }
@@ -1993,6 +1992,24 @@ async function processSegundoSolDownloadRequests() {
 // Watches download_requests table for INSERT events with status='pending'.
 // Downloads the track via yt-dlp, uploads to storage, updates tracks table,
 // and marks the request as completed with a signed audio URL.
+const DOWNLOAD_REQUEST_LEASE_MS = 20 * 60 * 1000;
+let downloadRequestLeaseSupported: boolean | null = null;
+
+function isMissingDownloadRequestColumn(error: unknown, column: string): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { code?: string; message?: string };
+  return ["42703", "PGRST204"].includes(value.code || "")
+    && (value.message || "").includes(column);
+}
+
+function downloadRequestError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const value = error as { code?: string; message?: string };
+    return [value.code, value.message].filter(Boolean).join(": ") || JSON.stringify(error);
+  }
+  return String(error);
+}
 
 async function processDownloadRequest(requestId: string) {
   const { data: req, error: reqErr } = await db.from("download_requests")
@@ -2009,17 +2026,37 @@ async function processDownloadRequest(requestId: string) {
   }
 
   // Mark as downloading (CAS on 'pending')
-  const { data: claimed } = await db.from("download_requests")
-    .update({ status: "downloading" })
+  let claimResult = await db.from("download_requests")
+    .update({
+      status: "downloading",
+      ...(downloadRequestLeaseSupported === false ? {} : { claimed_at: new Date().toISOString() }),
+    })
     .eq("id", requestId)
     .eq("status", "pending")
     .select("id")
     .maybeSingle();
 
+  if (isMissingDownloadRequestColumn(claimResult.error, "claimed_at")) {
+    downloadRequestLeaseSupported = false;
+    claimResult = await db.from("download_requests")
+      .update({ status: "downloading" })
+      .eq("id", requestId)
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+  }
+
+  const { data: claimed, error: claimError } = claimResult;
+
+  if (claimError) {
+    log("fail", `[DL Request] Claim failed for ${requestId}: ${claimError.message}`);
+    return;
+  }
   if (!claimed) {
     log("skip", `[DL Request] ${requestId} claimed by another processor`);
     return;
   }
+  if (downloadRequestLeaseSupported === null) downloadRequestLeaseSupported = true;
 
   await db.from("audio_preparation_queue").update({
     state: "preparing",
@@ -2038,6 +2075,7 @@ async function processDownloadRequest(requestId: string) {
   if (trackErr || !track) {
     await db.from("download_requests").update({
       status: "failed",
+      ...(downloadRequestLeaseSupported === false ? {} : { claimed_at: null }),
       error: `Track not found: ${trackErr?.message ?? "not found"}`,
       completed_at: new Date().toISOString(),
     }).eq("id", requestId);
@@ -2046,35 +2084,57 @@ async function processDownloadRequest(requestId: string) {
   }
 
   try {
-    // Explicit play requests may arrive with the track's best-known source
-    // before YouTube has been resolved. Enrich first, then download locally.
-    let youtubeUrl = typeof req.youtube_url === "string" && /(?:youtube\.com|youtu\.be)/i.test(req.youtube_url)
-      ? req.youtube_url
-      : track.youtube_url;
-    if (!youtubeUrl) {
+    // Explicit play requests may carry a corrected YouTube or SoundCloud URL.
+    // Use that exact source before falling back to catalog enrichment.
+    let acquisitionUrl = preferredAcquisitionUrl(req.youtube_url, track.youtube_url);
+    if (!acquisitionUrl) {
       log("info", `[DL Request] Resolving source before download: ${track.artist} – ${track.title}`);
       await enrichTrack(track);
       const { data: enriched } = await db.from("tracks")
         .select("youtube_url")
         .eq("id", req.track_id)
         .maybeSingle();
-      youtubeUrl = enriched?.youtube_url || null;
+      acquisitionUrl = enriched?.youtube_url || null;
     }
-    if (!youtubeUrl) throw new Error("Could not resolve a downloadable source");
+    if (!acquisitionUrl) throw new Error("Could not resolve a downloadable source");
 
-    const trackForDownload = { ...track, youtube_url: youtubeUrl };
-    const ok = await downloadTrack(trackForDownload);
+    const trackForDownload = { ...track, youtube_url: acquisitionUrl };
+    const ok = await downloadTrack(
+      trackForDownload,
+      downloadRequestLeaseSupported === false
+        ? {}
+        : {
+          commit: async ({ storagePath, downloadUrl }) => {
+            const { data, error } = await db.rpc("complete_download_request", {
+              p_request_id: requestId,
+              p_storage_path: storagePath,
+              p_download_url: downloadUrl,
+            });
+            if (error) throw new Error(`Download commit failed: ${error.message}`);
+            return data === true;
+          },
+        },
+    );
 
     if (ok) {
       // Fetch updated track to get the signed URL
       const { data: updated } = await db.from("tracks")
         .select("storage_path, download_url").eq("id", req.track_id).single();
 
-      await db.from("download_requests").update({
-        status: "completed",
-        result_audio_url: updated?.download_url || null,
-        completed_at: new Date().toISOString(),
-      }).eq("id", requestId);
+      if (track.storage_path && updated?.storage_path && track.storage_path !== updated.storage_path) {
+        const { error: cleanupError } = await db.storage.from("tracks").remove([track.storage_path]);
+        if (cleanupError) {
+          log("warn", `[DL Request] Could not remove superseded object ${track.storage_path}: ${cleanupError.message}`);
+        }
+      }
+
+      if (downloadRequestLeaseSupported === false) {
+        await db.from("download_requests").update({
+          status: "completed",
+          result_audio_url: updated?.download_url || null,
+          completed_at: new Date().toISOString(),
+        }).eq("id", requestId);
+      }
       await db.from("audio_preparation_queue").update({
         state: "ready",
         ready_at: new Date().toISOString(),
@@ -2086,6 +2146,7 @@ async function processDownloadRequest(requestId: string) {
     } else {
       await db.from("download_requests").update({
         status: "failed",
+        ...(downloadRequestLeaseSupported === false ? {} : { claimed_at: null }),
         error: "Download failed (yt-dlp returned non-zero or upload failed)",
         completed_at: new Date().toISOString(),
       }).eq("id", requestId);
@@ -2099,9 +2160,14 @@ async function processDownloadRequest(requestId: string) {
       log("fail", `[DL Request] Failed: ${track.artist} – ${track.title}`);
     }
   } catch (err) {
+    if (err instanceof DownloadSupersededError) {
+      log("skip", `[DL Request] ${requestId} was superseded before audio commit`);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     await db.from("download_requests").update({
       status: "failed",
+      ...(downloadRequestLeaseSupported === false ? {} : { claimed_at: null }),
       error: message,
       completed_at: new Date().toISOString(),
     }).eq("id", requestId);
@@ -2146,6 +2212,29 @@ async function processDownloadRequestQueue() {
 
 async function pollPendingDownloadRequests() {
   try {
+    if (downloadRequestLeaseSupported !== false) {
+      const staleBefore = new Date(Date.now() - DOWNLOAD_REQUEST_LEASE_MS).toISOString();
+      const { data: reclaimed, error: reclaimError } = await db.from("download_requests")
+        .update({
+          status: "pending",
+          claimed_at: null,
+          error: "Previous download lease expired; reclaimed by watcher",
+        })
+        .eq("status", "downloading")
+        .or(`claimed_at.is.null,claimed_at.lt.${staleBefore}`)
+        .select("id");
+      if (isMissingDownloadRequestColumn(reclaimError, "claimed_at")) {
+        downloadRequestLeaseSupported = false;
+        log("warn", "[DL Request] Lease recovery unavailable until pipeline migration is applied");
+      } else if (reclaimError) {
+        throw reclaimError;
+      } else {
+        downloadRequestLeaseSupported = true;
+        if (reclaimed?.length) {
+          log("warn", `[DL Request] Reclaimed ${reclaimed.length} stale download lease(s)`);
+        }
+      }
+    }
     const { data, error } = await db.from("download_requests")
       .select("id")
       .eq("status", "pending")
@@ -2155,7 +2244,7 @@ async function pollPendingDownloadRequests() {
     for (const request of data || []) enqueueDownloadRequest(request.id);
     void processDownloadRequestQueue();
   } catch (error) {
-    log("warn", `[DL Request] Poll failed: ${error instanceof Error ? error.message : error}`);
+    log("warn", `[DL Request] Poll failed: ${downloadRequestError(error)}`);
   }
 }
 
@@ -2184,6 +2273,7 @@ console.log(`\n  The Stacks — Realtime Seed Watcher`);
 console.log(`  ${new Date().toISOString()}\n`);
 
 startWatcher();
+void processPriorityQueue();
 
 // Polling is intentional: it keeps the worker reliable if Realtime misses an
 // insert while the Mac mini reconnects.
