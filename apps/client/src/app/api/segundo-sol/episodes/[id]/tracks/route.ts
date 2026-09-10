@@ -5,7 +5,7 @@ import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
-type Context = { params: { id: string } };
+type Context = { params: Promise<{ id: string }> };
 
 function text(value: unknown, max = 1000): string | null {
   if (typeof value !== "string") return null;
@@ -27,7 +27,8 @@ function preferredTrackUrl(track: Record<string, any>): string | null {
   return track.spotify_url || track.soundcloud_url || track.bandcamp_url || track.youtube_url || track.source_url || null;
 }
 
-export async function POST(req: NextRequest, { params }: Context) {
+export async function POST(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!(await ownsEpisode(user.id, params.id))) {
@@ -75,6 +76,8 @@ export async function POST(req: NextRequest, { params }: Context) {
         vote_status: userTrack.status,
         super_liked: Boolean(userTrack.super_liked),
         voted_at: userTrack.voted_at || null,
+        bpm: Number.isFinite(Number(track.metadata?.bpm)) ? Number(track.metadata.bpm) : null,
+        bpm_source: Number.isFinite(Number(track.metadata?.bpm)) ? "stacks_metadata" : null,
         snapshot_at: new Date().toISOString(),
       },
     };

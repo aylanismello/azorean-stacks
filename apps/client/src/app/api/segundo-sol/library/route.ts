@@ -48,10 +48,26 @@ export async function GET(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const tracks = (data || []).flatMap((row: any) => {
+  const catalogTracks = (data || []).flatMap((row: any) => {
     const track = Array.isArray(row.tracks) ? row.tracks[0] : row.tracks;
-    if (!track) return [];
-    return [{
+    return track ? [{ row, track }] : [];
+  });
+  const trackIds = catalogTracks.map(({ track }) => track.id);
+  const preparation = trackIds.length
+    ? await getServiceClient()
+        .from("audio_preparation_queue")
+        .select("track_id,state,last_error")
+        .eq("user_id", user.id)
+        .in("track_id", trackIds)
+    : { data: [], error: null };
+  const preparationByTrack = new Map(
+    (preparation.data || []).map((item: any) => [item.track_id, item]),
+  );
+
+  const tracks = catalogTracks.map(({ row, track }) => {
+    const queueState = preparationByTrack.get(track.id) as { state?: string; last_error?: string | null } | undefined;
+    const localReady = Boolean(track.storage_path);
+    return {
       id: track.id,
       artist: track.artist,
       title: track.title,
@@ -59,7 +75,9 @@ export async function GET(req: NextRequest) {
       source_url: preferredSource(track),
       source_origin: row.super_liked ? "stacks_super_like" : "stacks_like",
       super_liked: Boolean(row.super_liked),
-      playable: Boolean(track.storage_path || track.spotify_url),
+      playable: localReady,
+      audio_status: localReady ? "ready" : queueState?.state || "not_requested",
+      audio_error: queueState?.last_error || null,
       voted_at: row.voted_at,
       metadata: {
         source: track.source,
@@ -70,7 +88,7 @@ export async function GET(req: NextRequest) {
         youtube_url: track.youtube_url || null,
         original_source_url: track.source_url || null,
       },
-    }];
+    };
   });
 
   return NextResponse.json({ tracks, total: count || 0 });

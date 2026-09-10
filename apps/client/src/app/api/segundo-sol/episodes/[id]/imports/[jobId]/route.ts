@@ -4,9 +4,10 @@ import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
-type Context = { params: { id: string; jobId: string } };
+type Context = { params: Promise<{ id: string; jobId: string }> };
 
-export async function GET(req: NextRequest, { params }: Context) {
+export async function GET(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

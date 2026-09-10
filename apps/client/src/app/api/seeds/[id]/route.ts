@@ -24,10 +24,8 @@ async function getAuthenticatedUser(req: NextRequest) {
 }
 
 // PATCH /api/seeds/[id] — toggle active
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function PATCH(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const supabase = getServiceClient();
   const {
     data: { user },
@@ -80,10 +78,8 @@ export async function PATCH(
 }
 
 // DELETE /api/seeds/[id]
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function DELETE(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const supabase = getServiceClient();
   const {
     data: { user },

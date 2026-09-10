@@ -709,6 +709,8 @@ export async function downloadTrack(track: any): Promise<boolean> {
   const dlProc = Bun.spawn(
     [YT_DLP_BIN, "-x", "--audio-format", "mp3", "--audio-quality", "0",
      "--no-playlist", "--no-warnings",
+     "--extractor-args", "youtube:player_client=mweb",
+     "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
      "--retries", "3", "--fragment-retries", "3",
      "--socket-timeout", "30", "--extractor-retries", "3",
      "-o", outPath, track.youtube_url],

@@ -5,10 +5,8 @@ import { getServiceClient } from "@/lib/supabase";
 export const dynamic = "force-dynamic";
 
 // GET /api/curators/[id]/episodes — episodes for a curator with seed match info
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const db = getServiceClient();
 
   // Auth for per-user vote stats

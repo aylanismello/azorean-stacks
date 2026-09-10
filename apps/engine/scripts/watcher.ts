@@ -1679,7 +1679,7 @@ function safeSegundoSolStorageName(value: string): string {
 }
 
 async function processSegundoSolImportJobs() {
-  if (segundoSolImportRunning || shuttingDown || !existsSync(SEGUNDO_SOL_SYNC_SCRIPT)) return;
+  if (segundoSolImportRunning || segundoSolDownloadRunning || shuttingDown || !existsSync(SEGUNDO_SOL_SYNC_SCRIPT)) return;
   segundoSolImportRunning = true;
   try {
     const { data: job, error: jobError } = await db
@@ -1777,6 +1777,8 @@ async function processSegundoSolImportJobs() {
           spotify_uri: item.spotify_uri || null,
           picodrops_file_path: localPath || null,
           picodrops_status: item.status || null,
+          bpm: typeof item.bpm === "number" ? item.bpm : null,
+          bpm_source: item.bpm_source || null,
         },
         audio_status: audioStatus,
         audio_storage_path: storagePath,
@@ -1819,7 +1821,175 @@ async function processSegundoSolImportJobs() {
   }
 }
 
-// ─── DOWNLOAD REQUEST HANDLER ────────────────────────────────
+let segundoSolDownloadRunning = false;
+
+async function processSegundoSolDownloadRequests() {
+  if (segundoSolDownloadRunning || segundoSolImportRunning) return;
+  segundoSolDownloadRunning = true;
+
+  try {
+    const staleCutoff = new Date(Date.now() - 20 * 60 * 1_000).toISOString();
+    const { error: recoveryError } = await db
+      .from("segundo_sol_download_requests")
+      .update({ status: "pending", started_at: null, error: "Recovered after an interrupted worker" })
+      .eq("status", "processing")
+      .lt("started_at", staleCutoff);
+    if (recoveryError) throw recoveryError;
+
+    const { data: requests, error } = await db
+      .from("segundo_sol_download_requests")
+      .select("id,user_id,episode_id,episode_track_id,source_url")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(2);
+    if (error) throw error;
+
+    for (const request of requests || []) {
+      const now = new Date().toISOString();
+      const { data: claimed } = await db
+        .from("segundo_sol_download_requests")
+        .update({ status: "processing", started_at: now, error: null })
+        .eq("id", request.id)
+        .eq("status", "pending")
+        .select("id")
+        .maybeSingle();
+      if (!claimed) continue;
+
+      const [{ data: episodeTrack }, { data: episodeRecord }] = await Promise.all([
+        db.from("segundo_sol_episode_tracks")
+          .select("id,track_id,artist,title,source_type,metadata")
+          .eq("id", request.episode_track_id)
+          .eq("episode_id", request.episode_id)
+          .eq("user_id", request.user_id)
+          .maybeSingle(),
+        db.from("segundo_sol_episodes")
+          .select("episode_number")
+          .eq("id", request.episode_id)
+          .eq("user_id", request.user_id)
+          .maybeSingle(),
+      ]);
+
+      try {
+        await db.from("segundo_sol_episode_tracks").update({
+          audio_status: "processing",
+          audio_error: null,
+        }).eq("id", request.episode_track_id).eq("user_id", request.user_id);
+
+        if (episodeTrack?.track_id) {
+          const { data: backingTrack } = await db
+            .from("tracks")
+            .select("storage_path")
+            .eq("id", episodeTrack.track_id)
+            .maybeSingle();
+          if (backingTrack?.storage_path) {
+            await db.from("segundo_sol_episode_tracks").update({
+              audio_status: "reused",
+              audio_storage_path: null,
+              audio_error: null,
+            }).eq("id", request.episode_track_id).eq("user_id", request.user_id);
+            await db.from("segundo_sol_download_requests").update({
+              status: "completed",
+              completed_at: new Date().toISOString(),
+              result_storage_path: backingTrack.storage_path,
+              error: null,
+            }).eq("id", request.id);
+            continue;
+          }
+        }
+
+        if (!episodeTrack || !episodeRecord?.episode_number || !request.source_url) {
+          throw new Error("Download request is missing its episode track or source URL");
+        }
+
+        const sourceFlag = episodeTrack.source_type === "spotify"
+          ? "--spotify-url"
+          : episodeTrack.source_type === "soundcloud"
+            ? "--soundcloud-url"
+            : "--source-url";
+        const script = `${process.cwd()}/scripts/segundo-sol-sessions-sync.py`;
+        const proc = Bun.spawn([
+          "python3",
+          script,
+          String(episodeRecord.episode_number),
+          sourceFlag,
+          request.source_url,
+          "--download",
+          "--fast",
+        ], {
+          cwd: process.cwd(),
+          env: process.env,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        if (exitCode !== 0) throw new Error(stderr.trim() || `sync worker exited ${exitCode}`);
+
+        const result = JSON.parse(stdout.trim()) as {
+          items?: Array<{ status: string; file_path?: string; bpm?: number }>;
+        };
+        const readyStatuses = new Set(["downloaded", "exists", "copied_existing"]);
+        const item = result.items?.find((candidate) => readyStatuses.has(candidate.status) && candidate.file_path);
+        if (!item?.file_path || !existsSync(item.file_path)) {
+          throw new Error("Audio preparation finished without a playable file");
+        }
+
+        const safeArtist = sanitizeFilename(episodeTrack.artist);
+        const safeTitle = sanitizeFilename(episodeTrack.title);
+        const storagePath = `${request.user_id}/${request.episode_id}/${request.episode_track_id}/${safeArtist} - ${safeTitle}.mp3`;
+        const bytes = readFileSync(item.file_path);
+        const { error: uploadError } = await db.storage
+          .from("segundo-sol-audio")
+          .upload(storagePath, bytes, { contentType: "audio/mpeg", upsert: true });
+        if (uploadError) throw uploadError;
+
+        const metadata = {
+          ...(episodeTrack.metadata || {}),
+          ...(item.bpm ? { bpm: item.bpm, bpm_source: "librosa" } : {}),
+        };
+        await db.from("segundo_sol_episode_tracks").update({
+          audio_status: "downloaded",
+          audio_storage_path: storagePath,
+          audio_error: null,
+          metadata,
+        }).eq("id", request.episode_track_id).eq("user_id", request.user_id);
+        await db.from("segundo_sol_download_requests").update({
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          result_storage_path: storagePath,
+          error: null,
+        }).eq("id", request.id);
+        log("ok", `[Segundo Sol] Prepared ${episodeTrack.artist} — ${episodeTrack.title}`);
+      } catch (requestError) {
+        const message = requestError instanceof Error ? requestError.message : String(requestError);
+        await db.from("segundo_sol_episode_tracks").update({
+          audio_status: "failed",
+          audio_error: message.slice(0, 1_000),
+        }).eq("id", request.episode_track_id).eq("user_id", request.user_id);
+        await db.from("segundo_sol_download_requests").update({
+          status: "failed",
+          completed_at: new Date().toISOString(),
+          error: message.slice(0, 1_000),
+        }).eq("id", request.id);
+        log("fail", `[Segundo Sol] Audio preparation failed: ${message}`);
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === "object" && error
+        ? JSON.stringify(error)
+        : String(error);
+    log("fail", `[Segundo Sol] Download poll failed: ${message}`);
+  } finally {
+    segundoSolDownloadRunning = false;
+  }
+}
+
+// ─── DOWNLOAD REQUEST HANDLER ─────────────────────────────────
 // Watches download_requests table for INSERT events with status='pending'.
 // Downloads the track via yt-dlp, uploads to storage, updates tracks table,
 // and marks the request as completed with a signed audio URL.
@@ -1851,6 +2021,14 @@ async function processDownloadRequest(requestId: string) {
     return;
   }
 
+  await db.from("audio_preparation_queue").update({
+    state: "preparing",
+    preparing_at: new Date().toISOString(),
+    failed_at: null,
+    last_error: null,
+    updated_at: new Date().toISOString(),
+  }).eq("track_id", req.track_id).in("state", ["ranked", "failed"]);
+
   log("info", `[DL Request] Processing request ${requestId} for track ${req.track_id}`);
 
   // Fetch the track to get artist/title for storage path
@@ -1867,10 +2045,24 @@ async function processDownloadRequest(requestId: string) {
     return;
   }
 
-  // Use the youtube_url from the request (it may differ from track.youtube_url)
-  const trackForDownload = { ...track, youtube_url: req.youtube_url };
-
   try {
+    // Explicit play requests may arrive with the track's best-known source
+    // before YouTube has been resolved. Enrich first, then download locally.
+    let youtubeUrl = typeof req.youtube_url === "string" && /(?:youtube\.com|youtu\.be)/i.test(req.youtube_url)
+      ? req.youtube_url
+      : track.youtube_url;
+    if (!youtubeUrl) {
+      log("info", `[DL Request] Resolving source before download: ${track.artist} – ${track.title}`);
+      await enrichTrack(track);
+      const { data: enriched } = await db.from("tracks")
+        .select("youtube_url")
+        .eq("id", req.track_id)
+        .maybeSingle();
+      youtubeUrl = enriched?.youtube_url || null;
+    }
+    if (!youtubeUrl) throw new Error("Could not resolve a downloadable source");
+
+    const trackForDownload = { ...track, youtube_url: youtubeUrl };
     const ok = await downloadTrack(trackForDownload);
 
     if (ok) {
@@ -1883,6 +2075,12 @@ async function processDownloadRequest(requestId: string) {
         result_audio_url: updated?.download_url || null,
         completed_at: new Date().toISOString(),
       }).eq("id", requestId);
+      await db.from("audio_preparation_queue").update({
+        state: "ready",
+        ready_at: new Date().toISOString(),
+        last_error: null,
+        updated_at: new Date().toISOString(),
+      }).eq("track_id", req.track_id);
 
       log("ok", `[DL Request] Completed: ${track.artist} – ${track.title}`);
     } else {
@@ -1891,17 +2089,30 @@ async function processDownloadRequest(requestId: string) {
         error: "Download failed (yt-dlp returned non-zero or upload failed)",
         completed_at: new Date().toISOString(),
       }).eq("id", requestId);
+      await db.from("audio_preparation_queue").update({
+        state: "failed",
+        failed_at: new Date().toISOString(),
+        last_error: "Download failed",
+        updated_at: new Date().toISOString(),
+      }).eq("track_id", req.track_id);
 
       log("fail", `[DL Request] Failed: ${track.artist} – ${track.title}`);
     }
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     await db.from("download_requests").update({
       status: "failed",
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
       completed_at: new Date().toISOString(),
     }).eq("id", requestId);
+    await db.from("audio_preparation_queue").update({
+      state: "failed",
+      failed_at: new Date().toISOString(),
+      last_error: message.slice(0, 1_000),
+      updated_at: new Date().toISOString(),
+    }).eq("track_id", req.track_id);
 
-    log("fail", `[DL Request] Error: ${err instanceof Error ? err.message : err}`);
+    log("fail", `[DL Request] Error: ${message}`);
   }
 }
 
@@ -1931,6 +2142,21 @@ async function processDownloadRequestQueue() {
     }
   }
   downloadRequestProcessing = false;
+}
+
+async function pollPendingDownloadRequests() {
+  try {
+    const { data, error } = await db.from("download_requests")
+      .select("id")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(20);
+    if (error) throw error;
+    for (const request of data || []) enqueueDownloadRequest(request.id);
+    void processDownloadRequestQueue();
+  } catch (error) {
+    log("warn", `[DL Request] Poll failed: ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 // ─── GRACEFUL SHUTDOWN ──────────────────────────────────────
@@ -1963,6 +2189,10 @@ startWatcher();
 // insert while the Mac mini reconnects.
 setTimeout(processSegundoSolImportJobs, 2_000);
 setInterval(processSegundoSolImportJobs, 8_000);
+setTimeout(processSegundoSolDownloadRequests, 4_000);
+setInterval(processSegundoSolDownloadRequests, 6_000);
+setTimeout(pollPendingDownloadRequests, 3_000);
+setInterval(pollPendingDownloadRequests, 5_000);
 
 // Keep process alive
 setInterval(() => {}, 60_000);

@@ -4,9 +4,10 @@ import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
-type Context = { params: { id: string; inspirationId: string } };
+type Context = { params: Promise<{ id: string; inspirationId: string }> };
 
-export async function DELETE(req: NextRequest, { params }: Context) {
+export async function DELETE(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

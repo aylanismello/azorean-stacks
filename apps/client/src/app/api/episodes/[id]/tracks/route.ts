@@ -5,10 +5,8 @@ import { createServerClient } from "@supabase/ssr";
 export const dynamic = "force-dynamic";
 
 // GET /api/episodes/[id]/tracks
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const db = getServiceClient();
   // Query through episode_tracks junction table, order by tracklist position
   // Include seed_track_id so we can identify the seed track in the tracklist

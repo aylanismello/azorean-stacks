@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib
 import json
 import re
 import shutil
@@ -225,6 +226,44 @@ def duration_seconds(path: Path) -> float | None:
         return None
 
 
+def estimate_bpm(path: Path) -> float | None:
+    """Read an embedded BPM tag or estimate tempo from the local audio file."""
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet", "-print_format", "json",
+                "-show_entries", "format_tags=TBPM,bpm,BPM", str(path),
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        tags = json.loads(probe.stdout or "{}").get("format", {}).get("tags", {})
+        tagged = tags.get("TBPM") or tags.get("bpm") or tags.get("BPM")
+        if tagged is not None:
+            value = float(tagged)
+            if 30 <= value <= 300:
+                return round(value, 1)
+    except Exception:
+        pass
+
+    try:
+        librosa = importlib.import_module("librosa")
+        samples, sample_rate = librosa.load(str(path), sr=22050, mono=True, duration=600)
+        tempo, _ = librosa.beat.beat_track(y=samples, sr=sample_rate)
+        if hasattr(tempo, "reshape"):
+            tempo = tempo.reshape(-1)[0]
+        value = float(tempo)
+        while value and value < 70:
+            value *= 2
+        while value > 180:
+            value /= 2
+        return round(value, 1) if 30 <= value <= 300 else None
+    except Exception:
+        return None
+
+
 def duration_ok(candidate: Path, spotify_duration_ms: int | None) -> tuple[bool, float | None, float | None]:
     if not spotify_duration_ms:
         return True, None, None
@@ -289,7 +328,14 @@ def copy_existing(track: dict, target: Path) -> dict | None:
     return match
 
 
-def write_episode(episode: int, spotify_url: str | None, soundcloud_url: str | None, source_url: str | None, download: bool) -> dict:
+def write_episode(
+    episode: int,
+    spotify_url: str | None,
+    soundcloud_url: str | None,
+    source_url: str | None,
+    download: bool,
+    fast: bool = False,
+) -> dict:
     folder = ROOT / f"segundo_sol_session_#{episode}"
     meta_folder = METADATA_ROOT / "segundo_sol_sessions" / f"Segundo Sol Sessions #{episode}"
     folder.mkdir(parents=True, exist_ok=True)
@@ -345,14 +391,26 @@ def write_episode(episode: int, spotify_url: str | None, soundcloud_url: str | N
             item["status"] = "exists"
             retag_mp3(path, title, tr.get("artist"))
         elif download:
-            copied = copy_existing({**tr, "title": title}, path)
+            copied = None if fast else copy_existing({**tr, "title": title}, path)
             if copied:
                 item.update({"status": "copied_existing", "existing_match": copied})
                 retag_mp3(path, title, tr.get("artist"))
             else:
                 q = tr.get("source_url") or f"ytsearch1:{tr.get('artist','')} - {title} audio"
-                cmd = ["yt-dlp", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0", "--embed-thumbnail", "--add-metadata", "--match-filter", "duration < 900", "--no-playlist", "-o", str(folder / f"{safe_name(stem)}.%(ext)s"), q]
-                proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                cmd = [
+                    "yt-dlp", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0",
+                    "--embed-thumbnail", "--add-metadata", "--match-filter", "duration < 900", "--no-playlist",
+                    "--extractor-args", "youtube:player_client=mweb",
+                    "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+                    "-o", str(folder / f"{safe_name(stem)}.%(ext)s"), q,
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=600,
+                )
                 if path.exists() and proc.returncode == 0:
                     ok, got, want = duration_ok(path, tr.get("duration_ms"))
                     if ok:
@@ -372,6 +430,11 @@ def write_episode(episode: int, spotify_url: str | None, soundcloud_url: str | N
             item["status"] = "copy_available" if match else "pending"
             if match:
                 item["existing_match"] = match
+        if path.exists() and not fast:
+            bpm = estimate_bpm(path)
+            if bpm is not None:
+                item["bpm"] = bpm
+                item["bpm_source"] = "embedded_tag_or_local_audio_analysis"
         downloads.append(item)
     (meta_folder / manifest_json).write_text(json.dumps({"episode": episode, "updated_at": now, "source_kind": source_kind, "downloads": downloads}, indent=2, ensure_ascii=False))
 
@@ -409,15 +472,24 @@ def regenerate_rekordbox_xml() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("episode", type=int)
+    ap.add_argument("episode", type=int, nargs="?")
     ap.add_argument("--spotify-url")
     ap.add_argument("--soundcloud-url")
     ap.add_argument("--source-url")
     ap.add_argument("--download", action="store_true")
+    ap.add_argument("--fast", action="store_true", help="Skip library scan, BPM analysis, and catalog maintenance")
+    ap.add_argument("--analyze-file")
     args = ap.parse_args()
-    result = write_episode(args.episode, args.spotify_url, args.soundcloud_url, args.source_url, args.download)
-    normalize_picodrops_now()
-    regenerate_rekordbox_xml()
+    if args.analyze_file:
+        path = Path(args.analyze_file).expanduser()
+        print(json.dumps({"file": str(path), "bpm": estimate_bpm(path)}))
+        return
+    if args.episode is None:
+        ap.error("episode is required unless --analyze-file is used")
+    result = write_episode(args.episode, args.spotify_url, args.soundcloud_url, args.source_url, args.download, args.fast)
+    if not args.fast:
+        normalize_picodrops_now()
+        regenerate_rekordbox_xml()
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 if __name__ == "__main__":

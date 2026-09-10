@@ -18,10 +18,8 @@ function getAuthClient(req: NextRequest) {
 }
 
 // PATCH /api/tracks/[id] — update vote (writes to user_tracks ONLY, never tracks.status)
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function PATCH(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const supabase = getServiceClient();
   const body = await req.json();
   const { status, super_liked, source_url } = body;
@@ -255,10 +253,8 @@ export async function PATCH(
 }
 
 // GET /api/tracks/[id]
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const supabase = getServiceClient();
   const { data, error } = await supabase
     .from("tracks")

@@ -12,6 +12,7 @@
     "update-signals": "bun run scripts/update-signals.ts",
     "audit": "bun run scripts/audit.ts",
     "watcher": "bun run scripts/watcher.ts",
+    "segundo-sol:bpm": "bun run scripts/backfill-segundo-sol-bpm.ts",
     "crawl-lotradio": "bun run scripts/crawl-lotradio.ts"
   },
   "dependencies": {

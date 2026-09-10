@@ -6,10 +6,8 @@ import { readFileSync, unlinkSync, existsSync, mkdirSync, readdirSync } from "fs
 export const dynamic = "force-dynamic";
 
 // GET /api/tracks/[id]/download — get download URL
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const supabase = getServiceClient();
   const { data: track, error } = await supabase
     .from("tracks")
@@ -87,10 +85,8 @@ function ytdlp(url: string, outPath: string): Promise<number> {
 }
 
 // POST /api/tracks/[id]/download — attempt on-demand download
-export async function POST(
-  _req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function POST(_req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const supabase = getServiceClient();
   const { data: track, error } = await supabase
     .from("tracks")

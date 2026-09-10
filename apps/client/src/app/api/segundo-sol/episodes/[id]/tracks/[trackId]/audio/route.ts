@@ -4,16 +4,17 @@ import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
-type Context = { params: { id: string; trackId: string } };
+type Context = { params: Promise<{ id: string; trackId: string }> };
 
-export async function GET(req: NextRequest, { params }: Context) {
+export async function GET(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const db = getServiceClient();
   const { data: track, error } = await db
     .from("segundo_sol_episode_tracks")
-    .select("id, artist, title, audio_storage_path, audio_status, tracks(storage_path)")
+    .select("id,artist,title,audio_storage_path,audio_status,audio_error,tracks(storage_path)")
     .eq("id", params.trackId)
     .eq("episode_id", params.id)
     .eq("user_id", user.id)
@@ -25,7 +26,12 @@ export async function GET(req: NextRequest, { params }: Context) {
   const storagePath = track.audio_storage_path || backingTrack?.storage_path || null;
   const bucket = track.audio_storage_path ? "segundo-sol-audio" : "tracks";
   if (!storagePath) {
-    return NextResponse.json({ error: "Audio is not ready", status: track.audio_status }, { status: 202 });
+    return NextResponse.json({
+      status: track.audio_status,
+      error: track.audio_status === "failed"
+        ? track.audio_error || "Audio preparation failed"
+        : null,
+    }, { status: 202 });
   }
 
   const { data: signed, error: signError } = await db.storage
@@ -39,7 +45,8 @@ export async function GET(req: NextRequest, { params }: Context) {
   return NextResponse.json({ url: signed.signedUrl, filename });
 }
 
-export async function POST(req: NextRequest, { params }: Context) {
+export async function POST(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

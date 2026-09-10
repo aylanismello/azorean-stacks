@@ -8,10 +8,8 @@ export const dynamic = "force-dynamic";
 // [id] is the track_id (not user_track id).
 // Updates listen_pct, listen_duration_ms, action_delay_ms on the user's
 // user_tracks row. Creates the row (status=pending) if it doesn't exist yet.
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function PATCH(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const auth = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,

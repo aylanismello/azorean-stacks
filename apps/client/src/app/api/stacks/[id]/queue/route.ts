@@ -7,10 +7,8 @@ export const dynamic = "force-dynamic";
 
 // GET /api/stacks/[id]/queue
 // Returns pending tracks for a seed, sorted by pre-computed taste_score.
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { id: string } }
-) {
+export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const db = getServiceClient();
 
   // Auth via anon key (reads user session from cookies)

@@ -5,6 +5,8 @@ import { useSpotify } from "./SpotifyProvider";
 
 export interface PlayerTrack {
   id: string;
+  /** Stable catalog identity shared by the library and episode snapshots. */
+  catalogTrackId?: string | null;
   artist: string;
   title: string;
   coverArtUrl: string | null;
@@ -492,17 +494,18 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   // Fire-and-forget — backend guards against overwriting explicit votes.
   useEffect(() => {
     if (listenedFiredRef.current) return;
-    if (!currentTrack?.id) return;
+    const catalogTrackId = currentTrack?.catalogTrackId || null;
+    if (!catalogTrackId) return;
     if (duration <= 0 || progress <= 0) return;
     if (progress / duration < 0.8) return;
 
     listenedFiredRef.current = true;
-    fetch(`/api/tracks/${currentTrack.id}`, {
+    fetch(`/api/tracks/${catalogTrackId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: "listened" }),
     }).catch(() => {});
-  }, [progress, duration, currentTrack?.id]);
+  }, [progress, duration, currentTrack?.catalogTrackId]);
 
   // ── Proactive signed URL refresh ──
   // Supabase signed URLs expire after 1 hour. Refresh at ~50 minutes to avoid mid-playback expiry.
@@ -759,6 +762,33 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         }
         audio.play().catch(() => setLoading(false));
       }
+    } else if (track.audioRefreshUrl) {
+      // Queue entries may intentionally carry only an authenticated refresh URL.
+      // Resolve it lazily so next/previous and auto-advance work without eagerly
+      // generating signed URLs for the whole session.
+      setSource("audio");
+      refreshSignedUrl(track).then((freshUrl) => {
+        if (!freshUrl || currentTrackRef.current?.id !== track.id) {
+          if (currentTrackRef.current?.id === track.id) {
+            setLoading(false);
+            setNoSource(true);
+          }
+          return;
+        }
+        replaceAudioUrl(track.id, freshUrl);
+        urlObtainedAtRef.current.set(track.id, Date.now());
+        const audio = audioRef.current;
+        if (!audio) {
+          setLoading(false);
+          setNoSource(true);
+          return;
+        }
+        audio.src = freshUrl;
+        audio.play().catch(() => {
+          setLoading(false);
+          setNoSource(true);
+        });
+      });
     } else if (spotify.connected && spotify.deviceId && track.spotifyUrl) {
       setSource("spotify");
       spotify.playUri(track.spotifyUrl).catch(() => {
@@ -769,7 +799,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       setLoading(false);
       setNoSource(true);
     }
-  }, [spotify, stopAudio, stopSpotify]);
+  }, [spotify, stopAudio, stopSpotify, replaceAudioUrl]);
 
   const playFromQueue = useCallback((index: number, origin?: string) => {
     const track = queueRef.current[index];

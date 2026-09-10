@@ -4,7 +4,7 @@ import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
-type Context = { params: { id: string } };
+type Context = { params: Promise<{ id: string }> };
 
 function cleanText(value: unknown, max = 5000): string | null {
   if (typeof value !== "string") return null;
@@ -12,7 +12,16 @@ function cleanText(value: unknown, max = 5000): string | null {
   return text ? text.slice(0, max) : null;
 }
 
-export async function GET(req: NextRequest, { params }: Context) {
+function isOwnedArtworkPath(path: string | null, userId: string): boolean {
+  if (!path) return true;
+  const [owner, filename, extra] = path.split("/");
+  return owner === userId
+    && !extra
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:jpg|png|webp|gif)$/i.test(filename || "");
+}
+
+export async function GET(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const db = getServiceClient();
@@ -41,7 +50,8 @@ export async function GET(req: NextRequest, { params }: Context) {
   return NextResponse.json({ episode: { ...episode, tracks: episodeTracks, inspirations: inspirations || [] } });
 }
 
-export async function PATCH(req: NextRequest, { params }: Context) {
+export async function PATCH(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const body = await req.json().catch(() => ({}));
@@ -58,7 +68,13 @@ export async function PATCH(req: NextRequest, { params }: Context) {
   if ("theme" in body) updates.theme = cleanText(body.theme, 500);
   if ("notes" in body) updates.notes = cleanText(body.notes);
   if ("artwork_url" in body) updates.artwork_url = cleanText(body.artwork_url, 2000);
-  if ("artwork_storage_path" in body) updates.artwork_storage_path = cleanText(body.artwork_storage_path, 1000);
+  if ("artwork_storage_path" in body) {
+    const artworkPath = cleanText(body.artwork_storage_path, 1000);
+    if (!isOwnedArtworkPath(artworkPath, user.id)) {
+      return NextResponse.json({ error: "Invalid artwork storage path" }, { status: 400 });
+    }
+    updates.artwork_storage_path = artworkPath;
+  }
   if ("status" in body) {
     if (!["draft", "assembling", "ready", "published"].includes(body.status)) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 });
@@ -95,13 +111,16 @@ export async function PATCH(req: NextRequest, { params }: Context) {
   }
   if (!data) return NextResponse.json({ error: "Episode not found" }, { status: 404 });
 
-  if (previousArtworkPath && previousArtworkPath !== data.artwork_storage_path) {
+  if (previousArtworkPath
+      && previousArtworkPath !== data.artwork_storage_path
+      && isOwnedArtworkPath(previousArtworkPath, user.id)) {
     await db.storage.from("segundo-sol-artwork").remove([previousArtworkPath]);
   }
   return NextResponse.json({ episode: data });
 }
 
-export async function DELETE(req: NextRequest, { params }: Context) {
+export async function DELETE(req: NextRequest, props: Context) {
+  const params = await props.params;
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -125,11 +144,13 @@ export async function DELETE(req: NextRequest, { params }: Context) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   let artworkCleanupWarning: string | null = null;
-  if (episode.artwork_storage_path) {
+  if (episode.artwork_storage_path && isOwnedArtworkPath(episode.artwork_storage_path, user.id)) {
     const { error: storageError } = await db.storage
       .from("segundo-sol-artwork")
       .remove([episode.artwork_storage_path]);
     artworkCleanupWarning = storageError?.message || null;
+  } else if (episode.artwork_storage_path) {
+    artworkCleanupWarning = "Skipped cleanup for an invalid artwork storage path";
   }
   return NextResponse.json({ deleted: true, artwork_cleanup_warning: artworkCleanupWarning });
 }
