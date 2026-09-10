@@ -19,13 +19,26 @@ export async function GET(req: NextRequest, { params }: Context) {
 
   const [{ data: episode, error }, { data: tracks }, { data: inspirations }] = await Promise.all([
     db.from("segundo_sol_episodes").select("*").eq("id", params.id).eq("user_id", user.id).maybeSingle(),
-    db.from("segundo_sol_episode_tracks").select("*").eq("episode_id", params.id).eq("user_id", user.id).order("position"),
+    db.from("segundo_sol_episode_tracks").select("*, tracks(storage_path)").eq("episode_id", params.id).eq("user_id", user.id).order("position"),
     db.from("segundo_sol_inspirations").select("*").eq("episode_id", params.id).eq("user_id", user.id).order("position"),
   ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!episode) return NextResponse.json({ error: "Episode not found" }, { status: 404 });
-  return NextResponse.json({ episode: { ...episode, tracks: tracks || [], inspirations: inspirations || [] } });
+  const episodeTracks = (tracks || []).map((row: Record<string, any>) => {
+    const { tracks: backingTrack, ...track } = row;
+    const hasBackingAudio = Boolean(backingTrack?.storage_path);
+    return {
+      ...track,
+      playable: Boolean(track.audio_storage_path || hasBackingAudio),
+      audio_status: track.audio_storage_path
+        ? track.audio_status
+        : hasBackingAudio
+          ? "reused"
+          : track.audio_status,
+    };
+  });
+  return NextResponse.json({ episode: { ...episode, tracks: episodeTracks, inspirations: inspirations || [] } });
 }
 
 export async function PATCH(req: NextRequest, { params }: Context) {

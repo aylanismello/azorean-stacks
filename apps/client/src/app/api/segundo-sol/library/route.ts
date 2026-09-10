@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
       source_url: preferredSource(track),
       source_origin: row.super_liked ? "stacks_super_like" : "stacks_like",
       super_liked: Boolean(row.super_liked),
+      playable: Boolean(track.storage_path || track.spotify_url),
       voted_at: row.voted_at,
       metadata: {
         source: track.source,

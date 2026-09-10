@@ -13,6 +13,8 @@ export interface PlayerTrack {
   episodeId?: string | null;
   episodeTitle?: string | null;
   youtubeUrl?: string | null;
+  /** Authenticated endpoint that returns a fresh signed audio URL. */
+  audioRefreshUrl?: string | null;
 
   // Vote / status fields — provider owns these
   vote_status?: "approved" | "rejected" | "skipped" | "listened" | "pending" | "bad_source" | null;
@@ -171,6 +173,16 @@ export function useGlobalPlayer() {
 
 /** Re-fetch a fresh signed URL for a track from the episodes API */
 async function refreshSignedUrl(track: PlayerTrack): Promise<string | null> {
+  if (track.audioRefreshUrl) {
+    try {
+      const res = await fetch(track.audioRefreshUrl);
+      if (!res.ok) return null;
+      const data = await res.json() as { url?: string };
+      return data.url || null;
+    } catch {
+      return null;
+    }
+  }
   if (!track.episodeId) return null;
   try {
     const res = await fetch(`/api/episodes/${track.episodeId}/tracks`);

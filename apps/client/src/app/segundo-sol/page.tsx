@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useGlobalPlayer } from "@/components/GlobalPlayerProvider";
 
 interface EpisodeSummary {
   id: string;
@@ -29,6 +30,7 @@ interface EpisodeTrack {
   audio_status: "not_requested" | "pending" | "processing" | "downloaded" | "reused" | "failed";
   audio_storage_path: string | null;
   audio_error: string | null;
+  playable: boolean;
 }
 
 interface Inspiration {
@@ -57,6 +59,11 @@ interface LibraryTrack {
   source_url: string | null;
   source_origin: "stacks_like" | "stacks_super_like";
   super_liked: boolean;
+  playable: boolean;
+  metadata: {
+    spotify_url?: string | null;
+    youtube_url?: string | null;
+  };
 }
 
 interface EnrichedLink {
@@ -114,6 +121,7 @@ function TwinSunMark({ compact = false }: { compact?: boolean }) {
 }
 
 export default function SegundoSolPage() {
+  const globalPlayer = useGlobalPlayer();
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [episode, setEpisode] = useState<EpisodeDetail | null>(null);
@@ -324,12 +332,52 @@ export default function SegundoSolPage() {
   };
 
   const openAudio = async (track: EpisodeTrack) => {
-    if (!episode || !track.audio_storage_path) return;
+    if (!episode || !track.playable) return;
+    const playerId = `segundo-sol:${track.id}`;
+    if (globalPlayer.currentTrack?.id === playerId) {
+      globalPlayer.togglePlayPause();
+      return;
+    }
     try {
       const data = await requestJson<{ url: string }>(`/api/segundo-sol/episodes/${episode.id}/tracks/${track.id}/audio`);
-      window.open(data.url, "_blank", "noopener,noreferrer");
+      globalPlayer.play({
+        id: playerId,
+        artist: track.artist,
+        title: track.title,
+        coverArtUrl: track.artwork_url,
+        spotifyUrl: track.source_type === "spotify" ? track.source_url : null,
+        audioUrl: data.url,
+        youtubeUrl: track.source_type === "youtube" ? track.source_url : null,
+        audioRefreshUrl: `/api/segundo-sol/episodes/${episode.id}/tracks/${track.id}/audio`,
+        episodeTitle: episode.title,
+      }, "/segundo-sol");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not open audio");
+      setError(err instanceof Error ? err.message : "Could not play audio");
+    }
+  };
+
+  const previewLibraryTrack = async (track: LibraryTrack) => {
+    if (!track.playable) return;
+    if (globalPlayer.currentTrack?.id === track.id) {
+      globalPlayer.togglePlayPause();
+      return;
+    }
+    try {
+      const endpoint = `/api/segundo-sol/library/${track.id}/audio`;
+      const data = await requestJson<{ url: string | null; spotify_url: string | null; youtube_url: string | null }>(endpoint);
+      if (!data.url && !data.spotify_url) throw new Error("Preview audio is not ready yet");
+      globalPlayer.play({
+        id: track.id,
+        artist: track.artist,
+        title: track.title,
+        coverArtUrl: track.artwork_url,
+        spotifyUrl: data.spotify_url,
+        audioUrl: data.url,
+        youtubeUrl: data.youtube_url,
+        audioRefreshUrl: data.url ? endpoint : null,
+      }, "/segundo-sol");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not preview track");
     }
   };
 
@@ -347,7 +395,8 @@ export default function SegundoSolPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ track_id: track.id }),
       });
-      const next = { ...episode, tracks: [...episode.tracks, data.track] };
+      const addedTrack = { ...data.track, playable: track.playable };
+      const next = { ...episode, tracks: [...episode.tracks, addedTrack] };
       setEpisode(next);
       updateSummary(next);
     } catch (err) {
@@ -541,8 +590,8 @@ export default function SegundoSolPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 xl:grid-cols-[290px_minmax(0,1fr)] gap-5">
-          <aside className="rounded-2xl border border-white/10 bg-surface-1/80 backdrop-blur-xl overflow-hidden self-start xl:sticky xl:top-5">
+        <div className="grid grid-cols-1 2xl:grid-cols-[290px_minmax(0,1fr)] gap-5">
+          <aside className="rounded-2xl border border-white/10 bg-surface-1/80 backdrop-blur-xl overflow-hidden self-start 2xl:sticky 2xl:top-5">
             <div className="p-4 border-b border-surface-3 flex items-center justify-between">
               <div>
                 <p className="text-xs uppercase tracking-[0.22em] text-muted">Episodes</p>
@@ -552,7 +601,7 @@ export default function SegundoSolPage() {
                 {creating ? "Making…" : "+ New"}
               </button>
             </div>
-            <div className="p-2 flex xl:block gap-2 overflow-x-auto max-h-none xl:max-h-[70vh] xl:overflow-y-auto">
+            <div className="p-2 flex 2xl:block gap-2 overflow-x-auto max-h-none 2xl:max-h-[70vh] 2xl:overflow-y-auto">
               {loading ? (
                 <div className="p-5 text-sm text-muted">Loading the archive…</div>
               ) : episodes.length === 0 ? (
@@ -560,7 +609,7 @@ export default function SegundoSolPage() {
                   Start Segundo Sol Sessions #1 →
                 </button>
               ) : episodes.map((item) => (
-                <button key={item.id} onClick={() => setSelectedId(item.id)} className={`min-w-[230px] xl:min-w-0 w-full text-left p-3 rounded-xl mb-0 xl:mb-1 transition-all ${selectedId === item.id ? "bg-amber-300/10 ring-1 ring-amber-300/25" : "hover:bg-surface-2"}`}>
+                <button key={item.id} onClick={() => setSelectedId(item.id)} className={`min-w-[230px] 2xl:min-w-0 w-full text-left p-3 rounded-xl mb-0 2xl:mb-1 transition-all ${selectedId === item.id ? "bg-amber-300/10 ring-1 ring-amber-300/25" : "hover:bg-surface-2"}`}>
                   <div className="flex gap-3">
                     <Artwork src={item.artwork_url} alt="" className="w-12 h-12 rounded-lg shrink-0" />
                     <div className="min-w-0 flex-1">
@@ -587,8 +636,8 @@ export default function SegundoSolPage() {
             ) : (
               <div className="space-y-5">
                 <div className="rounded-2xl border border-white/10 bg-surface-1/80 backdrop-blur-xl p-4 sm:p-6">
-                  <div className="grid sm:grid-cols-[180px_minmax(0,1fr)] gap-5 sm:gap-7">
-                    <label className="group relative cursor-pointer">
+                  <div className="grid md:grid-cols-[180px_minmax(0,1fr)] gap-5 md:gap-7">
+                    <label className="group relative cursor-pointer w-full max-w-[220px] md:max-w-none mx-auto">
                       <Artwork src={episode.artwork_url} alt={`Artwork for ${episode.title}`} className="w-full aspect-square rounded-2xl shadow-2xl" />
                       <span className="absolute inset-x-3 bottom-3 text-center rounded-lg bg-black/70 px-3 py-2 text-xs text-white opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
                         {uploading ? "Uploading…" : "Replace artwork"}
@@ -617,14 +666,14 @@ export default function SegundoSolPage() {
                 </div>
 
                 <div className="rounded-2xl border border-white/10 bg-surface-1/80 backdrop-blur-xl overflow-hidden">
-                  <div className="flex overflow-x-auto border-b border-surface-3 p-2 gap-1">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 border-b border-surface-3 p-2 gap-1">
                     {([
                       ["library", "From Stacks"],
                       ["import", "Import source"],
                       ["link", "Paste one track"],
                       ["inspiration", "Inspiration mix"],
                     ] as const).map(([value, label]) => (
-                      <button key={value} onClick={() => setBuilderTab(value)} className={`px-4 py-2.5 rounded-lg text-sm whitespace-nowrap ${builderTab === value ? "bg-amber-300/10 text-amber-200" : "text-muted hover:text-foreground hover:bg-surface-2"}`}>
+                      <button key={value} onClick={() => setBuilderTab(value)} className={`min-w-0 px-2 sm:px-3 py-2.5 rounded-lg text-xs sm:text-sm text-center leading-tight ${builderTab === value ? "bg-amber-300/10 text-amber-200" : "text-muted hover:text-foreground hover:bg-surface-2"}`}>
                         {label}
                       </button>
                     ))}
@@ -632,11 +681,11 @@ export default function SegundoSolPage() {
 
                   {builderTab === "library" && (
                     <div className="p-4 sm:p-5">
-                      <div className="flex flex-col sm:flex-row gap-2 mb-4">
+                      <div className="flex flex-col lg:flex-row gap-2 mb-4">
                         <input value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} className="flex-1 rounded-xl bg-surface-2 border border-surface-3 px-4 py-2.5 text-sm outline-none focus:border-amber-300/30" placeholder="Search your kept tracks…" />
-                        <div className="flex rounded-xl bg-surface-2 p-1">
+                        <div className="grid grid-cols-3 w-full lg:w-auto rounded-xl bg-surface-2 p-1">
                           {(["all", "super_liked", "approved"] as const).map((kind) => (
-                            <button key={kind} onClick={() => setLibraryKind(kind)} className={`px-3 py-1.5 rounded-lg text-xs ${libraryKind === kind ? "bg-surface-4 text-foreground" : "text-muted"}`}>
+                            <button key={kind} onClick={() => setLibraryKind(kind)} className={`px-3 py-2 rounded-lg text-xs text-center ${libraryKind === kind ? "bg-surface-4 text-foreground" : "text-muted"}`}>
                               {kind === "super_liked" ? "Stars" : kind === "approved" ? "Likes" : "All"}
                             </button>
                           ))}
@@ -647,7 +696,19 @@ export default function SegundoSolPage() {
                           const added = addedTrackIds.has(track.id);
                           return (
                             <div key={track.id} className="flex items-center gap-3 rounded-xl bg-surface-2/70 p-2.5 border border-transparent hover:border-surface-4">
-                              <Artwork src={track.artwork_url} alt="" className="w-11 h-11 rounded-lg shrink-0" />
+                              <button
+                                onClick={() => previewLibraryTrack(track)}
+                                disabled={!track.playable}
+                                aria-label={track.playable ? `${globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? "Pause" : "Preview"} ${track.title}` : `${track.title} preview unavailable`}
+                                className="relative w-11 h-11 rounded-lg overflow-hidden shrink-0 disabled:cursor-default group/preview"
+                              >
+                                <Artwork src={track.artwork_url} alt="" className="w-11 h-11 rounded-lg transition-opacity group-hover/preview:opacity-70" />
+                                {track.playable && (
+                                  <span className="absolute inset-0 grid place-items-center text-sm text-white bg-black/25 group-hover/preview:bg-black/50 transition-colors">
+                                    {globalPlayer.currentTrack?.id === track.id && globalPlayer.playing ? "Ⅱ" : "▶"}
+                                  </span>
+                                )}
+                              </button>
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium truncate">{track.title}</p>
                                 <p className="text-xs text-muted truncate">{track.artist}</p>
@@ -778,7 +839,7 @@ export default function SegundoSolPage() {
                   ) : (
                     <div className="divide-y divide-surface-3">
                       {episode.tracks.map((track, index) => (
-                        <div key={track.id} className="grid grid-cols-[34px_48px_minmax(0,1fr)] lg:grid-cols-[34px_48px_minmax(0,1fr)_150px_190px_auto] gap-3 items-center p-3 sm:p-4 group">
+                        <div key={track.id} className="grid grid-cols-[30px_52px_minmax(0,1fr)] 2xl:grid-cols-[30px_52px_minmax(0,1fr)_150px_190px_auto] gap-3 items-center p-3 sm:p-4 group">
                           <div className="text-center">
                             <span className="block text-xs text-muted">{index + 1}</span>
                             <div className="mt-1 flex flex-col">
@@ -786,37 +847,49 @@ export default function SegundoSolPage() {
                               <button onClick={() => moveTrack(index, 1)} disabled={index === episode.tracks.length - 1} className="text-[11px] text-muted hover:text-amber-200 disabled:opacity-20">↓</button>
                             </div>
                           </div>
-                          <Artwork src={track.artwork_url} alt="" className="w-12 h-12 rounded-lg" />
+                          <button
+                            onClick={() => openAudio(track)}
+                            disabled={!track.playable}
+                            aria-label={track.playable ? `${globalPlayer.currentTrack?.id === `segundo-sol:${track.id}` && globalPlayer.playing ? "Pause" : "Play"} ${track.title}` : `${track.title} audio unavailable`}
+                            className="relative w-12 h-12 rounded-lg overflow-hidden disabled:cursor-default group/play"
+                          >
+                            <Artwork src={track.artwork_url} alt="" className="w-12 h-12 rounded-lg transition-opacity group-hover/play:opacity-70" />
+                            {track.playable && (
+                              <span className="absolute inset-0 grid place-items-center text-lg text-white bg-black/20 group-hover/play:bg-black/45 transition-colors">
+                                {globalPlayer.currentTrack?.id === `segundo-sol:${track.id}` && globalPlayer.playing ? "Ⅱ" : "▶"}
+                              </span>
+                            )}
+                          </button>
                           <div className="min-w-0">
                             <input value={track.title} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, title: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { title: track.title })} className="w-full bg-transparent text-sm font-medium outline-none border-b border-transparent focus:border-amber-300/30" />
                             <input value={track.artist} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, artist: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { artist: track.artist })} className="w-full bg-transparent text-xs text-muted outline-none border-b border-transparent focus:border-amber-300/20" />
-                            <div className="lg:hidden mt-2 flex flex-wrap items-center gap-2">
+                            <div className="2xl:hidden mt-2 flex flex-wrap items-center gap-2">
                               <span className="text-[10px] uppercase tracking-wide text-foreground/60">{track.source_origin.replace("stacks_", "")}</span>
                               {track.source_url && <a href={track.source_url} target="_blank" rel="noreferrer" className="text-[11px] text-sky-300">source ↗</a>}
-                              {track.audio_storage_path ? (
+                              {track.playable ? (
                                 <button onClick={() => openAudio(track)} className="text-[11px] font-semibold text-orange-200">▶ play audio</button>
                               ) : (
                                 <span className={`text-[10px] uppercase ${track.audio_status === "failed" ? "text-red-300" : "text-[#d6a8bf]"}`}>{(track.audio_status || "not_requested").replace("not_requested", "source only")}</span>
                               )}
                             </div>
                           </div>
-                          <input value={track.role || ""} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, role: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { role: track.role })} className="hidden lg:block rounded-lg bg-surface-2 border border-surface-3 px-3 py-2 text-xs outline-none focus:border-amber-300/30" placeholder="opener / bridge…" />
-                          <div className="hidden lg:block min-w-0">
+                          <input value={track.role || ""} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, role: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { role: track.role })} className="hidden 2xl:block rounded-lg bg-surface-2 border border-surface-3 px-3 py-2 text-xs outline-none focus:border-amber-300/30" placeholder="opener / bridge…" />
+                          <div className="hidden 2xl:block min-w-0">
                             <p className="text-[10px] uppercase tracking-wider text-foreground/60">{track.source_origin.replace("stacks_", "")} · {track.source_type}</p>
                             <div className="mt-1 flex items-center gap-3">
                               {track.source_url ? <a href={track.source_url} target="_blank" rel="noreferrer" className="text-xs text-sky-300 hover:text-sky-200 truncate">source ↗</a> : <span className="text-xs text-muted">snapshot only</span>}
-                              {track.audio_storage_path ? (
+                              {track.playable ? (
                                 <button onClick={() => openAudio(track)} className="text-xs font-semibold text-orange-200 hover:text-orange-100">▶ play</button>
                               ) : (
                                 <span className={`text-[10px] uppercase ${track.audio_status === "failed" ? "text-red-300" : "text-[#d6a8bf]"}`}>{(track.audio_status || "not_requested").replace("not_requested", "source only")}</span>
                               )}
                             </div>
                           </div>
-                          <button onClick={() => removeTrack(track.id)} className="hidden lg:block text-muted/30 hover:text-red-300 px-2">×</button>
-                          <div className="col-start-3 lg:col-start-3 lg:col-span-3">
+                          <button onClick={() => removeTrack(track.id)} className="hidden 2xl:block text-muted/30 hover:text-red-300 px-2">×</button>
+                          <div className="col-start-3 2xl:col-start-3 2xl:col-span-3">
                             <input value={track.notes || ""} onChange={(event) => setEpisode({ ...episode, tracks: episode.tracks.map((item) => item.id === track.id ? { ...item, notes: event.target.value } : item) })} onBlur={() => patchTrack(track.id, { notes: track.notes })} className="w-full bg-transparent text-xs text-foreground/45 outline-none border-b border-transparent focus:border-amber-300/20" placeholder="transition / energy / mix note" />
                           </div>
-                          <button onClick={() => removeTrack(track.id)} className="lg:hidden col-start-3 justify-self-end text-xs text-red-300/60">remove</button>
+                          <button onClick={() => removeTrack(track.id)} className="2xl:hidden col-start-3 justify-self-end text-xs text-red-300/60">remove</button>
                         </div>
                       ))}
                     </div>

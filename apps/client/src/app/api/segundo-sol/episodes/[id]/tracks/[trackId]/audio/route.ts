@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: Context) {
   const db = getServiceClient();
   const { data: track, error } = await db
     .from("segundo_sol_episode_tracks")
-    .select("id, artist, title, audio_storage_path, audio_status")
+    .select("id, artist, title, audio_storage_path, audio_status, tracks(storage_path)")
     .eq("id", params.trackId)
     .eq("episode_id", params.id)
     .eq("user_id", user.id)
@@ -21,13 +21,16 @@ export async function GET(req: NextRequest, { params }: Context) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (!track) return NextResponse.json({ error: "Track not found" }, { status: 404 });
-  if (!track.audio_storage_path) {
+  const backingTrack = Array.isArray(track.tracks) ? track.tracks[0] : track.tracks;
+  const storagePath = track.audio_storage_path || backingTrack?.storage_path || null;
+  const bucket = track.audio_storage_path ? "segundo-sol-audio" : "tracks";
+  if (!storagePath) {
     return NextResponse.json({ error: "Audio is not ready", status: track.audio_status }, { status: 202 });
   }
 
   const { data: signed, error: signError } = await db.storage
-    .from("segundo-sol-audio")
-    .createSignedUrl(track.audio_storage_path, 3600);
+    .from(bucket)
+    .createSignedUrl(storagePath, 3600);
   if (signError || !signed) {
     return NextResponse.json({ error: signError?.message || "Could not serve audio" }, { status: 500 });
   }
