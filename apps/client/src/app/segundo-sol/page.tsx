@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useGlobalPlayer } from "@/components/GlobalPlayerProvider";
+import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
 
 interface EpisodeSummary {
   id: string;
@@ -145,6 +146,40 @@ export default function SegundoSolPage() {
   const [importUrl, setImportUrl] = useState("");
   const [importJob, setImportJob] = useState<ImportJob | null>(null);
   const [importing, setImporting] = useState(false);
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (!globalPlayer.currentTrack) return;
+
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable
+      ) return;
+
+      const action = getFypKeyboardAction(event);
+      if (action === "seek-backward") {
+        event.preventDefault();
+        globalPlayer.seek(globalPlayer.progress - 30);
+      } else if (action === "seek-forward") {
+        event.preventDefault();
+        globalPlayer.seek(globalPlayer.progress + 30);
+      } else if (action === "next-track") {
+        event.preventDefault();
+        globalPlayer.next();
+      } else if (action === "previous-track") {
+        event.preventDefault();
+        if (globalPlayer.progress > 3) globalPlayer.seek(0);
+        else globalPlayer.prev();
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [globalPlayer]);
 
   const loadEpisodes = useCallback(async () => {
     try {
