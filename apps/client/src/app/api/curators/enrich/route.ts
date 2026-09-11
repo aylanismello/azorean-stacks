@@ -42,7 +42,7 @@ async function fetchNTSShow(slug: string): Promise<NTSShow | null> {
 export async function POST(req: NextRequest) {
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!canEditSharedCatalog(user.id)) {
+  if (!canEditSharedCatalog(user)) {
     return NextResponse.json({ error: "Curator enrichment requires catalog-editor access" }, { status: 403 });
   }
 

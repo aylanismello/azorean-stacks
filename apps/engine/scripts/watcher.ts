@@ -27,34 +27,42 @@ import {
   materializeAllQueues,
   materializeUserQueue,
   markPreparationState,
+  QUEUE_TARGET,
   releasePreparationTracks,
   selectPreparationBatch,
 } from "../lib/predictive-queue";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { downloadConcurrency, preferredAcquisitionUrl, ytDlpAudioArgs } from "../lib/yt-dlp";
 import { isExplicitDecision, refreshDecisionQueue } from "../lib/decision-refresh";
+import { createQueueMutationSerializer, refreshSeedOwnerQueue } from "../lib/seed-refresh";
 
 const db = getSupabase();
 const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json`;
 
 const decisionRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
-let decisionRefreshChain = Promise.resolve();
+const serializeQueueMutation = createQueueMutationSerializer();
+
+async function refreshPersonalizedQueue(userId: string, freshInsertions = 0): Promise<void> {
+  await refreshDecisionQueue(userId, {
+    refreshPersonalizedScores: async () => {
+      const proc = Bun.spawn([Bun.which("bun") || "bun", "run", "scripts/update-signals.ts", "--user-id", userId], {
+        cwd: `${import.meta.dir}/..`, stdout: "inherit", stderr: "inherit",
+      });
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) throw new Error(`signal refresh exited ${exitCode}`);
+    },
+    materializeUserQueue: () => materializeUserQueue(userId, db, QUEUE_TARGET, freshInsertions),
+  });
+}
+
 function scheduleDecisionRefresh(userId: string) {
   const existing = decisionRefreshTimers.get(userId);
   if (existing) clearTimeout(existing);
   if (!existing && decisionRefreshTimers.size >= 100) return;
   decisionRefreshTimers.set(userId, setTimeout(() => {
     decisionRefreshTimers.delete(userId);
-    decisionRefreshChain = decisionRefreshChain.then(() => refreshDecisionQueue(userId, {
-      refreshPersonalizedScores: async () => {
-        const proc = Bun.spawn([Bun.which("bun") || "bun", "run", "scripts/update-signals.ts", "--user-id", userId], {
-          cwd: `${import.meta.dir}/..`, stdout: "inherit", stderr: "inherit",
-        });
-        const exitCode = await proc.exited;
-        if (exitCode !== 0) throw new Error(`signal refresh exited ${exitCode}`);
-      },
-      materializeUserQueue: () => materializeUserQueue(userId, db),
-    })).catch((error) => log("fail", `Decision refresh failed for ${userId}: ${error instanceof Error ? error.message : error}`));
+    void serializeQueueMutation(() => refreshPersonalizedQueue(userId))
+      .catch((error) => log("fail", `Decision refresh failed for ${userId}: ${error instanceof Error ? error.message : error}`));
   }, 2_000));
 }
 
@@ -362,8 +370,6 @@ async function processSeed(seedId: string) {
 
         // Audio is prepared separately from the ranked per-user queue. Discovery
         // continues enriching every candidate without downloading the whole episode.
-        const materialized = await materializeAllQueues(db);
-        log("info", `Materialized ${materialized.tracks} queue entries for ${materialized.users} user(s)`);
       }
 
       // Only process the first episode with tracks per source
@@ -391,6 +397,17 @@ async function processSeed(seedId: string) {
     } catch (err) {
       log("fail", `Seed cover art lookup failed: ${err instanceof Error ? err.message : err}`);
     }
+  }
+
+  if (seed.user_id) {
+    await refreshSeedOwnerQueue(
+      seed.user_id,
+      (userId) => serializeQueueMutation(() => refreshPersonalizedQueue(userId, 3)),
+      (error) => log("fail", `Seed FYP refresh failed for ${seed.user_id}: ${error instanceof Error ? error.message : error}`),
+    );
+  } else {
+    const materialized = await serializeQueueMutation(() => materializeAllQueues(db));
+    log("info", `Materialized ${materialized.tracks} queue entries for ${materialized.users} user(s)`);
   }
 
   console.log(`\n  Watcher pipeline done for ${seedLabel} (${elapsed(t0)})`);
@@ -1028,6 +1045,11 @@ async function processPrioritySeed(seedId: string) {
   }
 
   if (tracksToProcess.length === 0) {
+    await refreshSeedOwnerQueue(
+      seed.user_id,
+      (userId) => serializeQueueMutation(() => refreshPersonalizedQueue(userId, 3)),
+      (error) => log("fail", `Seed FYP refresh failed for ${seed.user_id}: ${error instanceof Error ? error.message : error}`),
+    );
     await updatePipelineStatus(
       seedId,
       { state: "done", completed_at: new Date().toISOString() },
@@ -1057,12 +1079,23 @@ async function processPrioritySeed(seedId: string) {
 
   // Phase 3: Re-rank per-user preparation queues. The bounded drain owns audio;
   // priority discovery must not download every track from the selected episode.
-  const materialized = await materializeAllQueues(db);
+  let materializedTracks = 0;
+  await refreshSeedOwnerQueue(
+    seed.user_id,
+    async (userId) => {
+      await serializeQueueMutation(() => refreshPersonalizedQueue(userId, 3));
+      const { count } = await db.from("audio_preparation_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId);
+      materializedTracks = count || 0;
+    },
+    (error) => log("fail", `Seed FYP refresh failed for ${seed.user_id}: ${error instanceof Error ? error.message : error}`),
+  );
 
   await updatePipelineStatus(
     seedId,
-    { state: "preparing", progress: `0/${materialized.tracks}` },
-    `queued bounded audio preparation for ${materialized.tracks} ranked entries`,
+    { state: "preparing", progress: `0/${materializedTracks}` },
+    `queued bounded audio preparation for ${materializedTracks} ranked entries`,
   );
 
   // Phase 4: Cleanup — mark dangling pending tracks (no spotify_url AND no youtube_url) as skipped
@@ -1562,7 +1595,7 @@ function startWatcher() {
               }
               downloadDrainRunning = true;
               try {
-                const materialized = await materializeAllQueues(db);
+                const materialized = await serializeQueueMutation(() => materializeAllQueues(db));
                 const eviction = await evictRetiredQueueAudio(db);
                 const downloadable = await selectPreparationBatch(db, 20);
                 log("info", `[DL Drain] Ranked ${materialized.tracks} entries for ${materialized.users} user(s)`);

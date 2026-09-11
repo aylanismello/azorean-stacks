@@ -25,6 +25,16 @@ async function getPendingTrackIds(db: any, userId: string) {
     for (const opinion of data || []) if (opinion.status === "pending") pending.add(opinion.track_id);
     if (!data || data.length < QUERY_PAGE_SIZE) break;
   }
+  for (let page = 0; ; page++) {
+    const { data, error } = await db.from("user_track_play_totals")
+      .select("track_id")
+      .eq("user_id", userId)
+      .gt("play_count", 0)
+      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
+    if (error) throw error;
+    for (const played of data || []) pending.delete(played.track_id);
+    if (!data || data.length < QUERY_PAGE_SIZE) break;
+  }
   return pending;
 }
 
@@ -79,6 +89,12 @@ export async function getPersonalizedTracks(
       seen.add(track.id);
       ranked.push({
         ...track,
+        // Shared tracks.status is legacy pipeline/catalog state, not this
+        // user's opinion. Every row admitted here is user_tracks.pending.
+        status: "pending",
+        super_liked: false,
+        voted_at: null,
+        listen_pct: null,
         taste_score: Number(score.score || 0),
         metadata: {
           ...(track.metadata || {}),
@@ -113,6 +129,10 @@ export async function getPersonalizedTracks(
       seen.add(track.id);
       ranked.push({
         ...track,
+        status: "pending",
+        super_liked: false,
+        voted_at: null,
+        listen_pct: null,
         taste_score: Number(scoreRow.score || 0),
         metadata: {
           ...(track.metadata || {}),

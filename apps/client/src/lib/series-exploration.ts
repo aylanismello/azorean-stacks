@@ -87,12 +87,20 @@ async function actionedTrackIds(db: any, userId: string, trackIds: string[]) {
   const result = new Set<string>();
   for (let start = 0; start < trackIds.length; start += USER_TRACK_IN_BATCH_SIZE) {
     const batch = trackIds.slice(start, start + USER_TRACK_IN_BATCH_SIZE);
-    const { data, error } = await db.from("user_tracks")
-      .select("track_id")
-      .eq("user_id", userId)
-      .in("track_id", batch);
-    if (error) throw error;
-    for (const row of data || []) result.add(row.track_id);
+    const [opinions, plays] = await Promise.all([
+      db.from("user_tracks")
+        .select("track_id")
+        .eq("user_id", userId)
+        .in("track_id", batch),
+      db.from("user_track_play_totals")
+        .select("track_id")
+        .eq("user_id", userId)
+        .in("track_id", batch)
+        .gt("play_count", 0),
+    ]);
+    if (opinions.error) throw opinions.error;
+    if (plays.error) throw plays.error;
+    for (const row of [...(opinions.data || []), ...(plays.data || [])]) result.add(row.track_id);
   }
   return result;
 }

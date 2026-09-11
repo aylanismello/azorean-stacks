@@ -664,6 +664,7 @@ async function computeAndUpsertSignals(db: any, tracks: any[], userId: string) {
       components.reduce((sum, component) => sum + component.weight * component.typeWeight, 0) * 1000,
     ) / 1000;
 
+
     // ── Match type boost ──────────────────────────────────────────────
     // Tracks from "full" match episodes (seed song was actually in the tracklist)
     // get a boost. "artist"-only matches get a small penalty since the connection

@@ -106,6 +106,7 @@ export function recencyWeight(
   return Math.pow(0.5, ageDays / halfLifeDays);
 }
 
+
 /** Empirical-Bayes estimate, expressed as a -1..1 taste signal. */
 export function estimateYield(
   accumulator: YieldAccumulator,

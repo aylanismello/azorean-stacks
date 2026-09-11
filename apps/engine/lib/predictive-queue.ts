@@ -26,6 +26,60 @@ export interface QueueCandidate {
   [key: string]: any;
 }
 
+/** Keep an in-progress queue stable while allowing a bounded fresh seed lane. */
+export function mergeStableQueueCandidates(
+  existing: QueueCandidate[],
+  ranked: QueueCandidate[],
+  target = QUEUE_TARGET,
+  freshInsertions = 0,
+  protectedPrefix = 5,
+  preferredFreshTrackIds?: Set<string>,
+): QueueCandidate[] {
+  const boundedTarget = Math.max(0, Math.floor(target));
+  const seen = new Set<string>();
+  const stable = existing.filter((track) => {
+    if (!track.id || seen.has(track.id)) return false;
+    seen.add(track.id);
+    return true;
+  });
+  const freshSeen = new Set(seen);
+  const allFresh = ranked.filter((track) => {
+    if (!track.id || freshSeen.has(track.id)) return false;
+    freshSeen.add(track.id);
+    return true;
+  });
+  const prefixLength = Math.min(Math.max(0, protectedPrefix), stable.length, boundedTarget);
+  const protectedTracks = stable.slice(0, prefixLength);
+  const protectedIds = new Set(protectedTracks.map((track) => track.id));
+  const movableStable = stable.slice(prefixLength);
+  const preferredFresh = preferredFreshTrackIds
+    ? allFresh.filter((track) => preferredFreshTrackIds.has(track.id))
+    : allFresh;
+  const activePreferred = preferredFreshTrackIds
+    ? movableStable.filter((track) => preferredFreshTrackIds.has(track.id))
+    : [];
+  const protectedPreferredCount = preferredFreshTrackIds
+    ? protectedTracks.filter((track) => preferredFreshTrackIds.has(track.id)).length
+    : 0;
+  const injectionCount = Math.min(
+    Math.max(0, Math.floor(freshInsertions) - protectedPreferredCount),
+    activePreferred.length + preferredFresh.length,
+    Math.max(0, boundedTarget - protectedTracks.length),
+  );
+  const injected = [...activePreferred, ...preferredFresh].slice(0, injectionCount);
+  const injectedIds = new Set(injected.map((track) => track.id));
+  const stableRemainder = movableStable.filter((track) => !injectedIds.has(track.id));
+  const merged = injectionCount > 0
+    ? [
+        ...protectedTracks,
+        ...injected,
+        ...stableRemainder,
+        ...allFresh.filter((track) => !injectedIds.has(track.id) && !protectedIds.has(track.id)),
+      ]
+    : [...stable, ...allFresh];
+  return merged.slice(0, boundedTarget);
+}
+
 export function isObviousPlaceholderCandidate(track: QueueCandidate): boolean {
   const artist = String(track.artist || "").trim().toLowerCase();
   const title = String(track.title || "").trim().toLowerCase();
@@ -259,6 +313,73 @@ async function pendingUserTrackIds(db: Db, userId: string): Promise<string[]> {
     trackIds.push(...rows.map((row: any) => row.track_id));
     if (rows.length < 1000) break;
   }
+
+  const playedTrackIds = new Set<string>();
+  for (let start = 0; ; start += 1000) {
+    const result = await db.from("user_track_play_totals")
+      .select("track_id")
+      .eq("user_id", userId)
+      .gt("play_count", 0)
+      .range(start, start + 999);
+    const rows = requireOk(result, "qualified playback exclusion");
+    for (const row of rows) playedTrackIds.add(row.track_id);
+    if (rows.length < 1000) break;
+  }
+  return trackIds.filter((trackId) => !playedTrackIds.has(trackId));
+}
+
+async function activeQueueCandidates(
+  db: Db,
+  userId: string,
+  eligibleTrackIds: Set<string>,
+): Promise<QueueCandidate[]> {
+  const result = await db.from("audio_preparation_queue")
+    .select("track_id,rank,score,score_components,track:tracks!inner(*)")
+    .eq("user_id", userId)
+    .in("state", ["ranked", "preparing", "ready"])
+    .order("rank", { ascending: true });
+  return requireOk(result, "active queue continuity lookup")
+    .filter((row: any) => eligibleTrackIds.has(row.track_id))
+    .map((row: any) => {
+      const track = Array.isArray(row.track) ? row.track[0] : row.track;
+      return track ? {
+        ...track,
+        taste_score: Number(row.score || 0),
+        metadata: {
+          ...(track.metadata || {}),
+          _score_components: row.score_components || {},
+        },
+      } : null;
+    })
+    .filter(Boolean);
+}
+
+async function latestSeedCandidateTrackIds(db: Db, userId: string): Promise<Set<string>> {
+  const seedResult = await db.from("seeds")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (seedResult.error) throw new Error(`latest seed lookup: ${seedResult.error.message}`);
+  if (!seedResult.data?.id) return new Set();
+
+  const linksResult = await db.from("episode_seeds")
+    .select("episode_id")
+    .eq("seed_id", seedResult.data.id);
+  const episodeIds = requireOk(linksResult, "latest seed episode lookup").map((row: any) => row.episode_id);
+  if (!episodeIds.length) return new Set();
+
+  const trackIds = new Set<string>();
+  for (let start = 0; start < episodeIds.length; start += 300) {
+    const tracksResult = await db.from("episode_tracks")
+      .select("track_id")
+      .in("episode_id", episodeIds.slice(start, start + 300));
+    for (const row of requireOk(tracksResult, "latest seed candidate lookup")) {
+      if (row.track_id) trackIds.add(row.track_id);
+    }
+  }
   return trackIds;
 }
 
@@ -475,18 +596,19 @@ export function mergeSoulectionPreparationSlice(
 ): QueueCandidate[] {
   const boundedTarget = Math.max(0, Math.floor(target));
   const boundedWarmTarget = Math.min(boundedTarget, Math.max(0, Math.floor(warmTarget)));
-  const ordinaryIds = new Set(ordinary.map((track) => track.id));
   const seen = new Set<string>();
   const boundedExploration = exploration.filter((track) => {
-    if (ordinaryIds.has(track.id) || seen.has(track.id)) return false;
+    if (seen.has(track.id)) return false;
     seen.add(track.id);
     return true;
   }).slice(0, Math.min(SOULECTION_EXPLORATION_TRACK_LIMIT, boundedWarmTarget));
+  const explorationIds = new Set(boundedExploration.map((track) => track.id));
+  const ordinaryWithoutExploration = ordinary.filter((track) => !explorationIds.has(track.id));
   const protectedLength = Math.max(0, boundedWarmTarget - boundedExploration.length);
   return [
-    ...ordinary.slice(0, protectedLength),
+    ...ordinaryWithoutExploration.slice(0, protectedLength),
     ...boundedExploration,
-    ...ordinary.slice(protectedLength),
+    ...ordinaryWithoutExploration.slice(protectedLength),
   ].slice(0, boundedTarget);
 }
 
@@ -504,6 +626,7 @@ export async function materializeUserQueue(
   userId: string,
   db: Db = getSupabase(),
   target = QUEUE_TARGET,
+  freshInsertions = 0,
 ): Promise<number> {
   const queueTarget = Math.max(0, Math.floor(target));
   // Over-fetch before both quality filtering and diversification so a dominant
@@ -517,14 +640,34 @@ export async function materializeUserQueue(
         return [];
       })
     : Promise.resolve([]);
-  const [ranked, exploration] = await Promise.all([
+  const [ranked, exploration, eligibleTrackIds] = await Promise.all([
     rankedTracks(db, userId, queueTarget * 4),
     explorationPromise,
+    pendingUserTrackIds(db, userId),
   ]);
   const downloadable = ranked.filter(
     (track) => Boolean(track.storage_path) || Number(track.dl_attempts || 0) < MAX_DL_ATTEMPTS,
   );
-  const ordinary = diversifyQueueCandidates(await enrichQueueContexts(db, downloadable), queueTarget);
+  const enrichedRanked = await enrichQueueContexts(db, downloadable);
+  const newlyRanked = diversifyQueueCandidates(enrichedRanked, queueTarget);
+  const existingCandidates = await activeQueueCandidates(db, userId, new Set(eligibleTrackIds));
+  const preferredFreshTrackIds = freshInsertions > 0
+    ? await latestSeedCandidateTrackIds(db, userId)
+    : undefined;
+  const rankedForMerge = preferredFreshTrackIds
+    ? [
+        ...enrichedRanked.filter((track) => preferredFreshTrackIds.has(track.id)),
+        ...newlyRanked,
+      ]
+    : newlyRanked;
+  const ordinary = mergeStableQueueCandidates(
+    existingCandidates,
+    rankedForMerge,
+    queueTarget,
+    freshInsertions,
+    5,
+    preferredFreshTrackIds,
+  );
   const tracks = mergeSoulectionPreparationSlice(ordinary, exploration, queueTarget, WARM_TARGET);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + QUEUE_TTL_DAYS * 86_400_000).toISOString();

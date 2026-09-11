@@ -68,7 +68,7 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
 
   // fix_source: a catalog editor provided a corrected URL — the local engine re-downloads it
   if (status === "fix_source" && source_url) {
-    if (!canEditSharedCatalog(user.id)) {
+    if (!canEditSharedCatalog(user)) {
       return NextResponse.json({ error: "Shared source corrections require catalog-editor access" }, { status: 403 });
     }
 

@@ -3,6 +3,7 @@ import { loadPersonalizedFyp } from "./fyp-personalization";
 
 type Fixture = {
   pending?: Array<{ track_id: string; status: string }>;
+  played?: Array<{ track_id: string }>;
   ready?: any[];
   scores?: any[];
   rankedScores?: any[];
@@ -28,6 +29,7 @@ function fixtureDb(fixture: Fixture) {
       calls.push({ table: this.table, filters: this.filters, select: this.columns });
       let data: any[] | any | null = [];
       if (this.table === "user_tracks") data = fixture.pending || [];
+      if (this.table === "user_track_play_totals") data = fixture.played || [];
       if (this.table === "audio_preparation_queue") data = fixture.ready || [];
       if (this.table === "user_track_scores") {
         data = this.columns.includes("track:tracks") ? fixture.rankedScores || [] : fixture.scores || [];
@@ -65,7 +67,8 @@ describe("loadPersonalizedFyp", () => {
     });
 
     expect(rows.map((track) => track.id)).toEqual(["track-1"]);
-    expect(rows[0].status).toBe("rejected");
+    expect(rows[0].status).toBe("pending");
+    expect(rows[0].super_liked).toBe(false);
     expect(rows[0].taste_score).toBe(0.91);
     expect(rows[0].metadata._score_confidence).toBe(0.87);
     expect(fixture.calls.some((call) => call.filters.some((filter) => filter[1] === "track.status"))).toBe(false);
@@ -84,6 +87,19 @@ describe("loadPersonalizedFyp", () => {
       });
       expect(rows).toEqual([]);
     }
+  });
+
+  test("excludes tracks with a qualified playback even if their opinion is pending", async () => {
+    const fixture = fixtureDb({
+      pending: [{ track_id: "track-1", status: "pending" }],
+      played: [{ track_id: "track-1" }],
+      ready: [{ track_id: "track-1", rank: 1, track: readyTrack }],
+      scores: [{ track_id: "track-1", score: 0.91, confidence: 0.87, components: {} }],
+    });
+    const rows = await loadPersonalizedFyp(fixture.db, "user-a", {
+      limit: 20, offset: 0, hideLow: false,
+    });
+    expect(rows).toEqual([]);
   });
 
   test("never invokes the weak global FYP RPC for filtered or unfiltered loads", async () => {

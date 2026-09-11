@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!canEditSharedCatalog(user.id)) {
+    if (!canEditSharedCatalog(user)) {
       return NextResponse.json({ error: "Engine commands require catalog-editor access" }, { status: 403 });
     }
 

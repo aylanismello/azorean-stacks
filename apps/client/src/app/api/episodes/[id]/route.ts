@@ -11,7 +11,7 @@ export async function PATCH(
 ) {
   const user = await getRequestUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!canEditSharedCatalog(user.id)) {
+  if (!canEditSharedCatalog(user)) {
     return NextResponse.json({ error: "Shared episode changes require catalog-editor access" }, { status: 403 });
   }
 

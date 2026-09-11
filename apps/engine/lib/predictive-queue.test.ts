@@ -8,6 +8,7 @@ import {
   isObviousPlaceholderCandidate,
   isPreparationTrack,
   materializeUserQueue,
+  mergeStableQueueCandidates,
   mergeSoulectionPreparationSlice,
   SERIES_SEED_CONTEXT_BOOST,
   SOULECTION_EXPLORATION_EPISODE_LIMIT,
@@ -18,6 +19,55 @@ import {
   type PreparationTrack,
   type WarmQueueRow,
 } from "./predictive-queue";
+
+describe("mergeStableQueueCandidates", () => {
+  const track = (id: string) => ({ id });
+
+  test("ordinary refresh preserves the active queue and only backfills", () => {
+    expect(mergeStableQueueCandidates(
+      [track("old-1"), track("old-2")],
+      [track("new-1"), track("old-2"), track("new-2")],
+      4,
+    ).map((row) => row.id)).toEqual(["old-1", "old-2", "new-1", "new-2"]);
+  });
+
+  test("seed refresh injects only a bounded fresh lane after the protected front", () => {
+    expect(mergeStableQueueCandidates(
+      [track("old-1"), track("old-2"), track("old-3"), track("old-4")],
+      [track("other"), track("fresh-1"), track("fresh-2"), track("fresh-3")],
+      6,
+      2,
+      2,
+      new Set(["fresh-1", "fresh-2", "fresh-3"]),
+    ).map((row) => row.id)).toEqual([
+      "old-1", "old-2", "fresh-1", "fresh-2", "old-3", "old-4",
+    ]);
+  });
+
+  test("repeated seed refresh does not inject beyond the active seed cap", () => {
+    expect(mergeStableQueueCandidates(
+      [track("old-1"), track("fresh-1"), track("fresh-2")],
+      [track("fresh-1"), track("fresh-2"), track("fresh-3"), track("other")],
+      3,
+      2,
+      1,
+      new Set(["fresh-1", "fresh-2", "fresh-3"]),
+    ).map((row) => row.id)).toEqual(["old-1", "fresh-1", "fresh-2"]);
+  });
+
+  test("never moves an existing latest-seed track out of the protected prefix", () => {
+    const existing = ["fresh-1", "old-2", "old-3", "old-4", "old-5", "old-6"].map(track);
+    const result = mergeStableQueueCandidates(
+      existing,
+      [track("fresh-2"), track("fresh-3")],
+      7,
+      3,
+      5,
+      new Set(["fresh-1", "fresh-2", "fresh-3"]),
+    );
+    expect(result.slice(0, 5).map((row) => row.id)).toEqual(existing.slice(0, 5).map((row) => row.id));
+  });
+});
 
 describe("applySeriesSeedContext", () => {
   const candidate = (id: string, score: number) => ({
@@ -418,6 +468,30 @@ describe("soulection exploration preparation", () => {
     );
   });
 
+  test("repositions retained exploration rows back into reserved ranks 18 through 20", () => {
+    const exploration = [
+      { id: "exploration-1" },
+      { id: "exploration-2" },
+      { id: "exploration-3" },
+    ];
+    const ordinary = [
+      ...Array.from({ length: 17 }, (_, index) => ({ id: `ordinary-${index + 1}` })),
+      ...exploration,
+      ...Array.from({ length: 30 }, (_, index) => ({ id: `ordinary-${index + 18}` })),
+    ];
+    const shifted = [
+      ...ordinary.slice(0, 5),
+      { id: "seed-1" }, { id: "seed-2" }, { id: "seed-3" },
+      ...ordinary.slice(5),
+    ].slice(0, 50);
+
+    const result = mergeSoulectionPreparationSlice(shifted, exploration, 50, 20);
+    expect(result).toHaveLength(50);
+    expect(result.slice(17, 20).map((track) => track.id)).toEqual(
+      exploration.map((track) => track.id),
+    );
+  });
+
   function materializationDb(options: { failSoulection?: boolean; failRanking?: boolean }) {
     const upsertedRows: Array<Record<string, unknown>> = [];
     return {
@@ -429,6 +503,7 @@ describe("soulection exploration preparation", () => {
           const query: any = {
             select() { return query; },
             eq(column: string, value: unknown) { filters[column] = value; return query; },
+            gt(column: string, value: unknown) { filters[column] = value; return query; },
             is(column: string, value: unknown) { filters[column] = value; return query; },
             in(column: string, values: unknown[]) { filters[column] = values; return query; },
             not() { return query; },

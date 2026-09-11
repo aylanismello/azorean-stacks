@@ -22,8 +22,20 @@ export async function getRequestUser(req: NextRequest) {
   return user;
 }
 
-export function canEditSharedCatalog(userId: string): boolean {
-  return (process.env.AZOREAN_CATALOG_EDITOR_IDS || "")
+type CatalogEditorUser = {
+  id: string;
+  app_metadata?: Record<string, unknown> | null;
+};
+
+export function canEditSharedCatalog(
+  user: CatalogEditorUser | string,
+  rawEditorIds = process.env.AZOREAN_CATALOG_EDITOR_IDS || "",
+): boolean {
+  const userId = typeof user === "string" ? user : user.id;
+  const hasCatalogEditorCapability =
+    typeof user === "object" && user.app_metadata?.catalog_editor === true;
+
+  return hasCatalogEditorCapability || rawEditorIds
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean)

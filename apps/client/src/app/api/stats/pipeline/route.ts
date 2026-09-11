@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
 
     // Engine telemetry is operational metadata. Keep it behind the same explicit
     // operator allowlist used for shared catalog mutations.
-    if (canEditSharedCatalog(user.id)) {
+    if (canEditSharedCatalog(user)) {
       const [connectedResult, lastEventResult, recentResult] = await Promise.all([
         db.from("engine_events")
           .select("created_at")
