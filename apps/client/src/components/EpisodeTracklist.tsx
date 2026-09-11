@@ -36,6 +36,7 @@ interface TrackListItem {
   // Ranked queue scoring metadata
   _match_type?: "full" | "artist" | "unknown";
   _ranked_score?: number;
+  _live_mutation?: boolean;
 }
 
 interface BaseTracklistProps {
@@ -476,7 +477,7 @@ export function EpisodeTracklist(props: TracklistProps) {
                   onContextMenu={(event) => openContextMenu(event, t)}
                   aria-haspopup={canonicalIdForRow(t) ? "menu" : undefined}
                   disabled={false}
-                  className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center gap-2.5 transition-colors group border ${
+                  className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center gap-2.5 transition-[color,background-color,border-color,transform,box-shadow] group border ${
                     seedBadge === "seed"
                       ? "bg-green-500/5 border-green-500/15 cursor-default"
                       : isPlaying
@@ -484,7 +485,7 @@ export function EpisodeTracklist(props: TracklistProps) {
                         : t.storage_path
                           ? "hover:bg-surface-2 border-surface-3/60"
                           : "hover:bg-surface-2/50 border-transparent"
-                  }`}
+                  } ${t._live_mutation ? "fyp-branch-mutation" : ""}`}
                 >
                   {/* Cover art thumbnail — 36x36 */}
                   <span className="relative w-9 h-9 flex-shrink-0 rounded-md overflow-hidden">

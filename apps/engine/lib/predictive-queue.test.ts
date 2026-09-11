@@ -8,6 +8,7 @@ import {
   isObviousPlaceholderCandidate,
   isPreparationTrack,
   materializeUserQueue,
+  markPreparationState,
   mergeStableQueueCandidates,
   mergeSoulectionPreparationSlice,
   SERIES_SEED_CONTEXT_BOOST,
@@ -506,9 +507,15 @@ describe("soulection exploration preparation", () => {
 
   function materializationDb(options: { failSoulection?: boolean; failRanking?: boolean; activeSeed?: boolean }) {
     const upsertedRows: Array<Record<string, unknown>> = [];
+    const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
     return {
       upsertedRows,
+      rpcCalls,
       db: {
+        async rpc(name: string, args: Record<string, unknown>) {
+          rpcCalls.push({ name, args });
+          return { data: 1, error: null };
+        },
         from(table: string) {
           const filters: Record<string, unknown> = {};
           let operation = "select";
@@ -522,6 +529,7 @@ describe("soulection exploration preparation", () => {
             order() { return query; },
             limit() { return query; },
             range() { return query; },
+            async maybeSingle() { return { data: null, error: null }; },
             update() { operation = "update"; return query; },
             upsert(rows: Array<Record<string, unknown>>) {
               operation = "upsert";
@@ -600,6 +608,22 @@ describe("soulection exploration preparation", () => {
     await expect(materializeUserQueue("user-a", db as any, 50)).resolves.toBe(0);
     expect(upsertedRows).toEqual([]);
   });
+
+  test("publishes one durable generation after seed queue materialization", async () => {
+    const { db, rpcCalls } = materializationDb({});
+    await materializeUserQueue("user-a", db as any, 50, 3, {
+      reason: "seed_refresh",
+      seedId: "seed-a",
+    });
+    expect(rpcCalls).toEqual([{
+      name: "publish_fyp_generation",
+      args: {
+        p_user_id: "user-a",
+        p_reason: "seed_refresh",
+        p_seed_id: "seed-a",
+      },
+    }]);
+  });
 });
 
 describe("filterClaimedPreparationTracks", () => {
@@ -617,6 +641,43 @@ describe("filterClaimedPreparationTracks", () => {
     expect(filterClaimedPreparationTracks(tracks, ["third", "first"]).map((track) => track.id)).toEqual([
       "first",
       "third",
+    ]);
+  });
+});
+
+describe("markPreparationState", () => {
+  test("publishes readiness once for every affected queue owner", async () => {
+    const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const query: any = {
+      update() { return query; },
+      eq() { return query; },
+      in() { return query; },
+      then(resolve: (value: unknown) => unknown) {
+        return Promise.resolve({ error: null }).then(resolve);
+      },
+    };
+    const db = {
+      from() { return query; },
+      async rpc(name: string, args: Record<string, unknown>) {
+        rpcCalls.push({ name, args });
+        return { data: 1, error: null };
+      },
+    };
+    const track = {
+      id: "track-a",
+      queue_user_ids: ["user-a", "user-a", "user-b"],
+    } as PreparationTrack;
+
+    await markPreparationState(track, "ready", null, db as any);
+    expect(rpcCalls).toEqual([
+      {
+        name: "publish_fyp_generation",
+        args: { p_user_id: "user-a", p_reason: "ranking_refresh", p_seed_id: null },
+      },
+      {
+        name: "publish_fyp_generation",
+        args: { p_user_id: "user-b", p_reason: "ranking_refresh", p_seed_id: null },
+      },
     ]);
   });
 });

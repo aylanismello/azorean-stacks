@@ -55,7 +55,7 @@ export function needsSeedFypRefresh(seed: SeedFypRefreshRecord): boolean {
 export async function recoverSeedFypRefreshes(
   seeds: SeedFypRefreshRecord[],
   claim: (seed: SeedFypRefreshRecord) => Promise<string | null>,
-  refresh: (userId: string) => Promise<void>,
+  refresh: (ownerUserId: string, seed: SeedFypRefreshRecord) => Promise<void>,
   checkpoint: (seed: SeedFypRefreshRecord, claimToken: string) => Promise<void>,
   release: (seed: SeedFypRefreshRecord, claimToken: string) => Promise<void>,
   onError: (seed: SeedFypRefreshRecord, error: unknown) => void = () => {},
@@ -69,7 +69,7 @@ export async function recoverSeedFypRefreshes(
       claimToken = await claim(seed);
       if (!claimToken) continue;
       claimed++;
-      await refresh(seed.user_id!);
+      await refresh(seed.user_id!, seed);
       await checkpoint(seed, claimToken);
       recovered++;
     } catch (error) {

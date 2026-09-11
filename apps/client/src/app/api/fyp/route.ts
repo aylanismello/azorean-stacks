@@ -171,7 +171,25 @@ export async function GET(req: NextRequest) {
   });
   const withSeriesExploration = injectSeriesExploration(diversified, seriesExploration);
 
+  const generationResult = await db.from("user_fyp_generations")
+    .select("generation,reason,seed_id,updated_at")
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (generationResult.error) {
+    return NextResponse.json({ error: generationResult.error.message }, { status: 500 });
+  }
+  const generation = generationResult.data || {
+    generation: 0,
+    reason: "ranking_refresh",
+    seed_id: null,
+    updated_at: null,
+  };
+
   // `total` describes the actual personalized page queue. The previous global
   // count included other users' already-actioned rows and was not an FYP count.
-  return NextResponse.json({ tracks: withSeriesExploration, total: withSeriesExploration.length });
+  return NextResponse.json({
+    tracks: withSeriesExploration,
+    total: withSeriesExploration.length,
+    generation,
+  });
 }

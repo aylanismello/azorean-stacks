@@ -11,6 +11,14 @@ import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
 import { destinationQueueStartIndex } from "@/lib/queue-navigation";
 import { canonicalPlayerTrackId, displayedPlayerTrackId, playerTrackActionId } from "@/lib/player-track-identity";
 import { formatRankingScore, rankingContributions } from "@/lib/ranking-display";
+import { createClient as createBrowserClient } from "@/lib/supabase-browser";
+import {
+  describeFypMutation,
+  fypGrowthLabel,
+  reconcileLiveFypQueue,
+  shouldApplyFypGeneration,
+  type FypGeneration,
+} from "@/lib/live-fyp";
 
 export default function StackPage() {
   return (
@@ -170,6 +178,15 @@ function StackPageContent() {
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [hideLowScored, setHideLowScored] = useState(false);
+  const [fypGrowth, setFypGrowth] = useState<{
+    label: string;
+    reason: FypGeneration["reason"];
+  } | null>(null);
+  const [liveMutationIds, setLiveMutationIds] = useState<Set<string>>(() => new Set());
+  const lastFypGenerationRef = useRef(0);
+  const playerQueueRef = useRef(globalPlayer.queue);
+  const growthTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveRefreshChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const queueViewKey = episodeId
     ? `episode:${episodeId}`
@@ -199,6 +216,10 @@ function StackPageContent() {
   // Ref for global player's current track (avoids stale closures in fetchTracks)
   const playerCurrentTrackRef = useRef(globalPlayer.currentTrack);
   useEffect(() => { playerCurrentTrackRef.current = globalPlayer.currentTrack; }, [globalPlayer.currentTrack]);
+  useEffect(() => { playerQueueRef.current = globalPlayer.queue; }, [globalPlayer.queue]);
+  useEffect(() => () => {
+    if (growthTimerRef.current) clearTimeout(growthTimerRef.current);
+  }, []);
 
   useEffect(() => {
     setAdvancingEpisode(false);
@@ -235,17 +256,65 @@ function StackPageContent() {
     return url;
   }, [episodeId, hideLowScored, fromSeedId, genreFilter, seedFilter]);
 
-  const fetchTracks = useCallback(async () => {
+  const fetchTracks = useCallback(async (
+    mode: "navigation" | "live" = "navigation",
+    signal?: AbortSignal,
+  ) => {
     try {
-      const res = await fetch(buildUrl());
+      const res = await fetch(buildUrl(), { cache: "no-store", signal });
       if (!res.ok) throw new Error(`Failed to load tracks (${res.status})`);
       const data = await res.json();
+      if (signal?.aborted) return;
       const apiTracks: Track[] = data.tracks || [];
       const playerTracks = apiTracks.map(toPlayerTrack);
+      const generation = data.generation as FypGeneration | undefined;
+      const lastGeneration = lastFypGenerationRef.current;
+
+      if (generation && generation.generation < lastGeneration) return;
+      if (
+        mode === "live"
+          && generation
+          && !shouldApplyFypGeneration(lastGeneration, generation.generation)
+      ) return;
+      if (generation) {
+        lastFypGenerationRef.current = Math.max(
+          lastFypGenerationRef.current,
+          generation.generation,
+        );
+      }
 
       setTotal(data.total || 0);
       setError(null);
       setAdvancingEpisode(false);
+
+      // Live 4U reconciliation owns only the queue ordering. setQueue preserves
+      // the loaded audio element and finds the playing track's new position.
+      if (mode === "live" && !episodeId) {
+        const previousQueue = playerQueueRef.current;
+        const reconciledQueue = reconcileLiveFypQueue(
+          previousQueue,
+          playerTracks,
+          playerCurrentTrackRef.current?.id,
+        );
+        const mutation = describeFypMutation(
+          previousQueue.map((track) => track.id),
+          reconciledQueue.map((track) => track.id),
+        );
+        globalPlayer.setQueue(reconciledQueue);
+        playerQueueRef.current = reconciledQueue;
+        setHasEpisodeTracks(false);
+        setLiveMutationIds(new Set(mutation.changedIds));
+        setFypGrowth(mutation.changedIds.length > 0 ? {
+          label: fypGrowthLabel(mutation, generation?.reason || "ranking_refresh"),
+          reason: generation?.reason || "ranking_refresh",
+        } : null);
+        if (growthTimerRef.current) clearTimeout(growthTimerRef.current);
+        growthTimerRef.current = setTimeout(() => {
+          setFypGrowth(null);
+          setLiveMutationIds(new Set());
+        }, 5_000);
+        return;
+      }
 
       // Hand tracks to the provider — it owns the queue. Preserve order only
       // when returning to the same view; never append a seed/genre queue into
@@ -288,15 +357,68 @@ function StackPageContent() {
       activeQueueViewRef.current = queueViewKey;
       sessionStorage.setItem("stacks-active-queue-view", queueViewKey);
     } catch (err) {
+      if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setError(err instanceof Error ? err.message : "Failed to load tracks");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [buildUrl, episodeId, queueViewKey, spotifyConnected]);
 
   useEffect(() => {
     fetchTracks();
   }, [fetchTracks]);
+
+  useEffect(() => {
+    if (!isHomeFyp) return;
+    const supabase = createBrowserClient();
+    let mounted = true;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    const controller = new AbortController();
+
+    const reconcile = () => {
+      if (!mounted) return;
+      liveRefreshChainRef.current = liveRefreshChainRef.current
+        .catch(() => {})
+        .then(() => mounted ? fetchTracks("live", controller.signal) : undefined);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") reconcile();
+    };
+
+    void supabase.auth.getUser().then(({ data }) => {
+      if (!mounted || !data.user) return;
+      channel = supabase
+        .channel(`live-fyp-${data.user.id}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "user_fyp_generations",
+            filter: `user_id=eq.${data.user.id}`,
+          },
+          (payload) => {
+            const next = payload.new as Partial<FypGeneration>;
+            if (
+              typeof next.generation === "number"
+                && shouldApplyFypGeneration(lastFypGenerationRef.current, next.generation)
+            ) reconcile();
+          },
+        )
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") reconcile();
+        });
+    });
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      mounted = false;
+      controller.abort();
+      liveRefreshChainRef.current = Promise.resolve();
+      document.removeEventListener("visibilitychange", onVisible);
+      if (channel) void supabase.removeChannel(channel);
+    };
+  }, [fetchTracks, isHomeFyp]);
 
   const advanceToNextEpisode = useCallback(async () => {
     setAdvancingEpisode(true);
@@ -738,7 +860,7 @@ function StackPageContent() {
               {queue.length} track{queue.length !== 1 ? "s" : ""} found but audio is still being processed. Check back soon.
             </p>
             <button
-              onClick={fetchTracks}
+              onClick={() => { void fetchTracks(); }}
               className="mt-6 px-5 py-2 text-sm bg-surface-2 hover:bg-surface-3 rounded-lg text-muted hover:text-foreground transition-colors"
             >
               Refresh
@@ -782,7 +904,7 @@ function StackPageContent() {
               No tracks waiting right now. New discoveries will appear here when the agent finds something.
             </p>
             <button
-              onClick={fetchTracks}
+              onClick={() => { void fetchTracks(); }}
               className="mt-6 px-5 py-2 text-sm bg-surface-2 hover:bg-surface-3 rounded-lg text-muted hover:text-foreground transition-colors"
             >
               Refresh
@@ -815,6 +937,7 @@ function StackPageContent() {
     vote_status: t.vote_status || t.status || "pending",
     _match_type: t._match_type,
     _ranked_score: t._ranked_score,
+    _live_mutation: liveMutationIds.has(t.id),
   }));
 
   // When viewing a specific seed's stack, derive seed context from URL params
@@ -827,7 +950,7 @@ function StackPageContent() {
 
   // ── Main stack view ──
   return (
-    <div className={`px-4 pt-2 pb-0 ${mobileHeightClass} flex flex-col overflow-hidden ${desktopPlayerFrameClass}`}>
+    <div className={`relative px-4 pt-2 pb-0 ${mobileHeightClass} flex flex-col overflow-hidden ${desktopPlayerFrameClass}`}>
       {/* Top bar — stack identity always visible */}
       <div className="relative flex items-center justify-between mb-3 md:mb-2 md:max-w-6xl md:mx-auto md:w-full md:flex-shrink-0 min-h-[40px]">
         {/* Left: filtered views can return to their collection. Home is the FYP. */}
@@ -883,6 +1006,38 @@ function StackPageContent() {
         </button>
       </div>
 
+      {isHomeFyp && fypGrowth && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fyp-growth-toast pointer-events-none absolute left-1/2 top-12 z-30 -translate-x-1/2"
+        >
+          <div className="flex items-center gap-2.5 rounded-full border border-emerald-300/20 bg-surface-1/95 px-3 py-2 shadow-[0_12px_40px_rgba(16,185,129,0.18)] backdrop-blur-md">
+            <svg
+              aria-hidden="true"
+              width="28"
+              height="22"
+              viewBox="0 0 28 22"
+              fill="none"
+              className="fyp-growth-tree text-emerald-300"
+            >
+              <path d="M3 19C8 16 9 11 10 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              <path d="M9 12C14 12 17 9 19 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              <path d="M8 15C14 16 18 17 24 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              <circle cx="10" cy="4" r="2" fill="currentColor" />
+              <circle cx="19" cy="5" r="2" fill="currentColor" />
+              <circle cx="24" cy="13" r="2" fill="currentColor" />
+            </svg>
+            <div className="whitespace-nowrap">
+              <p className="text-[11px] font-semibold text-foreground">{fypGrowth.label}</p>
+              <p className="text-[9px] text-muted">
+                {fypGrowth.reason === "seed_refresh" ? "following your new direction" : "new paths are ready"}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Desktop: tracklist always visible on left, card on right */}
       <div className="flex-1 min-h-0 flex flex-col md:flex-row md:gap-6 md:max-w-6xl md:mx-auto md:w-full">
         {/* Desktop tracklist sidebar — always visible */}
@@ -906,7 +1061,9 @@ function StackPageContent() {
         </div>
 
         {/* Track card — fills remaining space on mobile, centered on desktop */}
-        <div className="flex-1 min-h-0 md:flex md:items-center md:justify-center">
+        <div className={`flex-1 min-h-0 md:flex md:items-center md:justify-center ${
+          liveMutationIds.has(currentTrack.id) ? "fyp-card-mutation" : ""
+        }`}>
           <TrackCard
             key={currentTrack.id}
             track={currentTrackLike}

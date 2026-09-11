@@ -656,6 +656,10 @@ export async function materializeUserQueue(
   db: Db = getSupabase(),
   target = QUEUE_TARGET,
   freshInsertions = 0,
+  generationContext: {
+    reason?: "ranking_refresh" | "seed_refresh";
+    seedId?: string | null;
+  } = {},
 ): Promise<number> {
   const queueTarget = Math.max(0, Math.floor(target));
   // Over-fetch before both quality filtering and diversification so a dominant
@@ -756,6 +760,15 @@ export async function materializeUserQueue(
       .eq("user_id", userId)
       .in("track_id", staleIds);
     if (staleResult.error) throw new Error(`stale queue retirement: ${staleResult.error.message}`);
+  }
+
+  const generationResult = await db.rpc("publish_fyp_generation", {
+    p_user_id: userId,
+    p_reason: generationContext.reason || (freshInsertions > 0 ? "seed_refresh" : "ranking_refresh"),
+    p_seed_id: generationContext.seedId || null,
+  });
+  if (generationResult.error) {
+    throw new Error(`FYP generation publish: ${generationResult.error.message}`);
   }
   return rows.length;
 }
@@ -940,4 +953,21 @@ export async function markPreparationState(
     .eq("track_id", track.id)
     .in("user_id", track.queue_user_ids);
   if (result.error) throw new Error(`mark preparation ${state}: ${result.error.message}`);
+  if (state === "ready") {
+    const userIds = Array.from(new Set(track.queue_user_ids));
+    const publications = await Promise.all(userIds.map((userId) => db.rpc("publish_fyp_generation", {
+      p_user_id: userId,
+      p_reason: "ranking_refresh",
+      p_seed_id: null,
+    })));
+    publications.forEach((publication: any, index) => {
+      if (publication.error) {
+        // Readiness is already durable. A later queue reconciliation republishes
+        // the generation, so notification failure must not mark playable audio failed.
+        console.error(
+          `[predictive-queue] ready generation publish failed for user ${userIds[index]}: ${publication.error.message}`,
+        );
+      }
+    });
+  }
 }

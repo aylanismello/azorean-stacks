@@ -47,7 +47,11 @@ const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json
 const decisionRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const serializeQueueMutation = createQueueMutationSerializer();
 
-async function refreshPersonalizedQueue(userId: string, freshInsertions = 0): Promise<void> {
+async function refreshPersonalizedQueue(
+  userId: string,
+  freshInsertions = 0,
+  seedId: string | null = null,
+): Promise<void> {
   await refreshDecisionQueue(userId, {
     refreshPersonalizedScores: async () => {
       const proc = Bun.spawn([Bun.which("bun") || "bun", "run", "scripts/update-signals.ts", "--user-id", userId], {
@@ -56,7 +60,16 @@ async function refreshPersonalizedQueue(userId: string, freshInsertions = 0): Pr
       const exitCode = await proc.exited;
       if (exitCode !== 0) throw new Error(`signal refresh exited ${exitCode}`);
     },
-    materializeUserQueue: () => materializeUserQueue(userId, db, QUEUE_TARGET, freshInsertions),
+    materializeUserQueue: () => materializeUserQueue(
+      userId,
+      db,
+      QUEUE_TARGET,
+      freshInsertions,
+      {
+        reason: freshInsertions > 0 ? "seed_refresh" : "ranking_refresh",
+        seedId,
+      },
+    ),
   });
 }
 
@@ -1008,7 +1021,7 @@ async function refreshSeedFypWithCheckpoint(
     ) return false;
     claimToken = await claimSeedFypRefresh(seed);
     if (!claimToken) return false;
-    await serializeQueueMutation(() => refreshPersonalizedQueue(seed!.user_id, 3));
+    await serializeQueueMutation(() => refreshPersonalizedQueue(seed!.user_id, 3, seedId));
     await afterRefresh?.(seed.user_id);
     await writeSeedFypCheckpoint(seed, claimToken);
     return true;
@@ -1053,7 +1066,9 @@ async function recoverMissedSeedFypRefreshes(): Promise<void> {
     const result = await recoverSeedFypRefreshes(
       seeds,
       claimSeedFypRefresh,
-      (ownerUserId) => serializeQueueMutation(() => refreshPersonalizedQueue(ownerUserId, 3)),
+      (ownerUserId, pendingSeed) => serializeQueueMutation(() =>
+        refreshPersonalizedQueue(ownerUserId, 3, pendingSeed.id)
+      ),
       writeSeedFypCheckpoint,
       releaseSeedFypClaim,
       (seed, refreshError) => log(
@@ -2526,12 +2541,16 @@ async function processDownloadRequest(requestId: string) {
           completed_at: new Date().toISOString(),
         }).eq("id", requestId);
       }
-      await db.from("audio_preparation_queue").update({
-        state: "ready",
-        ready_at: new Date().toISOString(),
-        last_error: null,
-        updated_at: new Date().toISOString(),
-      }).eq("track_id", req.track_id);
+      const { data: queueOwners, error: queueOwnerError } = await db
+        .from("audio_preparation_queue")
+        .select("user_id")
+        .eq("track_id", req.track_id);
+      if (queueOwnerError) throw new Error(`Queue owner lookup failed: ${queueOwnerError.message}`);
+      await markPreparationState({
+        ...track,
+        id: req.track_id,
+        queue_user_ids: Array.from(new Set((queueOwners || []).map((row: any) => row.user_id).filter(Boolean))),
+      }, "ready", null, db);
 
       log("ok", `[DL Request] Completed: ${track.artist} – ${track.title}`);
     } else {
