@@ -36,11 +36,17 @@ export function mergeStableQueueCandidates(
   preferredFreshTrackIds?: Set<string>,
 ): QueueCandidate[] {
   const boundedTarget = Math.max(0, Math.floor(target));
+  const rankedById = new Map(ranked.map((track) => [track.id, track]));
   const seen = new Set<string>();
   const stable = existing.filter((track) => {
     if (!track.id || seen.has(track.id)) return false;
     seen.add(track.id);
     return true;
+  }).map((track) => {
+    const refreshed = rankedById.get(track.id);
+    return refreshed
+      ? { ...track, ...refreshed, metadata: { ...(track.metadata || {}), ...(refreshed.metadata || {}) } }
+      : track;
   });
   const freshSeen = new Set(seen);
   const allFresh = ranked.filter((track) => {

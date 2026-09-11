@@ -31,6 +31,16 @@ describe("mergeStableQueueCandidates", () => {
     ).map((row) => row.id)).toEqual(["old-1", "old-2", "new-1", "new-2"]);
   });
 
+  test("ordinary refresh updates retained scores without changing order", () => {
+    const result = mergeStableQueueCandidates(
+      [{ id: "old-1", taste_score: 0.8, metadata: { _score_components: { seed_freshness: 0.3 } } }],
+      [{ id: "old-1", taste_score: 0.2, metadata: { _score_components: { artist: 0.2 } } }],
+      1,
+    );
+    expect(result[0].taste_score).toBe(0.2);
+    expect(result[0].metadata?._score_components).toEqual({ artist: 0.2 });
+  });
+
   test("seed refresh injects only a bounded fresh lane after the protected front", () => {
     expect(mergeStableQueueCandidates(
       [track("old-1"), track("old-2"), track("old-3"), track("old-4")],
