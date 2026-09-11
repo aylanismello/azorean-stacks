@@ -10,6 +10,7 @@ import { useSpotify } from "@/components/SpotifyProvider";
 import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
 import { destinationQueueStartIndex } from "@/lib/queue-navigation";
 import { canonicalPlayerTrackId, displayedPlayerTrackId, playerTrackActionId } from "@/lib/player-track-identity";
+import { formatRankingScore, rankingContributions } from "@/lib/ranking-display";
 
 export default function StackPage() {
   return (
@@ -1014,6 +1015,7 @@ function TrackContextModal({
   const rankedSeedName = (track as any)._seed_name as string | undefined;
   const rankedScore = (track as any)._ranked_score as number | undefined;
   const scoreComponents = (track as any)._score_components as Record<string, number> | undefined;
+  const displayedScoreComponents = rankingContributions(scoreComponents);
   const sourceName = discoverySourceLabel(track.episode?.source || track.source);
   const sourceUrl = track.source_url || track.episode?.url || null;
   const episodeLabel = track.episode?.title || track.source_context || episodeTitle || null;
@@ -1118,11 +1120,14 @@ function TrackContextModal({
             <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Taste Signals</p>
             <div className="flex flex-wrap gap-2">
               {typeof rankedScore === "number" && (
-                <span className={`text-xs font-mono px-2 py-0.5 rounded ${rankedScore >= 50 ? "bg-green-500/15 text-green-400" : rankedScore >= 25 ? "bg-amber-500/15 text-amber-400" : "bg-red-500/15 text-red-400"}`}>
-                  rank {rankedScore}/100
+                <span
+                  title="Relative ranking score, not a percentage"
+                  className={`text-xs font-mono px-2 py-0.5 rounded ${rankedScore >= 0.25 ? "bg-green-500/15 text-green-400" : rankedScore >= 0 ? "bg-amber-500/15 text-amber-400" : "bg-red-500/15 text-red-400"}`}
+                >
+                  {formatRankingScore(rankedScore)}
                 </span>
               )}
-              {typeof track.taste_score === "number" && track.taste_score !== 0 && (
+              {typeof rankedScore !== "number" && typeof track.taste_score === "number" && track.taste_score !== 0 && (
                 <span className={`text-xs font-mono px-2 py-0.5 rounded ${track.taste_score > 0 ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
                   taste {track.taste_score > 0 ? "+" : ""}{track.taste_score.toFixed(2)}
                 </span>
@@ -1131,12 +1136,12 @@ function TrackContextModal({
                 <span className="text-xs px-2 py-0.5 rounded bg-surface-2 text-muted">{genre}</span>
               )}
             </div>
-            {scoreComponents && (
+            {displayedScoreComponents && (
               <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {Object.entries(scoreComponents).map(([key, val]) => (
+                {Object.entries(displayedScoreComponents).map(([key, val]) => (
                   val !== 0 && (
                     <span key={key} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-2 text-muted">
-                      {key.replace(/_/g, " ")} {val > 0 ? "+" : ""}{val}
+                      {key.replace(/_/g, " ")} {val > 0 ? "+" : ""}{val.toFixed(3)}
                     </span>
                   )
                 ))}
