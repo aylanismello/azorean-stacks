@@ -1,11 +1,11 @@
 ---
 id: TASK-26
 title: Make fresh-seed FYP promotion restart-safe
-status: In Progress
+status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-11 22:27'
-updated_date: '2026-09-11 23:21'
+updated_date: '2026-09-11 23:25'
 labels: []
 dependencies: []
 priority: high
@@ -19,11 +19,11 @@ Persist and recover the one-time fresh-seed 4U promotion so completed seeds cann
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 New user-owned seeds record that a fresh 4U refresh is required
-- [ ] #2 A successful refresh records a durable completion checkpoint
-- [ ] #3 Worker startup and polling recover completed seeds missing the checkpoint
-- [ ] #4 Recovery remains user-scoped, serialized, bounded to three candidates, and retry-safe
-- [ ] #5 Regression tests, typechecks, builds, worker restart, and production readback pass
+- [x] #1 New user-owned seeds record that a fresh 4U refresh is required
+- [x] #2 A successful refresh records a durable completion checkpoint
+- [x] #3 Worker startup and polling recover completed seeds missing the checkpoint
+- [x] #4 Recovery remains user-scoped, serialized, bounded to three candidates, and retry-safe
+- [x] #5 Regression tests, typechecks, builds, worker restart, and production readback pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -62,3 +62,21 @@ Persist and recover the one-time fresh-seed 4U promotion so completed seeds cann
 - Final startup recovery fix paginates both active seeds and each episode/run link result set independently; no PostgREST row cap can hide the newest legacy seed or misclassify processed seeds.
 - Final gates: engine 71/71, client 139/139, both TypeScript checks, client production build, runner syntax, diff check, and both audits passed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Made fresh-seed 4U promotion durable and restart-safe.
+
+Changes:
+- Added required/claimed/refreshed generation markers, trigger enrollment, bounded backfill, and service-role-only atomic claims.
+- Fenced processing and checkpoint writes by seed, owner, active state, and exact generation.
+- Routed user-owned seeds through one priority pipeline, CAS-adopting legacy stateless seeds and paginating every startup scan.
+- Recovered missed refreshes at startup and periodically without disturbing the protected queue prefix.
+
+Verification:
+- Engine 71/71 and client 139/139 tests passed.
+- TypeScript, client production build, runner syntax, diff check, and both audits passed.
+- Vercel deployed commit 59353d9 successfully.
+- Restarted worker drained 3 pending generations to 0 pending/0 claimed with 3 durable checkpoints.
+<!-- SECTION:FINAL_SUMMARY:END -->
