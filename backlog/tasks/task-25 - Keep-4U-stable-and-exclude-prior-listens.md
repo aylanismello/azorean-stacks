@@ -1,11 +1,11 @@
 ---
 id: TASK-25
 title: Keep 4U stable and exclude prior listens
-status: In Progress
+status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-11 21:33'
-updated_date: '2026-09-11 22:14'
+updated_date: '2026-09-11 22:17'
 labels: []
 dependencies: []
 ---
@@ -18,12 +18,12 @@ Prevent queue rematerialization from replacing the active listening slate, keep 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Ordinary refresh preserves active pending queue order and only backfills gaps
-- [ ] #2 Seed refresh moves at most three newest-seed candidates after a protected five-track prefix
-- [ ] #3 Shared tracks.status never renders as the user's opinion
-- [ ] #4 Qualified played tracks are excluded from ranking and API responses
-- [ ] #5 Regression tests pass
-- [ ] #6 Active seeds and re-seeds are excluded from ordinary and exploration 4U lanes
+- [x] #1 Ordinary refresh preserves active pending queue order and only backfills gaps
+- [x] #2 Seed refresh moves at most three newest-seed candidates after a protected five-track prefix
+- [x] #3 Shared tracks.status never renders as the user's opinion
+- [x] #4 Qualified played tracks are excluded from ranking and API responses
+- [x] #5 Regression tests pass
+- [x] #6 Active seeds and re-seeds are excluded from ordinary and exploration 4U lanes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -41,3 +41,15 @@ Prevent queue rematerialization from replacing the active listening slate, keep 
 - Found active manual seed Strings of Eden at rank 4 because pending eligibility did not subtract active seeds.
 - Added user-scoped active-seed exclusion in client and engine ordinary/exploration paths; production-data probe against local code returns zero active seed tracks.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed 4U queue continuity and eligibility so routine refreshes preserve the active slate while removing user-actioned, qualified-played, and active seed/re-seed tracks. Personalized response state no longer inherits shared catalog opinions; fresh-seed insertion remains bounded behind the protected prefix; queue mutations remain serialized; and client/engine Soulection exploration applies the same user-scoped exclusions.
+
+Verification:
+- Client: 137 tests, TypeScript, production build
+- Engine: 66 tests, TypeScript, runner syntax
+- Production data: zero active seed tracks returned by corrected selection; Strings of Eden excluded
+- Deployed FYP endpoint: 200 with zero seed-badged rows
+<!-- SECTION:FINAL_SUMMARY:END -->
