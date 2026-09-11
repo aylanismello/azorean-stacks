@@ -331,7 +331,21 @@ async function pendingUserTrackIds(db: Db, userId: string): Promise<string[]> {
     for (const row of rows) playedTrackIds.add(row.track_id);
     if (rows.length < 1000) break;
   }
-  return trackIds.filter((trackId) => !playedTrackIds.has(trackId));
+
+  const seededTrackIds = new Set<string>();
+  for (let start = 0; ; start += 1000) {
+    const result = await db.from("seeds")
+      .select("track_id")
+      .eq("user_id", userId)
+      .eq("active", true)
+      .not("track_id", "is", null)
+      .range(start, start + 999);
+    const rows = requireOk(result, "active seed exclusion");
+    for (const row of rows) seededTrackIds.add(row.track_id);
+    if (rows.length < 1000) break;
+  }
+
+  return trackIds.filter((trackId) => !playedTrackIds.has(trackId) && !seededTrackIds.has(trackId));
 }
 
 async function activeQueueCandidates(
@@ -551,12 +565,21 @@ export async function soulectionExplorationCandidates(
   const candidateIds = [...new Set(entries.map((entry) => entry.track_id).filter(Boolean))] as string[];
   if (!candidateIds.length) return [];
 
-  const actionedResult = await db.from("user_tracks")
-    .select("track_id")
-    .eq("user_id", userId)
-    .in("track_id", candidateIds);
-  const excluded = new Set(requireOk(actionedResult, "Soulection user exclusion lookup")
-    .map((row: any) => row.track_id));
+  const [actionedResult, seededResult] = await Promise.all([
+    db.from("user_tracks")
+      .select("track_id")
+      .eq("user_id", userId)
+      .in("track_id", candidateIds),
+    db.from("seeds")
+      .select("track_id")
+      .eq("user_id", userId)
+      .eq("active", true)
+      .in("track_id", candidateIds),
+  ]);
+  const excluded = new Set([
+    ...requireOk(actionedResult, "Soulection user exclusion lookup"),
+    ...requireOk(seededResult, "Soulection seed exclusion lookup"),
+  ].map((row: any) => row.track_id));
   const buckets = new Map(episodeIds.map((id) => [id, [] as SoulectionEntry[]]));
   for (const entry of entries) buckets.get(entry.episode_id)!.push(entry);
   const cursors = new Map(episodeIds.map((id) => [id, 0]));

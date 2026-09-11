@@ -87,7 +87,7 @@ async function actionedTrackIds(db: any, userId: string, trackIds: string[]) {
   const result = new Set<string>();
   for (let start = 0; start < trackIds.length; start += USER_TRACK_IN_BATCH_SIZE) {
     const batch = trackIds.slice(start, start + USER_TRACK_IN_BATCH_SIZE);
-    const [opinions, plays] = await Promise.all([
+    const [opinions, plays, seeds] = await Promise.all([
       db.from("user_tracks")
         .select("track_id")
         .eq("user_id", userId)
@@ -97,10 +97,18 @@ async function actionedTrackIds(db: any, userId: string, trackIds: string[]) {
         .eq("user_id", userId)
         .in("track_id", batch)
         .gt("play_count", 0),
+      db.from("seeds")
+        .select("track_id")
+        .eq("user_id", userId)
+        .eq("active", true)
+        .in("track_id", batch),
     ]);
     if (opinions.error) throw opinions.error;
     if (plays.error) throw plays.error;
-    for (const row of [...(opinions.data || []), ...(plays.data || [])]) result.add(row.track_id);
+    if (seeds.error) throw seeds.error;
+    for (const row of [...(opinions.data || []), ...(plays.data || []), ...(seeds.data || [])]) {
+      result.add(row.track_id);
+    }
   }
   return result;
 }

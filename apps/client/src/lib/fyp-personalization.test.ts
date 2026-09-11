@@ -4,6 +4,7 @@ import { loadPersonalizedFyp } from "./fyp-personalization";
 type Fixture = {
   pending?: Array<{ track_id: string; status: string }>;
   played?: Array<{ track_id: string }>;
+  seeds?: Array<{ track_id: string; active: boolean }>;
   ready?: any[];
   scores?: any[];
   rankedScores?: any[];
@@ -30,6 +31,7 @@ function fixtureDb(fixture: Fixture) {
       let data: any[] | any | null = [];
       if (this.table === "user_tracks") data = fixture.pending || [];
       if (this.table === "user_track_play_totals") data = fixture.played || [];
+      if (this.table === "seeds") data = fixture.seeds || [];
       if (this.table === "audio_preparation_queue") data = fixture.ready || [];
       if (this.table === "user_track_scores") {
         data = this.columns.includes("track:tracks") ? fixture.rankedScores || [] : fixture.scores || [];
@@ -100,6 +102,22 @@ describe("loadPersonalizedFyp", () => {
       limit: 20, offset: 0, hideLow: false,
     });
     expect(rows).toEqual([]);
+  });
+
+  test("excludes an active seed or re-seed even if its opinion is pending", async () => {
+    const fixture = fixtureDb({
+      pending: [{ track_id: "track-1", status: "pending" }],
+      seeds: [{ track_id: "track-1", active: true }],
+      ready: [{ track_id: "track-1", rank: 1, track: readyTrack }],
+      scores: [{ track_id: "track-1", score: 0.91, confidence: 0.87, components: {} }],
+    });
+    const rows = await loadPersonalizedFyp(fixture.db, "user-a", {
+      limit: 20, offset: 0, hideLow: false,
+    });
+    expect(rows).toEqual([]);
+    const seedCall = fixture.calls.find((call) => call.table === "seeds")!;
+    expect(seedCall.filters).toContainEqual(["eq", "user_id", "user-a"]);
+    expect(seedCall.filters).toContainEqual(["eq", "active", true]);
   });
 
   test("never invokes the weak global FYP RPC for filtered or unfiltered loads", async () => {

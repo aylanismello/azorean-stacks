@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pico'
 created_date: '2026-09-11 21:33'
-updated_date: '2026-09-11 21:33'
+updated_date: '2026-09-11 22:14'
 labels: []
 dependencies: []
 ---
@@ -23,6 +23,7 @@ Prevent queue rematerialization from replacing the active listening slate, keep 
 - [ ] #3 Shared tracks.status never renders as the user's opinion
 - [ ] #4 Qualified played tracks are excluded from ranking and API responses
 - [ ] #5 Regression tests pass
+- [ ] #6 Active seeds and re-seeds are excluded from ordinary and exploration 4U lanes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -33,3 +34,10 @@ Prevent queue rematerialization from replacing the active listening slate, keep 
 3. Preserve active queue order; only bounded seed injection may change it
 4. Verify against production data and deploy
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+- Found active manual seed Strings of Eden at rank 4 because pending eligibility did not subtract active seeds.
+- Added user-scoped active-seed exclusion in client and engine ordinary/exploration paths; production-data probe against local code returns zero active seed tracks.
+<!-- SECTION:NOTES:END -->

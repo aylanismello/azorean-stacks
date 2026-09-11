@@ -35,6 +35,17 @@ async function getPendingTrackIds(db: any, userId: string) {
     for (const played of data || []) pending.delete(played.track_id);
     if (!data || data.length < QUERY_PAGE_SIZE) break;
   }
+  for (let page = 0; ; page++) {
+    const { data, error } = await db.from("seeds")
+      .select("track_id")
+      .eq("user_id", userId)
+      .eq("active", true)
+      .not("track_id", "is", null)
+      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
+    if (error) throw error;
+    for (const seed of data || []) pending.delete(seed.track_id);
+    if (!data || data.length < QUERY_PAGE_SIZE) break;
+  }
   return pending;
 }
 

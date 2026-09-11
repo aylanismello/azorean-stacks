@@ -387,7 +387,8 @@ describe("soulection exploration preparation", () => {
       episode_track_entries: [
         { episode_id: "release-new", position: 0, track_id: "actioned", resolution_state: "canonical", track: track("actioned", "https://youtube.test/actioned") },
         { episode_id: "release-new", position: 1, track_id: "blank", resolution_state: "canonical", track: track("blank", "   ") },
-        { episode_id: "release-new", position: 2, track_id: "release-a", resolution_state: "canonical", track: track("release-a", "https://youtube.test/release-a") },
+        { episode_id: "release-new", position: 2, track_id: "seeded", resolution_state: "canonical", track: track("seeded", "https://youtube.test/seeded") },
+        { episode_id: "release-new", position: 3, track_id: "release-a", resolution_state: "canonical", track: track("release-a", "https://youtube.test/release-a") },
         { episode_id: "aired-new", position: 0, track_id: "stored", resolution_state: "canonical", track: track("stored", "", "tracks/stored.mp3") },
         { episode_id: "aired-new", position: 1, track_id: "aired-a", resolution_state: "canonical", track: track("aired-a", "https://youtube.test/aired-a") },
         { episode_id: "aired-new", position: 2, track_id: "aired-b", resolution_state: "canonical", track: track("aired-b", "https://youtube.test/aired-b") },
@@ -397,6 +398,7 @@ describe("soulection exploration preparation", () => {
         { user_id: "user-a", track_id: "actioned", status: "rejected" },
         { user_id: "user-b", track_id: "release-a", status: "approved" },
       ],
+      seeds: [{ user_id: "user-a", track_id: "seeded", active: true }],
     };
     const operations: string[] = [];
 
@@ -408,7 +410,7 @@ describe("soulection exploration preparation", () => {
     expect(result.map((candidate) => candidate.episode_id)).toEqual(["release-new", "aired-new", "aired-new"]);
     expect(result.every((candidate) => candidate.metadata?._series_exploration === true)).toBe(true);
     expect(operations).toEqual([
-      "select:episodes", "select:episodes", "select:episode_track_entries", "select:user_tracks",
+      "select:episodes", "select:episodes", "select:episode_track_entries", "select:user_tracks", "select:seeds",
     ]);
     expect(operations.some((operation) => /^(insert|update|upsert):user_(tracks|series_seeds)$/.test(operation))).toBe(false);
   });
@@ -502,7 +504,7 @@ describe("soulection exploration preparation", () => {
     );
   });
 
-  function materializationDb(options: { failSoulection?: boolean; failRanking?: boolean }) {
+  function materializationDb(options: { failSoulection?: boolean; failRanking?: boolean; activeSeed?: boolean }) {
     const upsertedRows: Array<Record<string, unknown>> = [];
     return {
       upsertedRows,
@@ -532,6 +534,10 @@ describe("soulection exploration preparation", () => {
                 result = options.failRanking
                   ? { data: [], error: { message: "ranking unavailable" } }
                   : { data: [{ track_id: "ordinary" }], error: null };
+              } else if (table === "seeds" && filters.active === true) {
+                result = options.activeSeed
+                  ? { data: [{ user_id: "user-a", track_id: "ordinary", active: true }], error: null }
+                  : { data: [], error: null };
               } else if (table === "user_track_scores") {
                 result = {
                   data: [{
@@ -587,6 +593,12 @@ describe("soulection exploration preparation", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  test("removes active seed tracks from queue eligibility", async () => {
+    const { db, upsertedRows } = materializationDb({ activeSeed: true });
+    await expect(materializeUserQueue("user-a", db as any, 50)).resolves.toBe(0);
+    expect(upsertedRows).toEqual([]);
   });
 });
 

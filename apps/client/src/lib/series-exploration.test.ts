@@ -131,8 +131,9 @@ describe("loadSeriesExploration", () => {
         entry("episode-new", 2, "unresolved", { state: "unresolved" }),
         entry("episode-new", 3, "unplayable", { playable: false }),
         entry("episode-new", 4, "played"),
-        entry("episode-new", 5, "new-a"),
-        entry("episode-new", 6, "new-b"),
+        entry("episode-new", 5, "seeded"),
+        entry("episode-new", 6, "new-a"),
+        entry("episode-new", 7, "new-b"),
         entry("episode-mid", 0, "mid-a"),
         entry("episode-mid", 1, "new-a"),
         entry("episode-old", 0, "old-a"),
@@ -140,6 +141,7 @@ describe("loadSeriesExploration", () => {
       ],
       user_tracks: [{ user_id: "user-a", track_id: "actioned", status: "rejected" }],
       user_track_play_totals: [{ user_id: "user-a", track_id: "played", play_count: 1 }],
+      seeds: [{ user_id: "user-a", track_id: "seeded", active: true }],
     });
 
     const rows = await loadSeriesExploration(fixture.db, "user-a", new Set(["ordinary"]), {
@@ -184,6 +186,8 @@ describe("loadSeriesExploration", () => {
     expect(opinionsCall.filters).toContainEqual(["eq", "user_id", "user-a"]);
     const playsCall = fixture.calls.find((call) => call.table === "user_track_play_totals")!;
     expect(playsCall.filters).toContainEqual(["gt", "play_count", 0]);
+    const seedsCall = fixture.calls.find((call) => call.table === "seeds")!;
+    expect(seedsCall.filters).toContainEqual(["eq", "active", true]);
   });
 
   test("keeps YouTube-only tracks out of 4U until playable audio exists", async () => {
