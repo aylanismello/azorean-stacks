@@ -1,11 +1,11 @@
 ---
 id: TASK-27
 title: Stream live 4U mutations after seed refresh
-status: In Progress
+status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-11 23:20'
-updated_date: '2026-09-11 23:46'
+updated_date: '2026-09-11 23:52'
 labels:
   - realtime
   - ux
@@ -27,7 +27,7 @@ Publish a user-scoped recommendation generation after queue materialization and 
 - [x] #3 4U refetches and merges the changed queue without interrupting the current player
 - [x] #4 Inserted and moved cards animate without wholesale slate replacement
 - [x] #5 Reconnects and missed realtime events recover from the durable generation
-- [ ] #6 Tests, typecheck, build, mobile visual verification, and production readback pass
+- [x] #6 Tests, typecheck, build, mobile visual verification, and production readback pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -39,3 +39,10 @@ Publish a user-scoped recommendation generation after queue materialization and 
 4. Animate inserted/moved cards while preserving the current player and protected prefix.
 5. Add tests, run full gates, deploy, and verify on mobile production.
 <!-- SECTION:PLAN:END -->
+
+## Release verification
+
+- Migration `live_fyp_generations` is applied with forced RLS, owner-only select, service-role-only generation publishing, and Supabase Realtime publication.
+- Final gates: 73 engine tests and 144 client tests passed; both typechecks, the production client build, runner shell syntax, dependency audits, diff check, and credential scan passed.
+- Production authenticated 4U returned generation metadata, a published generation triggered an automatic `/api/fyp` refetch, and the 390×844 layout rendered without horizontal overflow.
+- The restarted worker materialized 50 rows, published the first durable generation, and reported a live watcher heartbeat.
