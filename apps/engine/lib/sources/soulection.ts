@@ -4,6 +4,15 @@ import type { DiscoverySource, SourceEpisode, SourceTrack } from "../sources";
 
 const BASE_URL = "https://radio.soulection.com";
 const UUID_PATH = /\/(?:episodes|artists|songs|djs)\/([0-9a-f-]{36})(?:$|[?#/])/i;
+export const SOULECTION_RECENT_EPISODE_LIMIT = 22;
+export const SOULECTION_MAX_EPISODE_LIMIT = 100;
+
+export function boundedSoulectionEpisodeLimit(
+  limit = SOULECTION_RECENT_EPISODE_LIMIT,
+): number {
+  if (!Number.isFinite(limit)) return SOULECTION_RECENT_EPISODE_LIMIT;
+  return Math.max(1, Math.min(SOULECTION_MAX_EPISODE_LIMIT, Math.floor(limit)));
+}
 
 export interface SoulectionTrackRow {
   position: number;
@@ -157,8 +166,10 @@ async function catalogConfig(): Promise<{ url: string; key: string }> {
   throw new Error("Soulection public catalog endpoint was not discoverable; set SOULECTION_PUBLIC_SUPABASE_URL and SOULECTION_PUBLIC_SUPABASE_ANON_KEY");
 }
 
-export async function getRecentSoulectionEpisodes(limit = 20): Promise<SoulectionEpisodeSummary[]> {
-  const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+export async function getRecentSoulectionEpisodes(
+  limit = SOULECTION_RECENT_EPISODE_LIMIT,
+): Promise<SoulectionEpisodeSummary[]> {
+  const boundedLimit = boundedSoulectionEpisodeLimit(limit);
   const config = await catalogConfig();
   const endpoint = new URL(`${config.url}/rest/v1/episodes`);
   endpoint.searchParams.set("select", "*,djs(name)");

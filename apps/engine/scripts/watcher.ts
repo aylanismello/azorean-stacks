@@ -18,6 +18,7 @@ import {
   GARBAGE_TITLES, GARBAGE_PATTERNS, isGarbageTrack,
 } from "../lib/pipeline";
 import { SOURCES } from "../lib/sources/index";
+import { SOULECTION_RECENT_EPISODE_LIMIT } from "../lib/sources/soulection";
 import { runCuratorRadar } from "./radar-curator";
 import { crawlSoulection } from "./crawl-soulection";
 import {
@@ -1488,7 +1489,7 @@ function startWatcher() {
             if (shuttingDown || soulectionCrawlRunning) return;
             soulectionCrawlRunning = true;
             try {
-              const result = await crawlSoulection({ limit: 20, db });
+              const result = await crawlSoulection({ limit: SOULECTION_RECENT_EPISODE_LIMIT, db });
               log("ok", `[Soulection] ${result.episodes} episodes / ${result.appearances} appearances refreshed`);
               for (const failure of result.failures) log("fail", `[Soulection] ${failure}`);
             } catch (err) {

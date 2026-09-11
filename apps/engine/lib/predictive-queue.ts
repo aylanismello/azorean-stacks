@@ -8,6 +8,8 @@ export const QUEUE_VERSION = process.env.AUDIO_QUEUE_VERSION || "taste_context_q
 const QUEUE_TTL_DAYS = Number(process.env.AUDIO_QUEUE_TTL_DAYS || 7);
 const MAX_DL_ATTEMPTS = 3;
 export const SERIES_SEED_CONTEXT_BOOST = 0.04;
+export const SOULECTION_EXPLORATION_TRACK_LIMIT = 3;
+export const SOULECTION_EXPLORATION_EPISODE_LIMIT = 2;
 
 type Db = ReturnType<typeof getSupabase>;
 
@@ -343,6 +345,151 @@ async function enrichQueueContexts(db: Db, candidates: QueueCandidate[]): Promis
   });
 }
 
+type SoulectionEpisode = {
+  id: string;
+  release_date?: string | null;
+  aired_date?: string | null;
+};
+
+type SoulectionEntry = {
+  episode_id: string;
+  position: number;
+  track_id: string | null;
+  resolution_state: string;
+  track: QueueCandidate | QueueCandidate[] | null;
+};
+
+function joinedTrack(value: SoulectionEntry["track"]): QueueCandidate | null {
+  return Array.isArray(value) ? value[0] || null : value || null;
+}
+
+function effectiveEpisodeTime(episode: SoulectionEpisode): number {
+  return Date.parse(episode.release_date || episode.aired_date || "") || 0;
+}
+
+/**
+ * Read a tiny ready-or-acquirable Soulection lane without creating taste state.
+ * Episodes sort by effective date then id; tracks round-robin by source position.
+ */
+export async function soulectionExplorationCandidates(
+  db: Db,
+  userId: string,
+): Promise<QueueCandidate[]> {
+  const select = "id,release_date,aired_date";
+  const [releasedResult, airedOnlyResult] = await Promise.all([
+    db.from("episodes")
+      .select(select)
+      .eq("source", "soulection")
+      .order("release_date", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: true })
+      .limit(SOULECTION_EXPLORATION_EPISODE_LIMIT),
+    db.from("episodes")
+      .select(select)
+      .eq("source", "soulection")
+      .is("release_date", null)
+      .order("aired_date", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: true })
+      .limit(SOULECTION_EXPLORATION_EPISODE_LIMIT),
+  ]);
+  const episodeRows = [
+    ...requireOk(releasedResult, "Soulection released episode lookup"),
+    ...requireOk(airedOnlyResult, "Soulection aired episode lookup"),
+  ] as SoulectionEpisode[];
+  const episodes = [...new Map(episodeRows.map((episode) => [episode.id, episode])).values()]
+    .sort((left, right) => effectiveEpisodeTime(right) - effectiveEpisodeTime(left)
+      || left.id.localeCompare(right.id))
+    .slice(0, SOULECTION_EXPLORATION_EPISODE_LIMIT);
+  const episodeIds = episodes.map((episode) => episode.id);
+  if (!episodeIds.length) return [];
+
+  const entriesResult = await db.from("episode_track_entries")
+    .select("episode_id,position,track_id,resolution_state,track:tracks!inner(*)")
+    .in("episode_id", episodeIds)
+    .eq("resolution_state", "canonical")
+    .not("track_id", "is", null)
+    .order("episode_id", { ascending: true })
+    .order("position", { ascending: true });
+  const episodeRank = new Map(episodeIds.map((id, index) => [id, index]));
+  const entries = (requireOk(entriesResult, "Soulection canonical track lookup") as SoulectionEntry[])
+    .filter((entry) => episodeRank.has(entry.episode_id))
+    .filter((entry) => {
+      const track = joinedTrack(entry.track);
+      return Boolean(entry.track_id) && track?.id === entry.track_id
+        && (Boolean(track.storage_path)
+          || (typeof track.youtube_url === "string" && track.youtube_url.trim().length > 0));
+    })
+    .sort((left, right) => (episodeRank.get(left.episode_id)! - episodeRank.get(right.episode_id)!)
+      || left.position - right.position
+      || String(left.track_id).localeCompare(String(right.track_id)));
+  const candidateIds = [...new Set(entries.map((entry) => entry.track_id).filter(Boolean))] as string[];
+  if (!candidateIds.length) return [];
+
+  const actionedResult = await db.from("user_tracks")
+    .select("track_id")
+    .eq("user_id", userId)
+    .in("track_id", candidateIds);
+  const excluded = new Set(requireOk(actionedResult, "Soulection user exclusion lookup")
+    .map((row: any) => row.track_id));
+  const buckets = new Map(episodeIds.map((id) => [id, [] as SoulectionEntry[]]));
+  for (const entry of entries) buckets.get(entry.episode_id)!.push(entry);
+  const cursors = new Map(episodeIds.map((id) => [id, 0]));
+  const seen = new Set<string>();
+  const output: QueueCandidate[] = [];
+
+  while (output.length < SOULECTION_EXPLORATION_TRACK_LIMIT) {
+    let added = false;
+    for (const episodeId of episodeIds) {
+      const bucket = buckets.get(episodeId)!;
+      let cursor = cursors.get(episodeId)!;
+      let entry: SoulectionEntry | undefined;
+      while (cursor < bucket.length) {
+        const next = bucket[cursor++];
+        if (next.track_id && !excluded.has(next.track_id) && !seen.has(next.track_id)) {
+          entry = next;
+          break;
+        }
+      }
+      cursors.set(episodeId, cursor);
+      if (!entry) continue;
+      const track = joinedTrack(entry.track)!;
+      seen.add(track.id);
+      output.push({
+        ...track,
+        episode_id: entry.episode_id,
+        metadata: { ...(track.metadata || {}), _series_exploration: true },
+      });
+      added = true;
+      if (output.length === SOULECTION_EXPLORATION_TRACK_LIMIT) break;
+    }
+    if (!added) break;
+  }
+  return output;
+}
+
+/** Put exploration at the warm-window tail without shrinking the deeper queue. */
+export function mergeSoulectionPreparationSlice(
+  ordinary: QueueCandidate[],
+  exploration: QueueCandidate[],
+  target = QUEUE_TARGET,
+  warmTarget = WARM_TARGET,
+): QueueCandidate[] {
+  const boundedTarget = Math.max(0, Math.floor(target));
+  const boundedWarmTarget = Math.min(boundedTarget, Math.max(0, Math.floor(warmTarget)));
+  const ordinaryIds = new Set(ordinary.map((track) => track.id));
+  const seen = new Set<string>();
+  const boundedExploration = exploration.filter((track) => {
+    if (ordinaryIds.has(track.id) || seen.has(track.id)) return false;
+    seen.add(track.id);
+    return true;
+  }).slice(0, Math.min(SOULECTION_EXPLORATION_TRACK_LIMIT, boundedWarmTarget));
+  const protectedLength = Math.max(0, boundedWarmTarget - boundedExploration.length);
+  return [
+    ...ordinary.slice(0, protectedLength),
+    ...boundedExploration,
+    ...ordinary.slice(protectedLength),
+  ].slice(0, boundedTarget);
+}
+
 export async function listQueueUsers(db: Db = getSupabase()): Promise<string[]> {
   const [opinionsResult, seedsResult] = await Promise.all([
     db.from("user_tracks").select("user_id").not("user_id", "is", null),
@@ -358,13 +505,27 @@ export async function materializeUserQueue(
   db: Db = getSupabase(),
   target = QUEUE_TARGET,
 ): Promise<number> {
+  const queueTarget = Math.max(0, Math.floor(target));
   // Over-fetch before both quality filtering and diversification so a dominant
   // episode cannot narrow the warm candidate set before balancing happens.
-  const ranked = await rankedTracks(db, userId, target * 4);
+  const explorationPromise = queueTarget
+    ? soulectionExplorationCandidates(db, userId).catch((error) => {
+        console.error(
+          `[predictive-queue] Soulection exploration failed open for user ${userId}:`,
+          error,
+        );
+        return [];
+      })
+    : Promise.resolve([]);
+  const [ranked, exploration] = await Promise.all([
+    rankedTracks(db, userId, queueTarget * 4),
+    explorationPromise,
+  ]);
   const downloadable = ranked.filter(
     (track) => Boolean(track.storage_path) || Number(track.dl_attempts || 0) < MAX_DL_ATTEMPTS,
   );
-  const tracks = diversifyQueueCandidates(await enrichQueueContexts(db, downloadable), target);
+  const ordinary = diversifyQueueCandidates(await enrichQueueContexts(db, downloadable), queueTarget);
+  const tracks = mergeSoulectionPreparationSlice(ordinary, exploration, queueTarget, WARM_TARGET);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + QUEUE_TTL_DAYS * 86_400_000).toISOString();
 

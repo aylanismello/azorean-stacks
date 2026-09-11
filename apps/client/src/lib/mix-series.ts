@@ -5,6 +5,7 @@ export interface MixPreparationEntry {
 }
 
 export interface DatedEpisode {
+  id?: string | null;
   release_date?: string | null;
   aired_date?: string | null;
   title?: string | null;
@@ -12,9 +13,11 @@ export interface DatedEpisode {
 
 export function recentFirst<T extends DatedEpisode>(episodes: T[]): T[] {
   return [...episodes].sort((a, b) => {
-    const aDate = Date.parse(a.release_date || a.aired_date || "") || 0;
-    const bDate = Date.parse(b.release_date || b.aired_date || "") || 0;
-    return bDate - aDate || (a.title || "").localeCompare(b.title || "");
+    const aDate = Date.parse(a.release_date ?? a.aired_date ?? "") || 0;
+    const bDate = Date.parse(b.release_date ?? b.aired_date ?? "") || 0;
+    return bDate - aDate
+      || (a.title || "").localeCompare(b.title || "")
+      || (a.id || "").localeCompare(b.id || "");
   });
 }
 

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { SOULECTION_RECENT_EPISODE_LIMIT } from "../lib/sources/soulection";
 import {
+  soulectionCrawlLimit,
   upsertSoulectionAppearances,
   type SoulectionAppearanceUpsert,
 } from "./crawl-soulection";
@@ -25,6 +28,25 @@ const appearance = (
 });
 
 describe("Soulection appearance refresh", () => {
+  test("keeps source, CLI, runner, and watcher archive depths aligned", () => {
+    const crawler = readFileSync(new URL("./crawl-soulection.ts", import.meta.url), "utf8");
+    const runner = readFileSync(new URL("../runner.sh", import.meta.url), "utf8");
+    const watcher = readFileSync(new URL("./watcher.ts", import.meta.url), "utf8");
+    const scheduledLimit = runner.match(/crawl-soulection --limit (\d+)/)?.[1];
+
+    expect(soulectionCrawlLimit()).toBe(SOULECTION_RECENT_EPISODE_LIMIT);
+    expect(crawler).toContain("default: String(SOULECTION_RECENT_EPISODE_LIMIT)");
+    expect(scheduledLimit).toBe(String(SOULECTION_RECENT_EPISODE_LIMIT));
+    expect(watcher).toMatch(
+      /crawlSoulection\(\{\s*limit: SOULECTION_RECENT_EPISODE_LIMIT,\s*db\s*\}\)/,
+    );
+  });
+
+  test("uses the maintained 22-episode archive default", () => {
+    expect(soulectionCrawlLimit()).toBe(22);
+    expect(soulectionCrawlLimit(101)).toBe(100);
+  });
+
   test("partial and empty refreshes retain omitted ordered and unresolved appearances", async () => {
     const stored = new Map<number, SoulectionAppearanceUpsert>([
       [0, appearance(0)],

@@ -3,10 +3,20 @@
 import { parseArgs } from "node:util";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { canonicalTrackKey, escapeLike } from "../lib/canonical-track";
-import { fetchSoulectionEpisode, getRecentSoulectionEpisodes, type SoulectionEpisodeSummary } from "../lib/sources/soulection";
+import {
+  boundedSoulectionEpisodeLimit,
+  fetchSoulectionEpisode,
+  getRecentSoulectionEpisodes,
+  SOULECTION_RECENT_EPISODE_LIMIT,
+  type SoulectionEpisodeSummary,
+} from "../lib/sources/soulection";
 import { getSupabase } from "../lib/supabase";
 
 interface CrawlOptions { limit?: number; db?: SupabaseClient }
+
+export function soulectionCrawlLimit(limit?: number): number {
+  return boundedSoulectionEpisodeLimit(limit);
+}
 
 export interface SoulectionAppearanceUpsert {
   episode_id: string;
@@ -113,7 +123,7 @@ async function indexEpisode(db: SupabaseClient, seriesId: string, summary: Soule
 }
 
 export async function crawlSoulection(options: CrawlOptions = {}): Promise<{ episodes: number; appearances: number; failures: string[] }> {
-  const limit = Math.max(1, Math.min(100, Math.floor(options.limit || 20)));
+  const limit = soulectionCrawlLimit(options.limit);
   const db = options.db || getSupabase();
   const recent = await getRecentSoulectionEpisodes(limit);
   if (!recent.length) throw new Error("Soulection catalog returned no recent episodes");
@@ -141,7 +151,11 @@ export async function crawlSoulection(options: CrawlOptions = {}): Promise<{ epi
 }
 
 if (import.meta.main) {
-  const { values } = parseArgs({ args: Bun.argv.slice(2), options: { limit: { type: "string", default: "20" } }, strict: true });
+  const { values } = parseArgs({
+    args: Bun.argv.slice(2),
+    options: { limit: { type: "string", default: String(SOULECTION_RECENT_EPISODE_LIMIT) } },
+    strict: true,
+  });
   const result = await crawlSoulection({ limit: Number(values.limit) });
   console.log(`Soulection: ${result.episodes} episodes, ${result.appearances} appearances`);
   if (result.failures.length) {

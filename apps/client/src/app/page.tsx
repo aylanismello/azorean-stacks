@@ -128,9 +128,9 @@ function toTrackLike(pt: PlayerTrack): Track {
   } as any;
 }
 
-/** Check if a PlayerTrack has playable audio */
-function isPlayable(t: PlayerTrack): boolean {
-  return !!(t.audioUrl || t.storage_path || t.preview_url);
+/** Check if a PlayerTrack has playable audio in the current session. */
+function isPlayable(t: PlayerTrack, spotifyConnected: boolean): boolean {
+  return !!(t.audioUrl || t.storage_path || t.preview_url || (spotifyConnected && t.spotifyUrl));
 }
 
 function StackPageContent() {
@@ -253,7 +253,7 @@ function StackPageContent() {
       const sameQueueView = activeQueueViewRef.current === queueViewKey;
 
       if (episodeId && playerTracks.length > 0) {
-        const firstPlayablePending = playerTracks.findIndex((t) => t.status === "pending" && isPlayable(t));
+        const firstPlayablePending = playerTracks.findIndex((t) => t.status === "pending" && isPlayable(t, spotifyConnected));
         const startIndex = firstPlayablePending >= 0 ? firstPlayablePending : 0;
         setHasEpisodeTracks(true);
 
@@ -291,7 +291,7 @@ function StackPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [buildUrl, episodeId, queueViewKey]);
+  }, [buildUrl, episodeId, queueViewKey, spotifyConnected]);
 
   useEffect(() => {
     fetchTracks();
@@ -398,7 +398,7 @@ function StackPageContent() {
 
       if (hasEpisodeTracks) {
         // Episode mode: check if any playable pending tracks remain
-        const remainingPending = queue.filter((t) => t.id !== id && (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
+        const remainingPending = queue.filter((t) => t.id !== id && (t.vote_status === "pending" || t.status === "pending") && isPlayable(t, spotifyConnected));
         if (remainingPending.length === 0) {
           advanceToNextEpisode();
           return;
@@ -407,7 +407,7 @@ function StackPageContent() {
         const curPos = globalPlayer.currentIndex;
         let nextPos = -1;
         for (let i = curPos + 1; i < queue.length; i++) {
-          if (queue[i].id !== id && (queue[i].vote_status === "pending" || queue[i].status === "pending") && isPlayable(queue[i])) { nextPos = i; break; }
+          if (queue[i].id !== id && (queue[i].vote_status === "pending" || queue[i].status === "pending") && isPlayable(queue[i], spotifyConnected)) { nextPos = i; break; }
         }
         if (nextPos >= 0) {
           globalPlayer.playFromQueue(nextPos);
@@ -419,14 +419,14 @@ function StackPageContent() {
         const curPos = globalPlayer.currentIndex;
         let nextPos = -1;
         for (let i = curPos + 1; i < queue.length; i++) {
-          if (queue[i].id !== id && (queue[i].vote_status === "pending" || queue[i].status === "pending") && isPlayable(queue[i])) { nextPos = i; break; }
+          if (queue[i].id !== id && (queue[i].vote_status === "pending" || queue[i].status === "pending") && isPlayable(queue[i], spotifyConnected)) { nextPos = i; break; }
         }
         if (nextPos >= 0) {
           globalPlayer.playFromQueue(nextPos);
         }
 
         // Batch loading: if running low on pending tracks, fetch more
-        const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
+        const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t, spotifyConnected));
         if (pendingAhead.length <= 3) {
           fetch(buildUrl())
             .then((r) => r.ok ? r.json() : null)
@@ -485,14 +485,14 @@ function StackPageContent() {
         const playerTracks = (data.tracks as Track[]).map(toPlayerTrack);
         setTotal(data.total || 0);
         setHasEpisodeTracks(true);
-        const firstPlayable = playerTracks.findIndex((t) => t.status === "pending" && isPlayable(t));
+        const firstPlayable = playerTracks.findIndex((t) => t.status === "pending" && isPlayable(t, spotifyConnected));
         const startIdx = firstPlayable >= 0 ? firstPlayable : 0;
         globalPlayer.setQueue(playerTracks, startIdx);
         if (playerTracks[startIdx]) {
           globalPlayer.loadTrack(playerTracks[startIdx]);
         }
       });
-  }, [currentEpisodeId, episodeId, isTasteMode]);
+  }, [currentEpisodeId, episodeId, isTasteMode, spotifyConnected]);
 
   // Sidebar/tracklist click → jump to that track via global player
   const handleTrackSelect = useCallback((trackId: string) => {
@@ -560,7 +560,7 @@ function StackPageContent() {
       const curPos = globalPlayer.currentIndex;
       let nextPos = -1;
       for (let i = curPos + 1; i < queue.length; i++) {
-        if (isPlayable(queue[i])) {
+        if (isPlayable(queue[i], spotifyConnected)) {
           nextPos = i;
           break;
         }
@@ -577,7 +577,7 @@ function StackPageContent() {
     const curPos = globalPlayer.currentIndex;
     let nextPos = -1;
     for (let i = curPos + 1; i < queue.length; i++) {
-      if ((queue[i].vote_status === "pending" || queue[i].status === "pending") && isPlayable(queue[i])) {
+      if ((queue[i].vote_status === "pending" || queue[i].status === "pending") && isPlayable(queue[i], spotifyConnected)) {
         nextPos = i;
         break;
       }
@@ -587,7 +587,7 @@ function StackPageContent() {
     }
 
     // Batch loading when running low on pending tracks
-    const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t));
+    const pendingAhead = queue.slice(curPos + 1).filter((t) => (t.vote_status === "pending" || t.status === "pending") && isPlayable(t, spotifyConnected));
     if (pendingAhead.length <= 3) {
       fetch(buildUrl())
         .then((r) => r.ok ? r.json() : null)
@@ -600,7 +600,7 @@ function StackPageContent() {
           setTotal(data.total || 0);
         });
     }
-  }, [globalPlayer.trackEndedCount, globalPlayer.currentIndex, globalPlayer.queue, buildUrl, hasEpisodeTracks, globalPlayer, advanceToNextEpisode]);
+  }, [globalPlayer.trackEndedCount, globalPlayer.currentIndex, globalPlayer.queue, buildUrl, hasEpisodeTracks, globalPlayer, advanceToNextEpisode, spotifyConnected]);
 
   // Preload next track's audio when current track reaches 75% completion
   const preloadTriggeredRef = useRef<string | null>(null);
@@ -974,6 +974,7 @@ function discoverySourceLabel(source: string | null | undefined): string {
     nts: "NTS Radio",
     lotradio: "The Lot Radio",
     "1001tracklists": "1001Tracklists",
+    soulection: "Soulection",
     spotify: "Spotify",
     bandcamp: "Bandcamp",
     manual: "Manual",

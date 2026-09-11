@@ -11,6 +11,10 @@ export interface MixEpisode {
   apple_music_url?: string | null;
   track_count?: number;
   resolved_count?: number;
+  acquisition_ready_count?: number;
+  fishing_label?: "Prime fishing" | "Good fishing" | "Light fishing";
+  fishing_score?: number;
+  fishing_reason?: string;
 }
 
 export interface MixSeries {

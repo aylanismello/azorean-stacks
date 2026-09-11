@@ -11,7 +11,7 @@ import {
 } from "@/lib/episode-playback";
 import { formatEpisodeDate, type EpisodeAppearance, type MixEpisode, type MixSeries } from "../types";
 
-const INITIAL_EPISODES = 6;
+const INITIAL_EPISODES = 8;
 
 async function responseJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -153,9 +153,28 @@ export default function MixSeriesPage() {
                 <div className="flex gap-4">
                   <div className="relative hidden h-20 w-20 flex-none overflow-hidden rounded-lg bg-surface-2 sm:block">{episode.artwork_url ? <img src={episode.artwork_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full items-center justify-center text-muted">♫</span>}</div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">{index === 0 && <span className="rounded-full bg-accent px-2 py-1 text-[10px] font-bold text-black">LATEST</span>}<span className="text-xs text-muted">{formatEpisodeDate(episode)}</span></div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {index === 0 && <span className="rounded-full bg-accent px-2 py-1 text-[10px] font-bold text-black">LATEST</span>}
+                      <span className="text-xs text-muted">{formatEpisodeDate(episode)}</span>
+                      {episode.fishing_label && typeof episode.fishing_score === "number" && (
+                        <span
+                          className={`rounded-full border px-2 py-1 text-[10px] font-semibold ${
+                            episode.fishing_label === "Prime fishing"
+                              ? "border-green-400/30 bg-green-400/10 text-green-300"
+                              : episode.fishing_label === "Good fishing"
+                                ? "border-amber-300/30 bg-amber-300/10 text-amber-200"
+                                : "border-surface-3 bg-surface-2 text-muted"
+                          }`}
+                          aria-label={`${episode.fishing_label}, score ${episode.fishing_score} out of 100`}
+                          title={episode.fishing_reason}
+                        >
+                          {episode.fishing_label} · {episode.fishing_score}
+                        </span>
+                      )}
+                    </div>
                     <h3 className="mt-1 text-lg font-semibold leading-snug">{episode.title || "Untitled episode"}</h3>
-                    <p className="mt-1 text-xs text-muted">{episode.dj_name ? `DJ ${episode.dj_name}` : "DJ unavailable"} · {episode.track_count || 0} tracks · {episode.resolved_count || 0} resolved</p>
+                    <p className="mt-1 text-xs text-muted">{episode.dj_name ? `DJ ${episode.dj_name}` : "DJ unavailable"} · {episode.track_count || 0} tracks · {episode.resolved_count || 0} resolved · {episode.acquisition_ready_count || 0} ready to pull</p>
+                    {episode.fishing_reason && <p className="mt-1 text-[11px] text-muted/80">Why: {episode.fishing_reason}</p>}
                     <div className="mt-3 flex flex-wrap items-center gap-3"><button onClick={() => void startEpisode(episode)} disabled={Boolean(startingId)} className="rounded-lg bg-accent px-3 py-2 text-xs font-bold text-black transition hover:brightness-110 disabled:opacity-50">{startingId === episode.id ? "Starting…" : "▶ Start episode"}</button>{episode.url && <a href={episode.url} target="_blank" rel="noreferrer" className="text-xs font-medium text-muted hover:text-foreground">Episode page ↗</a>}{episode.soundcloud_url && <a href={episode.soundcloud_url} target="_blank" rel="noreferrer" className="text-xs font-medium text-muted hover:text-foreground">SoundCloud ↗</a>}</div>
                   </div>
                 </div>

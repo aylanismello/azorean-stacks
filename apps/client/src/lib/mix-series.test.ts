@@ -34,6 +34,29 @@ describe("mix episode ordering", () => {
     expect(recentFirst(episodes).map((episode) => episode.title)).toEqual(["Newest", "Middle", "Older"]);
     expect(episodes[0].title).toBe("Older");
   });
+
+  test("uses the effective date across mixed null date columns with deterministic ties", () => {
+    const episodes = [
+      { id: "b", title: "Same", release_date: "2026-09-01", aired_date: null },
+      { id: "new", title: "Newest", release_date: null, aired_date: "2026-09-10" },
+      { id: "a", title: "Same", release_date: "2026-09-01", aired_date: null },
+    ];
+
+    expect(recentFirst(episodes).map((episode) => episode.id)).toEqual(["new", "a", "b"]);
+  });
+});
+
+describe("mix series archive display contract", () => {
+  test("shows eight recent episodes initially and reveals eight more per batch", () => {
+    const page = readFileSync(
+      new URL("../app/mixes/[slug]/page.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(page).toContain("const INITIAL_EPISODES = 8;");
+    expect(page).toContain("useState(INITIAL_EPISODES)");
+    expect(page).toContain("value + INITIAL_EPISODES");
+  });
 });
 
 describe("mix series API schema contract", () => {
@@ -44,5 +67,29 @@ describe("mix series API schema contract", () => {
     );
     expect(route).not.toContain("apple_music_url,featured");
     expect(route).toContain('db.from("mix_series").select("*")');
+  });
+
+  test("loads fishable canonical availability in one entries query", () => {
+    const route = readFileSync(
+      new URL("../app/api/series/[slug]/route.ts", import.meta.url),
+      "utf8",
+    );
+    expect(route.match(/db\.from\("episode_track_entries"\)/g)).toHaveLength(1);
+    expect(route).toContain("resolution_state,tracks(youtube_url,storage_path,preview_url,spotify_url)");
+    expect(route).toContain("canonicalEntryAvailability(entry)");
+    expect(route).toContain("acquisition_ready_count");
+    expect(route).not.toContain("playable_count");
+    expect(route).toContain("fishing_reason");
+  });
+
+  test("merges bounded release and aired-only candidates before slicing by effective date", () => {
+    const route = readFileSync(
+      new URL("../app/api/series/[slug]/route.ts", import.meta.url),
+      "utf8",
+    );
+    expect(route).toContain("const EPISODE_CANDIDATE_WINDOW = 22;");
+    expect(route).toContain('.is("release_date", null)');
+    expect(route).toContain("const episodes = recentFirst([");
+    expect(route).toContain("]).slice(0, 12);");
   });
 });

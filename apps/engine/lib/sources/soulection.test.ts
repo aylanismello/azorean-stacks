@@ -1,10 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { extractPublicCatalogConfig, parseSoulectionEpisode, parseSoulectionIndex, soulectionSummaryFromRow } from "./soulection";
+import {
+  boundedSoulectionEpisodeLimit,
+  extractPublicCatalogConfig,
+  parseSoulectionEpisode,
+  parseSoulectionIndex,
+  soulectionSummaryFromRow,
+} from "./soulection";
 
 const fixture: string = readFileSync(new URL("./fixtures/soulection-744.html", import.meta.url), "utf8");
 
 describe("Soulection source parser", () => {
+  test("defaults the bounded recent archive to 22 episodes and caps it at 100", () => {
+    expect(boundedSoulectionEpisodeLimit()).toBe(22);
+    expect(boundedSoulectionEpisodeLimit(101)).toBe(100);
+  });
+
+  test("uses the maintained default for non-finite episode limits", () => {
+    expect(boundedSoulectionEpisodeLimit(Number.NaN)).toBe(22);
+    expect(boundedSoulectionEpisodeLimit(Number.POSITIVE_INFINITY)).toBe(22);
+    expect(boundedSoulectionEpisodeLimit(Number.NEGATIVE_INFINITY)).toBe(22);
+  });
+
   test("preserves episode metadata, timestamps, voiceovers, and repeated songs", () => {
     const episode = parseSoulectionEpisode(fixture, "7892c3b0-1cee-4f7c-bf9e-749d53a37a6a");
     expect(episode.title).toBe("Soulection Radio #744 (HARUNA Takeover)");

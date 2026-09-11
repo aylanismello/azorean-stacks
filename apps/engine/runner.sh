@@ -133,7 +133,7 @@ while true; do
 
   write_status "soulection" "running"
   printf '[%s] refreshing recent Soulection episodes\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
-  if run_job "soulection" bun run crawl-soulection --limit 20; then
+  if run_job "soulection" bun run crawl-soulection --limit 22; then
     :
   else
     code=$?

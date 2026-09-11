@@ -3,7 +3,12 @@ import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks } from "@/lib/diversify";
 import { loadPersonalizedFyp } from "@/lib/fyp-personalization";
+import {
+  loadFypWithOptionalExploration,
+  signOptionalExplorationAudio,
+} from "@/lib/fyp-with-optional-exploration";
 import { parsePagination } from "@/lib/pagination";
+import { injectSeriesExploration, loadSeriesExploration } from "@/lib/series-exploration";
 
 export const dynamic = "force-dynamic";
 
@@ -41,11 +46,24 @@ export async function GET(req: NextRequest) {
   }
 
   const db = getServiceClient();
+  let shouldExplore = false;
+  if (offset === 0 && !seedId && !genre && !seedArtist) {
+    shouldExplore = true;
+  }
   let rows: any[];
+  let seriesExploration: any[];
   try {
-    rows = await loadPersonalizedFyp(db, user.id, {
-      limit, offset, hideLow, seedId, genre, seedArtist,
-    });
+    ({ rows, seriesExploration } = await loadFypWithOptionalExploration({
+      loadPersonalized: () => loadPersonalizedFyp(db, user.id, {
+        limit, offset, hideLow, seedId, genre, seedArtist,
+      }),
+      loadExploration: (ordinaryRows) => loadSeriesExploration(
+        db,
+        user.id,
+        new Set(ordinaryRows.map((track: any) => track.id)),
+      ),
+      shouldExplore,
+    }));
   } catch (error) {
     const status = error instanceof Error && "status" in error && error.status === 404 ? 404 : 500;
     const message = error instanceof Error ? error.message : "Failed to load personalized FYP";
@@ -146,8 +164,14 @@ export async function GET(req: NextRequest) {
   await Promise.all(signPromises);
 
   const diversified = diversifyTracks(rows);
+  await signOptionalExplorationAudio(seriesExploration, async (storagePath) => {
+    const { data: signed, error } = await db.storage.from("tracks").createSignedUrl(storagePath, 3600);
+    if (error) throw error;
+    return signed?.signedUrl || null;
+  });
+  const withSeriesExploration = injectSeriesExploration(diversified, seriesExploration);
 
   // `total` describes the actual personalized page queue. The previous global
   // count included other users' already-actioned rows and was not an FYP count.
-  return NextResponse.json({ tracks: diversified, total: diversified.length });
+  return NextResponse.json({ tracks: withSeriesExploration, total: withSeriesExploration.length });
 }

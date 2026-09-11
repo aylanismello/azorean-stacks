@@ -8,6 +8,7 @@ import { useGlobalPlayer } from "./GlobalPlayerProvider";
 import { useSpotify } from "./SpotifyProvider";
 import { getSeedBadge } from "@/lib/seed-badge";
 import { playerTrackMatchesCanonicalId, trackCardActionTargets } from "@/lib/player-track-identity";
+import { sourceAttribution, sourceLabel } from "@/lib/source-attribution";
 
 interface TrackCardProps {
   track: Track;
@@ -40,18 +41,6 @@ function safeCoverUrl(url: string | null): string | null {
     if (parsed.protocol === "https:" || parsed.protocol === "http:") return url;
   } catch {}
   return null;
-}
-
-function sourceLabel(source: string): string {
-  const labels: Record<string, string> = {
-    nts: "NTS",
-    lotradio: "The Lot Radio",
-    "1001tracklists": "1001TL",
-    spotify: "Spotify",
-    bandcamp: "Bandcamp",
-    manual: "Manual",
-  };
-  return labels[source] || source;
 }
 
 function audioSourceLabel(meta: Record<string, any>, track: { youtube_url: string | null; preview_url: string | null; audio_url?: string | null; storage_path: string | null }): string {
@@ -556,30 +545,58 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
     </p>
   );
 
-  const effectiveSourceContext = track.source_context || track.episode?.title || sourceLabel(track.source);
-  const effectiveSourceUrl = track.source_url || track.episode?.url || null;
-  const sourceContext = effectiveSourceContext && (
-    effectiveSourceUrl ? (
-      <a
-        href={effectiveSourceUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-center gap-1.5 text-[11px] text-muted hover:text-accent transition-colors group truncate"
-      >
-        <span className="text-accent">◉</span>
-        <span className="truncate underline underline-offset-2 decoration-foreground/10 group-hover:decoration-accent">
-          {effectiveSourceContext}
-        </span>
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-40 group-hover:opacity-100">
-          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
-        </svg>
-      </a>
-    ) : (
-      <div className="flex items-center gap-1.5 text-[11px] text-muted truncate">
-        <span className="text-accent">◉</span>
-        <span className="truncate">{effectiveSourceContext}</span>
-      </div>
-    )
+  const attribution = sourceAttribution({
+    source: track.source,
+    sourceContext: track.source_context,
+    sourceUrl: track.source_url,
+    episode: track.episode,
+  });
+  const effectiveSourceContext = attribution.context;
+  const effectiveSourceUrl = attribution.url;
+  const showAttributionContext = effectiveSourceContext.trim().toLocaleLowerCase()
+    !== attribution.label.trim().toLocaleLowerCase();
+  const sourceLabelBadge = (
+    <span
+      className="shrink-0 rounded border border-accent/20 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-accent"
+      aria-label={`Source: ${attribution.label}`}
+    >
+      {attribution.label}
+    </span>
+  );
+  const sourceContext = (
+    <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted">
+      {!showAttributionContext && effectiveSourceUrl ? (
+        <a
+          href={effectiveSourceUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 rounded"
+          aria-label={`Open ${attribution.label} source`}
+        >
+          {sourceLabelBadge}
+        </a>
+      ) : sourceLabelBadge}
+      {showAttributionContext && (
+        effectiveSourceUrl ? (
+          <a
+            href={effectiveSourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group flex min-w-0 items-center gap-1 text-muted transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 rounded"
+            aria-label={`Open ${attribution.label} episode: ${effectiveSourceContext}`}
+          >
+            <span className="truncate underline underline-offset-2 decoration-foreground/10 group-hover:decoration-accent">
+              {effectiveSourceContext}
+            </span>
+            <svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-40 group-hover:opacity-100">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+          </a>
+        ) : (
+          <span className="truncate">{effectiveSourceContext}</span>
+        )
+      )}
+    </div>
   );
 
   const externalLinks = (
