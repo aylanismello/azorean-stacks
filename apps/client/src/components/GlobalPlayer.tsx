@@ -5,6 +5,14 @@ import { useRouter } from "next/navigation";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
 import { openYouTube } from "@/lib/youtube";
 import { openSpotify } from "@/lib/spotify-link";
+import { canonicalPlayerTrackId } from "@/lib/player-track-identity";
+import {
+  beginSeekDrag,
+  cancelSeekDrag,
+  finishSeekDrag,
+  moveSeekDrag,
+  type SeekDrag,
+} from "@/lib/player-seek";
 
 function fmt(s: number): string {
   const m = Math.floor(s / 60);
@@ -42,48 +50,103 @@ function ConnectionIcon({ quality }: { quality: "good" | "recovering" | "stalled
 }
 
 export function GlobalPlayer() {
-  const { currentTrack, playing, loading, buffering, progress, duration, source, noSource, togglePlayPause, seek, stop, playbackOrigin, connectionQuality, toast } = useGlobalPlayer();
+  const {
+    currentTrack,
+    playing,
+    loading,
+    buffering,
+    progress,
+    duration,
+    source,
+    noSource,
+    togglePlayPause,
+    seek,
+    stop,
+    playbackOrigin,
+    connectionQuality,
+    toast,
+    queue,
+    currentIndex,
+    prev,
+    next,
+    repeatTrackId,
+    toggleRepeatTrack,
+  } = useGlobalPlayer();
   const router = useRouter();
   const progressRef = useRef<HTMLDivElement>(null);
-  const [dragging, setDragging] = useState(false);
+  const seekDragRef = useRef<SeekDrag | null>(null);
+  const [previewPosition, setPreviewPosition] = useState<number | null>(null);
 
-  const pct = duration > 0 ? (progress / duration) * 100 : 0;
+  const displayedProgress = previewPosition ?? progress;
+  const pct = duration > 0 ? (displayedProgress / duration) * 100 : 0;
+  const dragging = previewPosition !== null;
+  const isCurrentQueueTrack = queue[currentIndex]?.id === currentTrack?.id;
+  const canGoPrevious = isCurrentQueueTrack && currentIndex > 0;
+  const canGoNext = (currentIndex === -1 && queue.length > 0)
+    || (isCurrentQueueTrack && currentIndex < queue.length - 1);
+  const canonicalTrackId = canonicalPlayerTrackId(currentTrack);
+  const isRepeating = canonicalTrackId !== null && repeatTrackId === canonicalTrackId;
 
-  const seekTo = useCallback((clientX: number) => {
-    if (!duration || !progressRef.current) return;
+  const seekGeometry = useCallback(() => {
+    if (!progressRef.current) return null;
     const rect = progressRef.current.getBoundingClientRect();
-    const p = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    seek(p * duration);
-  }, [duration, seek]);
+    return { left: rect.left, width: rect.width };
+  }, []);
 
-  const handleSeekStart = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    setDragging(true);
-    seekTo(e.clientX);
-    const handleMove = (ev: MouseEvent) => seekTo(ev.clientX);
-    const handleUp = () => {
-      setDragging(false);
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    };
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
-  }, [seekTo]);
+  const handleSeekStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const geometry = seekGeometry();
+    if (!geometry) return;
+    const drag = beginSeekDrag(event.pointerId, event.clientX, geometry, duration);
+    if (!drag) return;
 
-  const handleTouchSeek = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
-    setDragging(true);
-    seekTo(e.touches[0].clientX);
-    const handleMove = (ev: TouchEvent) => {
-      ev.preventDefault();
-      seekTo(ev.touches[0].clientX);
-    };
-    const handleEnd = () => {
-      setDragging(false);
-      window.removeEventListener("touchmove", handleMove);
-      window.removeEventListener("touchend", handleEnd);
-    };
-    window.addEventListener("touchmove", handleMove, { passive: false });
-    window.addEventListener("touchend", handleEnd);
-  }, [seekTo]);
+    event.preventDefault();
+    seekDragRef.current = drag;
+    setPreviewPosition(drag.position);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [duration, seekGeometry]);
+
+  const handleSeekMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const geometry = seekGeometry();
+    if (!geometry) return;
+    const drag = moveSeekDrag(
+      seekDragRef.current,
+      event.pointerId,
+      event.clientX,
+      geometry,
+      duration,
+    );
+    if (drag === seekDragRef.current) return;
+
+    event.preventDefault();
+    seekDragRef.current = drag;
+    setPreviewPosition(drag?.position ?? null);
+  }, [duration, seekGeometry]);
+
+  const finishDrag = useCallback((pointerId: number) => {
+    const result = finishSeekDrag(seekDragRef.current, pointerId);
+    if (result.commit === null) return;
+
+    seekDragRef.current = result.drag;
+    setPreviewPosition(null);
+    seek(result.commit);
+  }, [seek]);
+
+  const handleSeekFinish = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (seekDragRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    finishDrag(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [finishDrag]);
+
+  const cancelDrag = useCallback((pointerId: number) => {
+    const drag = cancelSeekDrag(seekDragRef.current, pointerId);
+    if (drag === seekDragRef.current) return;
+    seekDragRef.current = drag;
+    setPreviewPosition(null);
+  }, []);
 
   if (!currentTrack) return null;
 
@@ -104,15 +167,18 @@ export function GlobalPlayer() {
         <div
           ref={progressRef}
           className="group relative z-10 mb-2 flex h-4 cursor-pointer items-center touch-none"
-          onMouseDown={handleSeekStart}
-          onTouchStart={handleTouchSeek}
+          onPointerDown={handleSeekStart}
+          onPointerMove={handleSeekMove}
+          onPointerUp={handleSeekFinish}
+          onPointerCancel={(event) => cancelDrag(event.pointerId)}
+          onLostPointerCapture={(event) => cancelDrag(event.pointerId)}
           role="slider"
           tabIndex={0}
           aria-label="Playback position"
           aria-valuemin={0}
           aria-valuemax={Math.max(0, Math.round(duration))}
-          aria-valuenow={Math.max(0, Math.round(progress))}
-          aria-valuetext={`${fmt(progress)} of ${fmt(duration)}`}
+          aria-valuenow={Math.max(0, Math.round(displayedProgress))}
+          aria-valuetext={`${fmt(displayedProgress)} of ${fmt(duration)}`}
           onKeyDown={(event) => {
             if (event.key === "ArrowLeft" || event.key === "ArrowDown") {
               event.preventDefault();
@@ -215,15 +281,17 @@ export function GlobalPlayer() {
           <>
             {/* Time + connection quality */}
             <span className="flex items-center gap-1.5 text-[10px] text-muted font-mono flex-shrink-0 hidden sm:flex">
-              {duration > 0 ? `${fmt(progress)} / ${fmt(duration)}` : ""}
+              {duration > 0 ? `${fmt(displayedProgress)} / ${fmt(duration)}` : ""}
               {source === "audio" && <ConnectionIcon quality={connectionQuality} />}
             </span>
 
-            {/* Restart */}
+            {/* Previous track */}
             <button
-              onClick={() => seek(0)}
-              className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-foreground hover:bg-surface-3 transition-all flex-shrink-0"
-              title="Restart track"
+              onClick={prev}
+              disabled={!canGoPrevious}
+              className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-foreground hover:bg-surface-3 transition-all flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted"
+              title="Previous track"
+              aria-label="Previous track"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="4" y="5" width="3" height="14" rx="1" />
@@ -254,16 +322,42 @@ export function GlobalPlayer() {
               )}
             </button>
 
-            {/* Skip 30s */}
+            {/* Next track */}
             <button
-              onClick={() => seek(progress + 30)}
-              className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-foreground hover:bg-surface-3 transition-all flex-shrink-0"
-              title="Skip ahead 30 seconds"
+              onClick={next}
+              disabled={!canGoNext}
+              className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-foreground hover:bg-surface-3 transition-all flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted"
+              title="Next track"
+              aria-label="Next track"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M13 4l5 4-5 4" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M18 8H8a5 5 0 0 0 0 10h2" strokeLinecap="round" />
-                <text x="9" y="18" fontSize="7" fontWeight="bold" fill="currentColor" stroke="none" fontFamily="sans-serif">30</text>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M4 5v14l11-7z" />
+                <rect x="17" y="5" width="3" height="14" rx="1" />
+              </svg>
+            </button>
+
+            {/* Repeat current track */}
+            <button
+              onClick={() => {
+                if (canonicalTrackId) toggleRepeatTrack(canonicalTrackId);
+              }}
+              disabled={!canonicalTrackId}
+              className={`w-7 h-7 flex items-center justify-center rounded-full transition-all flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-30 ${
+                isRepeating
+                  ? "bg-accent/15 text-accent"
+                  : "text-muted hover:text-foreground hover:bg-surface-3"
+              }`}
+              title={isRepeating ? "Turn off repeat track" : "Repeat current track"}
+              aria-label={isRepeating ? "Turn off repeat track" : "Repeat current track"}
+              aria-pressed={isRepeating}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 1l4 4-4 4" />
+                <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                <path d="M7 23l-4-4 4-4" />
+                <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                <path d="M12 9v6" />
+                <path d="M10 11l2-2" />
               </svg>
             </button>
           </>

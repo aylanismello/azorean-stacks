@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@pico'
 created_date: '2026-09-10 20:46'
-updated_date: '2026-09-10 22:03'
+updated_date: '2026-09-11 01:01'
 labels: []
 dependencies: []
 references:
@@ -32,6 +32,10 @@ Make Soulection Radio a first-class, user-seedable mix series with recent-first 
 - [x] #8 Ordinary FYP ranking uses the authenticated user's explicit super-like, like, skip, reject, and qualified-listen evidence with balanced exploration and repetition controls
 - [x] #9 Mix-series affinity informs discovery without converting episode exposure into track approval
 - [x] #10 Live taste data is audited before tuning and the initial system remains explainable rather than introducing an unnecessary opaque model
+- [x] #11 Right-clicking any canonical track row opens playback-neutral actions for like, star, reject, skip, re-seed, and bad source
+- [x] #12 The currently playing track can be toggled on repeat without restarting it
+- [x] #13 Each playback session records one durable play after 30 seconds and accumulates per-user listen time without overwriting explicit votes
+- [x] #14 Media controls expose previous, play/pause, next, and seek backward/forward across supported Chrome and Safari media sessions
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -54,4 +58,15 @@ Make Soulection Radio a first-class, user-seedable mix series with recent-first 
 - Applied production migrations 025 and 026 to the verified Azorean project and indexed 20 recent episodes / 1,140 appearances.
 - Full engine tests/typecheck and client tests/typecheck/build pass; migration replay, dependency audit, diff check, and credential scan pass.
 - Remaining release step: post-deployment authenticated browser QA.
+
+- Production bug reported: series detail queried nonexistent episodes.featured; repairing query and adding a schema contract regression test.
+- Added scope: row context actions, current-track repeat, 30-second play accounting, and browser/OS media controls.
+
+- Added playback-neutral canonical row actions (including unenriched canonical rows), bottom-player repeat-one, previous/play/next transport, Media Session handlers, and release-only seek preview/commit.
+- Added authenticated race-safe playback accounting with one play after 30 seconds, cumulative 30-second listen chunks, explicit-vote preservation, server-owned aggregate guards, and production migrations 027/028.
+- Verification: 99 client lib tests, client TypeScript, production build, 46 engine tests, engine TypeScript, full pgvector migration replay, production migration readback, dependency audit, and diff checks passed. Authenticated browser QA remains blocked at the login wall.
+- Follow-up hardening: server-issued playback session attestations/rate limiting would prevent an authenticated user from forging their own analytics.
+
+- Final hardening isolated behavioral totals from user_tracks/FYP eligibility in migration 029; production migration and RLS/privilege readback passed.
+- Final verification after Spotify command serialization and HTTP error handling: 99 client tests, client typecheck/build, 46 engine tests/typecheck, full migration replay, and diff checks passed. Authenticated browser QA remains unavailable at the login wall.
 <!-- SECTION:NOTES:END -->

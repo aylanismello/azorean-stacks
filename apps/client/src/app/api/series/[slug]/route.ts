@@ -16,7 +16,7 @@ export async function GET(req: NextRequest, props: Context) {
   if (!series) return NextResponse.json({ error: "Series not found" }, { status: 404 });
   const [{ data: seed }, { data: episodes, error: episodeError }] = await Promise.all([
     db.from("user_series_seeds").select("id").eq("user_id", user.id).eq("series_id", series.id).maybeSingle(),
-    db.from("episodes").select("id,title,description,url,release_date,aired_date,artwork_url,dj_name,soundcloud_url,apple_music_url,featured")
+    db.from("episodes").select("id,title,description,url,release_date,aired_date,artwork_url,dj_name,soundcloud_url,apple_music_url")
       .eq("series_id", series.id).order("release_date", { ascending: false, nullsFirst: false }).limit(12),
   ]);
   if (episodeError) return NextResponse.json({ error: episodeError.message }, { status: 500 });

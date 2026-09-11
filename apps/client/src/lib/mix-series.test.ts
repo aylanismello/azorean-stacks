@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { acquisitionSource, boundedPreparationWindow, recentFirst } from "./mix-series";
 
 const resolvable = (position: number, track = `track-${position}`) => ({
@@ -32,5 +33,16 @@ describe("mix episode ordering", () => {
     const episodes = [{ title: "Older", release_date: "2026-08-01" }, { title: "Newest", release_date: "2026-09-10" }, { title: "Middle", aired_date: "2026-09-01" }];
     expect(recentFirst(episodes).map((episode) => episode.title)).toEqual(["Newest", "Middle", "Older"]);
     expect(episodes[0].title).toBe("Older");
+  });
+});
+
+describe("mix series API schema contract", () => {
+  test("does not select mix-series-only featured from episodes", () => {
+    const route = readFileSync(
+      new URL("../app/api/series/[slug]/route.ts", import.meta.url),
+      "utf8",
+    );
+    expect(route).not.toContain("apple_music_url,featured");
+    expect(route).toContain('db.from("mix_series").select("*")');
   });
 });

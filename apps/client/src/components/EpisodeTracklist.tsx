@@ -1,9 +1,16 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
 import { supabase } from "@/lib/supabase";
 import { getSeedBadge } from "@/lib/seed-badge";
+import { canonicalPlayerTrackId } from "@/lib/player-track-identity";
+import {
+  canonicalEpisodeTracklistRowId,
+  performEpisodeTracklistAction,
+  type EpisodeTracklistAction,
+} from "@/lib/episode-tracklist-actions";
 
 interface TrackListItem {
   id: string;
@@ -22,6 +29,10 @@ interface TrackListItem {
   is_artist_seed?: boolean;
   super_liked?: boolean;
   vote_status?: "approved" | "rejected" | "skipped" | "listened" | "pending" | "bad_source" | null;
+  appearance_id?: string | null;
+  appearanceId?: string | null;
+  catalogTrackId?: string | null;
+  track?: { id: string } | null;
   // Ranked queue scoring metadata
   _match_type?: "full" | "artist" | "unknown";
   _ranked_score?: number;
@@ -78,8 +89,18 @@ export function EpisodeTracklist(props: TracklistProps) {
   const [loading, setLoading] = useState(!isDirectMode);
   const [error, setError] = useState<string | null>(null);
   const [showUnplayable, setShowUnplayable] = useState(false);
+  const [directOverrides, setDirectOverrides] = useState<Record<string, Partial<TrackListItem>>>({});
+  const [contextMenu, setContextMenu] = useState<{
+    track: TrackListItem;
+    canonicalId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [contextAction, setContextAction] = useState<EpisodeTracklistAction | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
   const globalPlayer = useGlobalPlayer();
   const playingRef = useRef<HTMLButtonElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const prevEpisodeIdRef = useRef(episodeId);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
@@ -159,7 +180,20 @@ export function EpisodeTracklist(props: TracklistProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episodeId, refreshKey, isDirectMode]);
 
-  const allTracks = isDirectMode ? (props as DirectTracklistProps).directTracks : fetchedTracks;
+  const canonicalIdForRow = (track: TrackListItem): string | null => {
+    const queued = globalPlayer.queue.find((candidate) =>
+      candidate.id === track.id || candidate.catalogTrackId === track.id
+    );
+    return canonicalEpisodeTracklistRowId(track, canonicalPlayerTrackId(queued));
+  };
+
+  const rawTracks = isDirectMode ? (props as DirectTracklistProps).directTracks : fetchedTracks;
+  const allTracks = isDirectMode
+    ? rawTracks.map((track) => ({
+        ...track,
+        ...(directOverrides[canonicalIdForRow(track) || track.id] || {}),
+      }))
+    : rawTracks;
   const isPlayable = (t: TrackListItem) => !!(t.storage_path || t.audio_url || t.preview_url || t.spotify_url);
   const playableTracks = allTracks.filter(isPlayable);
   const unplayableTracks = allTracks.filter((t) => !isPlayable(t));
@@ -171,6 +205,42 @@ export function EpisodeTracklist(props: TracklistProps) {
       playingRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [loading, globalPlayer.currentTrack?.id]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const close = () => setContextMenu(null);
+    const onPointerDown = (event: PointerEvent) => {
+      if (!contextMenuRef.current?.contains(event.target as Node)) close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+
+    const frame = requestAnimationFrame(() => {
+      const menu = contextMenuRef.current;
+      if (!menu) return;
+      const rect = menu.getBoundingClientRect();
+      const x = Math.max(8, Math.min(contextMenu.x, window.innerWidth - rect.width - 8));
+      const y = Math.max(8, Math.min(contextMenu.y, window.innerHeight - rect.height - 8));
+      if (x !== contextMenu.x || y !== contextMenu.y) {
+        setContextMenu((current) => current ? { ...current, x, y } : null);
+      }
+      menu.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    });
+
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [contextMenu]);
 
   const handlePlay = (t: TrackListItem) => {
     const audioUrl = t.audio_url || t.preview_url || null;
@@ -196,6 +266,60 @@ export function EpisodeTracklist(props: TracklistProps) {
       globalPlayer.play(trackPayload, origin);
     } else {
       globalPlayer.loadTrack(trackPayload, origin);
+    }
+  };
+
+  const openContextMenu = (event: React.MouseEvent, track: TrackListItem) => {
+    const canonicalId = canonicalIdForRow(track);
+    if (!canonicalId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setContextError(null);
+    setContextAction(null);
+    setContextMenu({ track, canonicalId, x: event.clientX, y: event.clientY });
+  };
+
+  const applyLocalTrackPatch = (canonicalId: string, trackPatch: Partial<TrackListItem>) => {
+    setFetchedTracks((current) => current.map((track) =>
+      canonicalIdForRow(track) === canonicalId ? { ...track, ...trackPatch } : track
+    ));
+    setDirectOverrides((current) => ({
+      ...current,
+      [canonicalId]: { ...(current[canonicalId] || {}), ...trackPatch },
+    }));
+  };
+
+  const handleContextAction = async (action: EpisodeTracklistAction) => {
+    if (!contextMenu || contextAction) return;
+    setContextAction(action);
+    setContextError(null);
+    try {
+      const result = await performEpisodeTracklistAction(
+        action,
+        contextMenu.canonicalId,
+        contextMenu.track,
+      );
+      if (result.voteStatus) {
+        const trackPatch: Partial<TrackListItem> = {
+          vote_status: result.voteStatus,
+          status: result.voteStatus,
+        };
+        if (result.superLiked !== undefined) trackPatch.super_liked = result.superLiked;
+        applyLocalTrackPatch(contextMenu.canonicalId, trackPatch);
+        globalPlayer.updateTrackVote(
+          contextMenu.canonicalId,
+          result.voteStatus,
+          result.superLiked,
+        );
+      } else {
+        applyLocalTrackPatch(contextMenu.canonicalId, { is_re_seed: true });
+        globalPlayer.markTrackSeeded(contextMenu.canonicalId, result.seedId);
+      }
+      setContextMenu(null);
+    } catch (actionError) {
+      setContextError(actionError instanceof Error ? actionError.message : "Action failed");
+    } finally {
+      setContextAction(null);
     }
   };
 
@@ -228,6 +352,72 @@ export function EpisodeTracklist(props: TracklistProps) {
   const playable = playableTracks.length;
 
   const displayTitle = listTitle || episodeTitle || "Tracklist";
+
+  const contextMenuPortal = contextMenu && typeof document !== "undefined"
+    ? createPortal(
+        <div
+          ref={contextMenuRef}
+          role="menu"
+          aria-label={`Actions for ${contextMenu.track.title}`}
+          aria-busy={contextAction !== null}
+          className="fixed z-[100] w-52 overflow-hidden rounded-xl border border-surface-4 bg-surface-1/95 p-1.5 shadow-2xl backdrop-blur-xl"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onContextMenu={(event) => event.preventDefault()}
+          onKeyDown={(event) => {
+            if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const items = Array.from(
+              contextMenuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') || [],
+            );
+            if (!items.length) return;
+            const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+            const nextIndex = event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? items.length - 1
+                : event.key === "ArrowDown"
+                  ? (currentIndex + 1 + items.length) % items.length
+                  : (currentIndex - 1 + items.length) % items.length;
+            items[nextIndex]?.focus();
+          }}
+        >
+          <div className="truncate border-b border-surface-3 px-2.5 py-2 text-[10px] font-medium text-muted">
+            {contextMenu.track.artist} — {contextMenu.track.title}
+          </div>
+          {([
+            ["like", "♥", "Like"],
+            ["star", "★", "Star / super-like"],
+            ["reject", "×", "Reject"],
+            ["skip", "→", "Skip"],
+            ["reseed", "🌿", "Re-seed"],
+            ["bad_source", "⚠", "Bad source"],
+          ] as const).map(([action, icon, label]) => (
+            <button
+              key={action}
+              role="menuitem"
+              type="button"
+              disabled={contextAction !== null}
+              onClick={() => void handleContextAction(action)}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-xs text-foreground/85 outline-none transition-colors hover:bg-surface-3 focus:bg-surface-3 disabled:cursor-wait disabled:opacity-50"
+            >
+              <span className="w-4 text-center text-sm" aria-hidden="true">{icon}</span>
+              <span>{contextAction === action ? `${label}…` : label}</span>
+            </button>
+          ))}
+          {contextAction && (
+            <p role="status" className="border-t border-surface-3 px-2.5 py-2 text-[10px] text-muted">
+              Updating…
+            </p>
+          )}
+          {contextError && (
+            <p role="alert" className="border-t border-surface-3 px-2.5 py-2 text-[10px] text-red-400">
+              {contextError}
+            </p>
+          )}
+        </div>,
+        document.body,
+      )
+    : null;
 
   const content = (
     <div className="flex flex-col h-full">
@@ -283,6 +473,8 @@ export function EpisodeTracklist(props: TracklistProps) {
                     onTrackSelect?.(t.id);
                     handlePlay(t);
                   }}
+                  onContextMenu={(event) => openContextMenu(event, t)}
+                  aria-haspopup={canonicalIdForRow(t) ? "menu" : undefined}
                   disabled={false}
                   className={`w-full text-left px-2 py-1.5 rounded-lg flex items-center gap-2.5 transition-colors group border ${
                     seedBadge === "seed"
@@ -411,6 +603,11 @@ export function EpisodeTracklist(props: TracklistProps) {
                   <div
                     key={t.id}
                     className="w-full text-left px-2 py-1.5 rounded-lg flex items-center gap-2.5 border border-transparent opacity-40 cursor-default"
+                    onContextMenu={(event) => {
+                      if (canonicalIdForRow(t)) openContextMenu(event, t);
+                    }}
+                    tabIndex={canonicalIdForRow(t) ? 0 : undefined}
+                    aria-haspopup={canonicalIdForRow(t) ? "menu" : undefined}
                   >
                     <span className="relative w-9 h-9 flex-shrink-0 rounded-md overflow-hidden opacity-30">
                       {t.cover_art_url ? (
@@ -440,13 +637,21 @@ export function EpisodeTracklist(props: TracklistProps) {
   );
 
   if (variant === "sheet") {
-    return <div className="flex-1 min-h-0 flex flex-col">{content}</div>;
+    return (
+      <>
+        <div className="flex-1 min-h-0 flex flex-col">{content}</div>
+        {contextMenuPortal}
+      </>
+    );
   }
 
   return (
-    <div className="h-full w-full bg-surface-1 rounded-xl border border-surface-3 overflow-hidden">
-      {content}
-    </div>
+    <>
+      <div className="h-full w-full bg-surface-1 rounded-xl border border-surface-3 overflow-hidden">
+        {content}
+      </div>
+      {contextMenuPortal}
+    </>
   );
 }
 

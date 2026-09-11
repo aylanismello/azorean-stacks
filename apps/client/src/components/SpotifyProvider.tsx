@@ -14,6 +14,7 @@ interface SpotifyContextType {
   pause: () => Promise<void>;
   resume: () => Promise<void>;
   seek: (positionMs: number) => Promise<void>;
+  setRepeat: (state: "track" | "off") => Promise<void>;
   playerState: Spotify.PlaybackState | null;
 }
 
@@ -29,6 +30,7 @@ const SpotifyContext = createContext<SpotifyContextType>({
   pause: async () => {},
   resume: async () => {},
   seek: async () => {},
+  setRepeat: async () => {},
   playerState: null,
 });
 
@@ -67,6 +69,7 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
   const [playing, setPlaying] = useState(false);
   const playerRef = useRef<Spotify.Player | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const repeatRequestChainRef = useRef<Promise<void>>(Promise.resolve());
 
   // Fetch/refresh the access token from our API
   const fetchToken = useCallback(async (): Promise<string | null> => {
@@ -263,7 +266,7 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
     }
 
     const token = await fetchToken();
-    if (!token) return;
+    if (!token) throw new Error("Spotify access token unavailable");
 
     if (isMobile) {
       let device = deviceId;
@@ -273,7 +276,7 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
       }
       if (!device) throw new Error("No active Spotify device found. Open Spotify on your phone first.");
 
-      await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${device}`, {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${device}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -281,10 +284,11 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
         },
         body: JSON.stringify({ uris: [uri] }),
       });
+      if (!response.ok) throw new Error(`Spotify play failed (${response.status})`);
       setPlaying(true);
     } else {
-      if (!deviceId || !accessToken) return;
-      await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+      if (!deviceId || !accessToken) throw new Error("Spotify device unavailable");
+      const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -292,6 +296,7 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
         },
         body: JSON.stringify({ uris: [uri] }),
       });
+      if (!response.ok) throw new Error(`Spotify play failed (${response.status})`);
     }
   }, [deviceId, accessToken, fetchToken]);
 
@@ -336,6 +341,33 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchToken]);
 
+  const setRepeat = useCallback((state: "track" | "off"): Promise<void> => {
+    const request = repeatRequestChainRef.current.catch(() => {}).then(async () => {
+      const token = await fetchToken();
+      if (!token) throw new Error("Spotify is not connected");
+
+      let device = deviceId;
+      if (!device) {
+        device = await fetchActiveDevice(token);
+        if (device) setDeviceId(device);
+      }
+      if (!device) throw new Error("No active Spotify device found");
+
+      const response = await fetch(
+        `https://api.spotify.com/v1/me/player/repeat?state=${state}&device_id=${encodeURIComponent(device)}`,
+        {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      if (!response.ok) {
+        throw new Error(`Spotify repeat failed (${response.status})`);
+      }
+    });
+    repeatRequestChainRef.current = request;
+    return request;
+  }, [deviceId, fetchToken]);
+
   return (
     <SpotifyContext.Provider
       value={{
@@ -350,6 +382,7 @@ export function SpotifyProvider({ children }: { children: React.ReactNode }) {
         pause,
         resume,
         seek,
+        setRepeat,
         playerState,
       }}
     >

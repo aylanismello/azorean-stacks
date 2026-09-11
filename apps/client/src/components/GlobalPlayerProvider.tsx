@@ -5,7 +5,23 @@ import { useSpotify } from "./SpotifyProvider";
 import { nextEpisodePositionToPrepare } from "@/lib/episode-playback";
 import { refreshSignedUrl } from "@/lib/player-audio";
 import { canonicalPlayerTrackId } from "@/lib/player-track-identity";
+import { validatedQueueIndex } from "@/lib/queue-navigation";
 import { buildQualifiedListenEvidence } from "@/lib/listen-evidence";
+import {
+  createPlaybackSessionId,
+  isRepeatLoopTransition,
+  nextPlaybackReport,
+  samplePlaybackClock,
+  type PlaybackAccountingState,
+  type PlaybackClockState,
+} from "@/lib/playback-accounting";
+import {
+  mediaSessionPositionState,
+  mediaSessionSeekTarget,
+  repeatIdForLoadedTrack,
+  spotifyPlayCommand,
+  toggleRepeatIdForCurrentTrack,
+} from "@/lib/player-media-session";
 
 export interface PlayerTrack {
   id: string;
@@ -87,6 +103,13 @@ export interface EpisodePlaybackSession {
 
 type PlaybackSource = "spotify" | "audio" | null;
 
+interface PlaybackReportState {
+  accounting: PlaybackAccountingState;
+  acknowledgedMs: number;
+  inFlight: boolean;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+}
+
 /** Connection quality based on recent stall history */
 export type ConnectionQuality = "good" | "recovering" | "stalled";
 
@@ -119,11 +142,15 @@ interface GlobalPlayerContextType {
   connectionQuality: ConnectionQuality;
   /** Brief toast messages from the player (e.g. "Skipped — couldn't load") */
   toast: PlayerToast | null;
+  /** Canonical identity of the current track when repeat-one is enabled. */
+  repeatTrackId: string | null;
   /** Load a track into the player without starting playback */
   loadTrack: (track: PlayerTrack, origin?: string) => void;
   /** Load a track and immediately start playing */
   play: (track: PlayerTrack, origin?: string) => void;
   togglePlayPause: () => void;
+  /** Toggle repeat-one, but only for the currently loaded canonical track. */
+  toggleRepeatTrack: (canonicalTrackId: string) => void;
   seek: (seconds: number) => void;
   stop: () => void;
   /** Switch playback source (audio <-> spotify) while keeping playback going */
@@ -169,9 +196,11 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   trackStartedAt: null,
   connectionQuality: "good",
   toast: null,
+  repeatTrackId: null,
   loadTrack: () => {},
   play: () => {},
   togglePlayPause: () => {},
+  toggleRepeatTrack: () => {},
   seek: () => {},
   stop: () => {},
   switchSource: () => {},
@@ -198,6 +227,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [currentTrack, setCurrentTrack] = useState<PlayerTrack | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [nativePlaybackActive, setNativePlaybackActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -209,6 +239,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [trackStartedAt, setTrackStartedAt] = useState<number | null>(null);
   const [connectionQuality, setConnectionQuality] = useState<ConnectionQuality>("good");
   const [toast, setToast] = useState<PlayerToast | null>(null);
+  const [repeatTrackId, setRepeatTrackId] = useState<string | null>(null);
+  const repeatTrackIdRef = useRef<string | null>(null);
 
   // Queue management
   const [queue, setQueueState] = useState<PlayerTrack[]>([]);
@@ -222,6 +254,19 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const lastEpisodeEndedCountRef = useRef(0);
   // Tracks whether we've already fired the 'listened' mark for the current track session
   const listenedFiredRef = useRef(false);
+
+  // Durable play accounting is intentionally separate from media position:
+  // wall-clock samples cannot be inflated by seeking.
+  const playbackSessionRef = useRef<PlaybackReportState | null>(null);
+  const playbackReportsRef = useRef<Set<PlaybackReportState>>(new Set());
+  const playbackClockRef = useRef<PlaybackClockState>({ sampledAtMs: 0, wasPlaying: false });
+  const lastPlaybackPositionRef = useRef<number | null>(null);
+  const playbackAccountingMountedRef = useRef(true);
+  // Tracks whether this GlobalPlayer track has actually been started on Spotify.
+  // A paused started track must resume; a merely loaded track must start its URI.
+  const spotifyTrackStartedRef = useRef(false);
+  const spotifyCommandChainRef = useRef<Promise<void>>(Promise.resolve());
+  const spotifyPlayGenerationRef = useRef(0);
 
   // Stall detection refs
   const lastProgressTimeRef = useRef(0); // last audio.currentTime we saw
@@ -251,6 +296,91 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     }, 3000);
   }, []);
 
+  const flushPlaybackReport = useCallback((report: PlaybackReportState): void => {
+    const target = report.accounting.requestedMs;
+    if (report.inFlight || target <= report.acknowledgedMs) return;
+
+    report.inFlight = true;
+    fetch(`/api/user-tracks/${report.accounting.trackId}/play`, {
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: report.accounting.sessionId,
+        listened_ms: target,
+      }),
+    }).then((response) => {
+      if (!response.ok) throw new Error(`Playback accounting failed (${response.status})`);
+      report.acknowledgedMs = Math.max(report.acknowledgedMs, target);
+      report.inFlight = false;
+      if (report.accounting.requestedMs > report.acknowledgedMs) {
+        flushPlaybackReport(report);
+      } else if (playbackSessionRef.current !== report) {
+        playbackReportsRef.current.delete(report);
+      }
+    }).catch(() => {
+      report.inFlight = false;
+      if (!playbackAccountingMountedRef.current || report.retryTimer) return;
+      report.retryTimer = setTimeout(() => {
+        report.retryTimer = null;
+        flushPlaybackReport(report);
+      }, 5_000);
+    });
+  }, []);
+
+  const accountPlaybackSample = useCallback((isPlaying: boolean, nowMs = performance.now()) => {
+    const sample = samplePlaybackClock(playbackClockRef.current, nowMs, isPlaying);
+    playbackClockRef.current = sample.clock;
+    const report = playbackSessionRef.current;
+    if (!report || sample.elapsedPlayingMs <= 0) return;
+    report.accounting = nextPlaybackReport(report.accounting, sample.elapsedPlayingMs);
+    flushPlaybackReport(report);
+  }, [flushPlaybackReport]);
+
+  const startPlaybackAccountingSession = useCallback((track: PlayerTrack | null, continuing = false) => {
+    accountPlaybackSample(false);
+    const previous = playbackSessionRef.current;
+    if (previous && !previous.inFlight && previous.accounting.requestedMs <= previous.acknowledgedMs) {
+      playbackReportsRef.current.delete(previous);
+    }
+
+    const now = performance.now();
+    playbackClockRef.current = { sampledAtMs: now, wasPlaying: continuing };
+    lastPlaybackPositionRef.current = null;
+    const trackId = canonicalPlayerTrackId(track);
+    if (!trackId) {
+      playbackSessionRef.current = null;
+      return;
+    }
+
+    const report: PlaybackReportState = {
+      accounting: {
+        sessionId: createPlaybackSessionId(),
+        trackId,
+        listenedMs: 0,
+        requestedMs: 0,
+      },
+      acknowledgedMs: 0,
+      inFlight: false,
+      retryTimer: null,
+    };
+    playbackReportsRef.current.add(report);
+    playbackSessionRef.current = report;
+  }, [accountPlaybackSample]);
+
+  useEffect(() => {
+    playbackAccountingMountedRef.current = true;
+    return () => {
+      // Queue the final complete chunk before disabling retries. `keepalive`
+      // lets the request survive page close/navigation when the browser permits.
+      accountPlaybackSample(false);
+      playbackAccountingMountedRef.current = false;
+      for (const report of playbackReportsRef.current) {
+        if (report.retryTimer) clearTimeout(report.retryTimer);
+      }
+    };
+  }, [accountPlaybackSample]);
+
   // Track the current track ref for use in stall recovery (avoids stale closures)
   const currentTrackRef = useRef<PlayerTrack | null>(null);
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
@@ -258,6 +388,54 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   useEffect(() => { sourceRef.current = source; }, [source]);
   const playingRef = useRef(false);
   useEffect(() => { playingRef.current = playing; }, [playing]);
+  const progressRef = useRef(0);
+  useEffect(() => { progressRef.current = progress; }, [progress]);
+  const durationRef = useRef(0);
+  useEffect(() => { durationRef.current = duration; }, [duration]);
+
+  // Sample both native and Spotify playback from the same monotonic clock.
+  // Buffering closes the active interval just like pausing does.
+  useEffect(() => {
+    const sourceIsAdvancing = source === "audio" ? nativePlaybackActive : playing;
+    const active = sourceIsAdvancing && !buffering && currentTrack !== null;
+    accountPlaybackSample(active);
+    if (!active) return;
+
+    const interval = setInterval(() => accountPlaybackSample(true), 1_000);
+    return () => {
+      clearInterval(interval);
+      accountPlaybackSample(false);
+    };
+  }, [accountPlaybackSample, buffering, currentTrack, nativePlaybackActive, playing, source]);
+
+  // A repeat-one wrap is a new playback session. Position is used only to
+  // identify the wrap; elapsed listening still comes exclusively from the clock.
+  useEffect(() => {
+    const canonicalId = canonicalPlayerTrackId(currentTrack);
+    const repeated = canonicalId !== null && repeatTrackId === canonicalId;
+    const looped = isRepeatLoopTransition(
+      lastPlaybackPositionRef.current,
+      progress,
+      duration,
+      repeated,
+    );
+    lastPlaybackPositionRef.current = progress;
+    if (looped) {
+      const sourceIsAdvancing = source === "audio" ? nativePlaybackActive : playing;
+      startPlaybackAccountingSession(currentTrack, sourceIsAdvancing && !buffering);
+      lastPlaybackPositionRef.current = progress;
+    }
+  }, [buffering, currentTrack, duration, nativePlaybackActive, playing, progress, repeatTrackId, source, startPlaybackAccountingSession]);
+
+  // Keep native audio repeat tied to canonical identity. The browser handles
+  // the loop without emitting `ended`, so ordinary auto-advance stays intact.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.loop = source === "audio"
+      && repeatTrackId !== null
+      && repeatTrackId === canonicalPlayerTrackId(currentTrack);
+  }, [currentTrack, repeatTrackId, source]);
 
   // Create a persistent audio element
   useEffect(() => {
@@ -266,15 +444,16 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     audioRef.current = audio;
 
     const onPlay = () => { setPlaying(true); setLoading(false); setBuffering(false); };
-    const onPause = () => setPlaying(false);
-    const onEnded = () => { setPlaying(false); setProgress(0); setTrackEndedCount((c) => c + 1); };
-    const onWaiting = () => { setLoading(true); setBuffering(true); };
-    const onStalled = () => { setBuffering(true); };
-    const onPlaying = () => { setLoading(false); setBuffering(false); isRecoveringRef.current = false; };
+    const onPause = () => { setPlaying(false); setNativePlaybackActive(false); };
+    const onEnded = () => { setPlaying(false); setNativePlaybackActive(false); setProgress(0); setTrackEndedCount((c) => c + 1); };
+    const onWaiting = () => { setNativePlaybackActive(false); setLoading(true); setBuffering(true); };
+    const onStalled = () => { setNativePlaybackActive(false); setBuffering(true); };
+    const onPlaying = () => { setNativePlaybackActive(true); setLoading(false); setBuffering(false); isRecoveringRef.current = false; };
     const onCanPlay = () => { setLoading(false); };
     const onTimeUpdate = () => setProgress(audio.currentTime);
     const onLoadedMetadata = () => setDuration(audio.duration);
     const onError = () => {
+      setNativePlaybackActive(false);
       // Audio element error — could be expired URL or network issue
       // Only trigger recovery if we were supposed to be playing
       if (!audio.paused || isRecoveringRef.current) {
@@ -562,6 +741,51 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     } catch {}
   }, [spotify]);
 
+  const updateRepeatState = useCallback((trackId: string | null) => {
+    repeatTrackIdRef.current = trackId;
+    setRepeatTrackId(trackId);
+  }, []);
+
+  const clearRepeatForDifferentTrack = useCallback((track: PlayerTrack | null) => {
+    const retainedRepeatId = repeatIdForLoadedTrack(
+      repeatTrackIdRef.current,
+      canonicalPlayerTrackId(track),
+    );
+    if (retainedRepeatId === repeatTrackIdRef.current) return;
+
+    updateRepeatState(null);
+    if (audioRef.current) audioRef.current.loop = false;
+    if (sourceRef.current === "spotify") {
+      spotify.setRepeat("off").catch(() => {});
+    }
+  }, [spotify, updateRepeatState]);
+
+  const toggleRepeatTrack = useCallback((canonicalTrackId: string) => {
+    const previousRepeatId = repeatTrackIdRef.current;
+    const toggle = toggleRepeatIdForCurrentTrack(
+      canonicalTrackId,
+      canonicalPlayerTrackId(currentTrackRef.current),
+      previousRepeatId,
+    );
+    if (!toggle.accepted) return;
+    const nextRepeatId = toggle.repeatTrackId;
+    updateRepeatState(nextRepeatId);
+
+    if (sourceRef.current === "spotify") {
+      spotify.setRepeat(nextRepeatId ? "track" : "off").catch(() => {
+        if (
+          canonicalPlayerTrackId(currentTrackRef.current) === canonicalTrackId
+          && repeatTrackIdRef.current === nextRepeatId
+        ) {
+          updateRepeatState(previousRepeatId);
+        }
+      });
+      return;
+    }
+
+    if (audioRef.current) audioRef.current.loop = nextRepeatId !== null;
+  }, [spotify, updateRepeatState]);
+
   const setQueue = useCallback((newQueue: PlayerTrack[], startIndex?: number) => {
     // Ordinary queues end any dedicated episode session without changing their behavior.
     episodeSessionRef.current = null;
@@ -575,13 +799,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     } else {
       // Preserve current track position in updated queue
       const currentId = currentTrackRef.current?.id;
-      if (currentId) {
-        const newIdx = newQueue.findIndex(t => t.id === currentId);
-        if (newIdx >= 0) {
-          currentIndexRef.current = newIdx;
-          setCurrentIndex(newIdx);
-        }
-      }
+      const newIdx = currentId
+        ? newQueue.findIndex(t => t.id === currentId)
+        : (newQueue.length > 0 ? 0 : -1);
+      currentIndexRef.current = newIdx;
+      setCurrentIndex(newIdx);
     }
   }, []);
 
@@ -724,9 +946,12 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, []);
 
   const loadTrack = useCallback((track: PlayerTrack, origin?: string) => {
+    startPlaybackAccountingSession(track);
+    clearRepeatForDifferentTrack(track);
     // Stop whatever is currently playing
     stopAudio();
     stopSpotify();
+    spotifyTrackStartedRef.current = false;
 
     setCurrentTrack(track);
     setProgress(0);
@@ -766,12 +991,19 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       setSource(null);
       setNoSource(true);
     }
-  }, [spotify, stopAudio, stopSpotify]);
+  }, [clearRepeatForDifferentTrack, spotify, startPlaybackAccountingSession, stopAudio, stopSpotify]);
 
   const play = useCallback((track: PlayerTrack, origin?: string) => {
-    // Stop whatever is currently playing
+    startPlaybackAccountingSession(track);
+    clearRepeatForDifferentTrack(track);
+    // Serialize a Spotify-to-Spotify track change so a late pause request cannot
+    // land after the new URI starts.
     stopAudio();
-    stopSpotify();
+    const spotifyGeneration = ++spotifyPlayGenerationRef.current;
+    spotifyCommandChainRef.current = spotifyCommandChainRef.current
+      .catch(() => {})
+      .then(() => stopSpotify());
+    spotifyTrackStartedRef.current = false;
 
     setCurrentTrack(track);
     setProgress(0);
@@ -838,15 +1070,24 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       });
     } else if (spotify.connected && spotify.deviceId && track.spotifyUrl) {
       setSource("spotify");
-      spotify.playUri(track.spotifyUrl).catch(() => {
-        setLoading(false);
-        setNoSource(true);
-      });
+      spotifyCommandChainRef.current = spotifyCommandChainRef.current
+        .then(async () => {
+          if (spotifyPlayGenerationRef.current !== spotifyGeneration) return;
+          await spotify.playUri(track.spotifyUrl!);
+          if (spotifyPlayGenerationRef.current !== spotifyGeneration) return;
+          spotifyTrackStartedRef.current = true;
+        })
+        .catch(() => {
+          if (spotifyPlayGenerationRef.current !== spotifyGeneration) return;
+          spotifyTrackStartedRef.current = false;
+          setLoading(false);
+          setNoSource(true);
+        });
     } else {
       setLoading(false);
       setNoSource(true);
     }
-  }, [spotify, stopAudio, stopSpotify, replaceAudioUrl]);
+  }, [clearRepeatForDifferentTrack, spotify, startPlaybackAccountingSession, stopAudio, stopSpotify, replaceAudioUrl]);
 
   const playFromQueue = useCallback((index: number, origin?: string) => {
     const track = queueRef.current[index];
@@ -857,14 +1098,24 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, [play]);
 
   const next = useCallback(() => {
-    const nextIdx = currentIndexRef.current + 1;
+    const queueIndex = validatedQueueIndex(
+      queueRef.current,
+      currentIndexRef.current,
+      currentTrackRef.current?.id,
+    );
+    const nextIdx = queueIndex + 1;
     if (nextIdx >= queueRef.current.length) return false;
     playFromQueue(nextIdx);
     return true;
   }, [playFromQueue]);
 
   const prev = useCallback(() => {
-    const prevIdx = currentIndexRef.current - 1;
+    const queueIndex = validatedQueueIndex(
+      queueRef.current,
+      currentIndexRef.current,
+      currentTrackRef.current?.id,
+    );
+    const prevIdx = queueIndex - 1;
     if (prevIdx < 0) return false;
     playFromQueue(prevIdx);
     return true;
@@ -904,10 +1155,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       if (playing) {
         spotify.pause();
       } else {
-        // If never started, play the URI
-        if (!playing && currentTrack.spotifyUrl) {
+        if (spotifyPlayCommand(spotifyTrackStartedRef.current) === "start" && currentTrack.spotifyUrl) {
           setLoading(true);
-          spotify.playUri(currentTrack.spotifyUrl).catch(() => setLoading(false));
+          spotify.playUri(currentTrack.spotifyUrl)
+            .then(() => { spotifyTrackStartedRef.current = true; })
+            .catch(() => setLoading(false));
         } else {
           spotify.resume();
         }
@@ -923,12 +1175,14 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       const audio = audioRef.current;
       if (!audio) return;
       audio.currentTime = Math.max(0, Math.min(audio.duration || 0, seconds));
+      lastPlaybackPositionRef.current = audio.currentTime;
       setProgress(audio.currentTime);
       // Reset stall detection after seek
       lastProgressTimeRef.current = audio.currentTime;
       lastProgressCheckRef.current = Date.now();
     } else if (source === "spotify") {
       spotify.seek(seconds * 1000);
+      lastPlaybackPositionRef.current = seconds;
       setProgress(seconds);
     }
   }, [source, spotify]);
@@ -944,8 +1198,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const switchSource = useCallback((to: "audio" | "spotify") => {
     if (!currentTrack || source === to) return;
     const wasPlaying = playing;
+    lastPlaybackPositionRef.current = null;
 
     if (to === "audio" && currentTrack.audioUrl) {
+      spotifyTrackStartedRef.current = false;
+      if (repeatTrackIdRef.current) spotify.setRepeat("off").catch(() => {});
       stopSpotify();
       setSource("audio");
       setProgress(0);
@@ -965,16 +1222,23 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       setProgress(0);
       setDuration(0);
       setBuffering(false);
+      spotifyTrackStartedRef.current = false;
+      spotify.setRepeat(repeatTrackIdRef.current ? "track" : "off").catch(() => {});
       if (wasPlaying) {
         setLoading(true);
-        spotify.playUri(currentTrack.spotifyUrl).catch(() => setLoading(false));
+        spotify.playUri(currentTrack.spotifyUrl)
+          .then(() => { spotifyTrackStartedRef.current = true; })
+          .catch(() => setLoading(false));
       }
     }
   }, [currentTrack, source, playing, spotify, stopAudio, stopSpotify]);
 
   const stop = useCallback(() => {
+    startPlaybackAccountingSession(null);
+    clearRepeatForDifferentTrack(null);
     stopAudio();
     stopSpotify();
+    spotifyTrackStartedRef.current = false;
     setCurrentTrack(null);
     setPlaying(false);
     setLoading(false);
@@ -1000,7 +1264,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       preloadAudioRef.current = null;
       preloadedTrackIdRef.current = null;
     }
-  }, [stopAudio, stopSpotify]);
+  }, [clearRepeatForDifferentTrack, startPlaybackAccountingSession, stopAudio, stopSpotify]);
 
   /** Preload a track's audio in the background for instant transitions */
   const preloadTrack = useCallback((track: PlayerTrack) => {
@@ -1024,6 +1288,91 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   // ── Auto-preload next track at 75% completion ──
   // This is triggered from the page level via the preloadTrack function
   // (the provider doesn't know about the queue, so the page calls preloadTrack)
+
+  // Publish current-track details to lock-screen/control-center surfaces.
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = currentTrack && "MediaMetadata" in window
+        ? new MediaMetadata({
+            title: currentTrack.title,
+            artist: currentTrack.artist,
+            album: currentTrack.episodeTitle ?? currentTrack.source_context ?? "The Stacks",
+            artwork: currentTrack.coverArtUrl ? [{ src: currentTrack.coverArtUrl }] : [],
+          })
+        : null;
+    } catch {
+      // Safari may expose a partial Media Session implementation.
+    }
+  }, [currentTrack]);
+
+  // Install each action independently: Safari throws for handlers it exposes
+  // but does not implement, while Chromium accepts the full action set.
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const mediaSession = navigator.mediaSession;
+    const handlers: Array<[MediaSessionAction, MediaSessionActionHandler]> = [
+      ["play", () => { if (!playingRef.current) togglePlayPause(); }],
+      ["pause", () => { if (playingRef.current) togglePlayPause(); }],
+      ["previoustrack", () => { prev(); }],
+      ["nexttrack", () => { next(); }],
+      ["seekbackward", (details) => {
+        const target = mediaSessionSeekTarget(
+          "seekbackward",
+          progressRef.current,
+          durationRef.current,
+          details,
+        );
+        if (target !== null) seek(target);
+      }],
+      ["seekforward", (details) => {
+        const target = mediaSessionSeekTarget(
+          "seekforward",
+          progressRef.current,
+          durationRef.current,
+          details,
+        );
+        if (target !== null) seek(target);
+      }],
+      ["seekto", (details) => {
+        const target = mediaSessionSeekTarget(
+          "seekto",
+          progressRef.current,
+          durationRef.current,
+          details,
+        );
+        if (target !== null) seek(target);
+      }],
+      ["stop", () => { stop(); }],
+    ];
+
+    for (const [action, handler] of handlers) {
+      try { mediaSession.setActionHandler(action, handler); } catch {}
+    }
+    return () => {
+      for (const [action] of handlers) {
+        try { mediaSession.setActionHandler(action, null); } catch {}
+      }
+    };
+  }, [next, prev, seek, stop, togglePlayPause]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      navigator.mediaSession.playbackState = currentTrack
+        ? (playing ? "playing" : "paused")
+        : "none";
+    } catch {}
+  }, [currentTrack, playing]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator) || !("setPositionState" in navigator.mediaSession)) return;
+    const positionState = mediaSessionPositionState(progress, duration);
+    try {
+      if (positionState) navigator.mediaSession.setPositionState(positionState);
+      else navigator.mediaSession.setPositionState();
+    } catch {}
+  }, [duration, progress]);
 
   // Global spacebar → play/pause (works on every page, not just the stack page)
   useEffect(() => {
@@ -1056,9 +1405,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         trackStartedAt,
         connectionQuality,
         toast,
+        repeatTrackId,
         loadTrack,
         play,
         togglePlayPause,
+        toggleRepeatTrack,
         seek,
         stop,
         switchSource,
