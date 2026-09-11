@@ -166,6 +166,7 @@ export async function POST(req: NextRequest) {
     track_id: null,
     user_id: user.id,
     source: "manual",
+    fyp_refresh_required_at: now.toISOString(),
     pipeline_status: {
       state: "queued",
       started_at: now.toISOString(),

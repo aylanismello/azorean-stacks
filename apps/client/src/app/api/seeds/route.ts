@@ -479,6 +479,7 @@ export async function POST(req: NextRequest) {
       user_id: user.id,
       source: source || "manual",
       pipeline_status: pipelineStatus,
+      fyp_refresh_required_at: now.toISOString(),
     })
     .select()
     .single();

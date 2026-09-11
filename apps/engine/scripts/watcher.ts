@@ -34,7 +34,12 @@ import {
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { downloadConcurrency, preferredAcquisitionUrl, ytDlpAudioArgs } from "../lib/yt-dlp";
 import { isExplicitDecision, refreshDecisionQueue } from "../lib/decision-refresh";
-import { createQueueMutationSerializer, refreshSeedOwnerQueue } from "../lib/seed-refresh";
+import {
+  createQueueMutationSerializer,
+  isPriorityManagedSeed,
+  latestStatelessUserSeeds,
+  recoverSeedFypRefreshes,
+} from "../lib/seed-refresh";
 
 const db = getSupabase();
 const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json`;
@@ -128,6 +133,38 @@ async function getPrimaryUserId(): Promise<string | null> {
 
 // ─── SEED PIPELINE ──────────────────────────────────────────
 
+async function queueLegacyUserSeedForPriority(seed: {
+  id: string;
+  user_id: string;
+  pipeline_status?: Record<string, unknown> | null;
+  fyp_refresh_required_at?: string | null;
+}): Promise<void> {
+  const now = new Date();
+  const status = seed.pipeline_status || {};
+  const logs = Array.isArray(status.log) ? status.log : [];
+  const { data, error } = await db.from("seeds").update({
+    pipeline_status: {
+      ...status,
+      state: "queued",
+      started_at: now.toISOString(),
+      log: [...logs, { t: now.toTimeString().slice(0, 8), msg: "legacy seed queued for priority discovery" }],
+    },
+    fyp_refresh_required_at: seed.fyp_refresh_required_at || now.toISOString(),
+    fyp_refreshed_at: null,
+    fyp_refresh_claimed_at: null,
+  })
+    .eq("id", seed.id)
+    .eq("user_id", seed.user_id)
+    .eq("active", true)
+    .filter("pipeline_status->>state", "is", null)
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(`legacy seed priority adoption failed: ${error.message}`);
+  // No row means another worker adopted it or its owner/activation changed.
+  // Either way, this legacy processor must stop and let the current owner win.
+  if (!data) return;
+}
+
 async function processSeed(seedId: string) {
   const t0 = Date.now();
 
@@ -141,6 +178,18 @@ async function processSeed(seedId: string) {
       seedId,
       message: `Could not read seed: ${seedErr?.message ?? "not found"}`,
     });
+    return;
+  }
+
+  // User-owned seeds are handled end-to-end by processPriorityQueue. Legacy
+  // stateless rows are first upgraded to durable queued work, then returned.
+  if (seed.user_id) {
+    if (!isPriorityManagedSeed(seed)) {
+      await queueLegacyUserSeedForPriority(seed as typeof seed & { user_id: string });
+      log("info", `Legacy user seed ${seedId} delegated to priority pipeline`);
+    } else {
+      log("skip", `Priority-managed seed ${seedId} ignored by legacy seed queue`);
+    }
     return;
   }
 
@@ -399,16 +448,8 @@ async function processSeed(seedId: string) {
     }
   }
 
-  if (seed.user_id) {
-    await refreshSeedOwnerQueue(
-      seed.user_id,
-      (userId) => serializeQueueMutation(() => refreshPersonalizedQueue(userId, 3)),
-      (error) => log("fail", `Seed FYP refresh failed for ${seed.user_id}: ${error instanceof Error ? error.message : error}`),
-    );
-  } else {
-    const materialized = await serializeQueueMutation(() => materializeAllQueues(db));
-    log("info", `Materialized ${materialized.tracks} queue entries for ${materialized.users} user(s)`);
-  }
+  const materialized = await serializeQueueMutation(() => materializeAllQueues(db));
+  log("info", `Materialized ${materialized.tracks} queue entries for ${materialized.users} user(s)`);
 
   console.log(`\n  Watcher pipeline done for ${seedLabel} (${elapsed(t0)})`);
   console.log(`  Tracks added: ${tracksAdded}, Episode: ${episodeProcessed || "none"}\n`);
@@ -443,39 +484,79 @@ function enqueueTrack(trackId: string) {
 }
 
 async function enqueueBacklogSeeds() {
-  const { data: seeds, error: seedErr } = await db.from("seeds")
-    .select("id, artist, title, created_at")
-    .eq("active", true)
-    .order("created_at", { ascending: true });
-
-  if (seedErr || !seeds?.length) {
-    if (seedErr) log("fail", `Backlog seed scan failed: ${seedErr.message}`);
-    return;
+  const PAGE = 1000;
+  const seeds: Array<{
+    id: string;
+    artist: string;
+    title: string;
+    created_at: string;
+    user_id: string | null;
+    pipeline_status: Record<string, unknown> | null;
+  }> = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await db.from("seeds")
+      .select("id,artist,title,created_at,user_id,pipeline_status")
+      .eq("active", true)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      log("fail", `Backlog seed scan failed: ${error.message}`);
+      return;
+    }
+    seeds.push(...(data || []));
+    if (!data || data.length < PAGE) break;
   }
+
+  if (seeds.length === 0) return;
 
   const seedIds = seeds.map((seed) => seed.id);
 
-  // Paginate .in() queries to avoid Supabase 1000-row cap
-  const PAGE = 1000;
-  const allEpisodeLinks: any[] = [];
-  const allRunLinks: any[] = [];
+  // Paginate both the seed IDs and each link table's result rows. One seed can
+  // have many links, so batching IDs alone does not avoid PostgREST's row cap.
+  const loadLinkedSeedIds = async (
+    table: "episode_seeds" | "discovery_runs",
+    batch: string[],
+  ): Promise<Array<{ seed_id: string }>> => {
+    const links: Array<{ seed_id: string }> = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await db.from(table)
+        .select("seed_id")
+        .in("seed_id", batch)
+        .order("seed_id", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`${table} backlog scan failed: ${error.message}`);
+      links.push(...((data || []) as Array<{ seed_id: string }>));
+      if (!data || data.length < PAGE) break;
+    }
+    return links;
+  };
+
+  const allEpisodeLinks: Array<{ seed_id: string }> = [];
+  const allRunLinks: Array<{ seed_id: string }> = [];
   for (let i = 0; i < seedIds.length; i += PAGE) {
     const batch = seedIds.slice(i, i + PAGE);
-    const [{ data: epPage, error: epErr }, { data: runPage, error: runErr }] = await Promise.all([
-      db.from("episode_seeds").select("seed_id").in("seed_id", batch),
-      db.from("discovery_runs").select("seed_id").in("seed_id", batch),
-    ]);
-    if (epErr || runErr) {
-      log("fail", `Backlog scan failed: ${epErr?.message || runErr?.message}`);
+    try {
+      const [episodeLinks, runLinks] = await Promise.all([
+        loadLinkedSeedIds("episode_seeds", batch),
+        loadLinkedSeedIds("discovery_runs", batch),
+      ]);
+      allEpisodeLinks.push(...episodeLinks);
+      allRunLinks.push(...runLinks);
+    } catch (error) {
+      log("fail", error instanceof Error ? error.message : String(error));
       return;
     }
-    if (epPage) allEpisodeLinks.push(...epPage);
-    if (runPage) allRunLinks.push(...runPage);
   }
 
   const seedsWithEpisodes = new Set(allEpisodeLinks.map((link: any) => link.seed_id));
   const seedsWithRuns = new Set(allRunLinks.map((link: any) => link.seed_id));
-  const freshSeeds = seeds.filter((seed) => !seedsWithEpisodes.has(seed.id) && !seedsWithRuns.has(seed.id));
+  const freshSharedSeeds = seeds.filter((seed) =>
+    !seed.user_id
+      && !seedsWithEpisodes.has(seed.id)
+      && !seedsWithRuns.has(seed.id)
+  );
+  const freshSeeds = [...freshSharedSeeds, ...latestStatelessUserSeeds(seeds)];
 
   if (freshSeeds.length === 0) {
     log("info", "No backlog seeds to recover");
@@ -791,37 +872,223 @@ function markSuperLikeFailed(trackId: string) {
 
 // ─── PRIORITY PIPELINE ──────────────────────────────────────
 
+type SeedPipelineFence = {
+  id: string;
+  user_id: string;
+  fyp_refresh_required_at: string;
+};
+
 async function updatePipelineStatus(
-  seedId: string,
+  fence: SeedPipelineFence,
   updates: Record<string, unknown>,
   logMsg?: string,
-) {
+): Promise<void> {
+  const { data: seed, error: readError } = await db.from("seeds")
+    .select("pipeline_status")
+    .eq("id", fence.id)
+    .eq("user_id", fence.user_id)
+    .eq("active", true)
+    .eq("fyp_refresh_required_at", fence.fyp_refresh_required_at)
+    .maybeSingle();
+  if (readError) throw new Error(`pipeline status read failed: ${readError.message}`);
+  if (!seed) throw new Error("seed pipeline generation changed");
+
+  const current = (seed.pipeline_status as Record<string, unknown>) || {};
+  const timeStr = new Date().toTimeString().slice(0, 8);
+  const newLogs = logMsg
+    ? [...((current.log as unknown[]) || []), { t: timeStr, msg: logMsg }]
+    : (current.log as unknown[]) || [];
+  const newStatus = { ...current, ...updates, log: newLogs };
+  const { data: updated, error: updateError } = await db.from("seeds")
+    .update({ pipeline_status: newStatus })
+    .eq("id", fence.id)
+    .eq("user_id", fence.user_id)
+    .eq("active", true)
+    .eq("fyp_refresh_required_at", fence.fyp_refresh_required_at)
+    .select("id")
+    .maybeSingle();
+  if (updateError) throw new Error(`pipeline status write failed: ${updateError.message}`);
+  if (!updated) throw new Error("seed pipeline generation changed before status write");
+}
+
+async function loadSeedFypRefresh(seedId: string): Promise<{
+  id: string;
+  user_id: string;
+  fyp_refresh_required_at: string;
+} | null> {
+  const { data, error } = await db.from("seeds")
+    .select("id,user_id,fyp_refresh_required_at")
+    .eq("id", seedId)
+    .eq("active", true)
+    .maybeSingle();
+  if (error) throw new Error(`seed FYP requirement lookup failed: ${error.message}`);
+  if (!data?.user_id || !data.fyp_refresh_required_at) return null;
+  return data as { id: string; user_id: string; fyp_refresh_required_at: string };
+}
+
+async function claimSeedFypRefresh(seed: {
+  id: string;
+  fyp_refresh_required_at?: string | null;
+}): Promise<string | null> {
+  if (!seed.fyp_refresh_required_at) return null;
+  const { data, error } = await db.rpc("claim_seed_fyp_refresh", {
+    p_seed_id: seed.id,
+    p_required_at: seed.fyp_refresh_required_at,
+  });
+  if (error) throw new Error(`seed FYP claim failed: ${error.message}`);
+  return typeof data === "string" && data ? data : null;
+}
+
+async function writeSeedFypCheckpoint(
+  seed: { id: string; user_id?: string | null; fyp_refresh_required_at?: string | null },
+  claimToken: string,
+): Promise<void> {
+  if (!seed.user_id || !seed.fyp_refresh_required_at) {
+    throw new Error("seed FYP owner or requirement marker is missing");
+  }
+  const { data, error: updateError } = await db.from("seeds").update({
+    fyp_refreshed_at: new Date().toISOString(),
+    fyp_refresh_claimed_at: null,
+  })
+    .eq("id", seed.id)
+    .eq("user_id", seed.user_id)
+    .eq("active", true)
+    .eq("fyp_refresh_required_at", seed.fyp_refresh_required_at)
+    .eq("fyp_refresh_claimed_at", claimToken)
+    .is("fyp_refreshed_at", null)
+    .select("id")
+    .maybeSingle();
+  if (updateError) throw new Error(`seed FYP checkpoint write failed: ${updateError.message}`);
+  if (data) return;
+
+  const { data: current, error: readError } = await db.from("seeds")
+    .select("user_id,active,fyp_refresh_required_at,fyp_refreshed_at")
+    .eq("id", seed.id)
+    .maybeSingle();
+  if (readError) throw new Error(`seed FYP checkpoint verification failed: ${readError.message}`);
+  if (
+    current?.user_id === seed.user_id
+      && current.active === true
+      && current.fyp_refresh_required_at === seed.fyp_refresh_required_at
+      && current.fyp_refreshed_at
+  ) return;
+  throw new Error("seed FYP generation changed before checkpoint");
+}
+
+async function releaseSeedFypClaim(
+  seed: { id: string; user_id?: string | null; fyp_refresh_required_at?: string | null },
+  claimToken: string,
+): Promise<void> {
+  if (!seed.user_id || !seed.fyp_refresh_required_at) return;
+  const { error } = await db.from("seeds").update({ fyp_refresh_claimed_at: null })
+    .eq("id", seed.id)
+    .eq("user_id", seed.user_id)
+    .eq("active", true)
+    .eq("fyp_refresh_required_at", seed.fyp_refresh_required_at)
+    .eq("fyp_refresh_claimed_at", claimToken)
+    .is("fyp_refreshed_at", null);
+  if (error) throw new Error(`seed FYP claim release failed: ${error.message}`);
+}
+
+async function refreshSeedFypWithCheckpoint(
+  seedId: string,
+  expectedUserId: string | null | undefined,
+  expectedRequiredAt?: string,
+  afterRefresh?: (ownerUserId: string) => Promise<void>,
+): Promise<boolean> {
+  if (!expectedUserId) return false;
+  let seed: Awaited<ReturnType<typeof loadSeedFypRefresh>> = null;
+  let claimToken: string | null = null;
   try {
-    const { data: seed } = await db.from("seeds").select("pipeline_status").eq("id", seedId).single();
-    const current = (seed?.pipeline_status as Record<string, unknown>) || {};
-    const timeStr = new Date().toTimeString().slice(0, 8);
-    const newLogs = logMsg
-      ? [...((current.log as unknown[]) || []), { t: timeStr, msg: logMsg }]
-      : (current.log as unknown[]) || [];
-    const newStatus = { ...current, ...updates, log: newLogs };
-    await db.from("seeds").update({ pipeline_status: newStatus }).eq("id", seedId);
-  } catch (err) {
-    log("fail", `updatePipelineStatus failed for ${seedId}: ${err instanceof Error ? err.message : err}`);
+    seed = await loadSeedFypRefresh(seedId);
+    if (
+      !seed
+        || seed.user_id !== expectedUserId
+        || (expectedRequiredAt && seed.fyp_refresh_required_at !== expectedRequiredAt)
+    ) return false;
+    claimToken = await claimSeedFypRefresh(seed);
+    if (!claimToken) return false;
+    await serializeQueueMutation(() => refreshPersonalizedQueue(seed!.user_id, 3));
+    await afterRefresh?.(seed.user_id);
+    await writeSeedFypCheckpoint(seed, claimToken);
+    return true;
+  } catch (error) {
+    if (seed && claimToken) {
+      try {
+        await releaseSeedFypClaim(seed, claimToken);
+      } catch (releaseError) {
+        log("fail", `Seed FYP claim release failed for ${seedId}: ${releaseError instanceof Error ? releaseError.message : releaseError}`);
+      }
+    }
+    log("fail", `Seed FYP refresh failed for ${expectedUserId}: ${error instanceof Error ? error.message : error}`);
+    return false;
   }
 }
 
-async function processPrioritySeed(seedId: string) {
+let seedFypRecoveryRunning = false;
+async function recoverMissedSeedFypRefreshes(): Promise<void> {
+  if (seedFypRecoveryRunning) return;
+  seedFypRecoveryRunning = true;
+  try {
+    const seeds: Array<{
+      id: string;
+      user_id: string | null;
+      pipeline_status: Record<string, unknown> | null;
+      fyp_refresh_required_at: string | null;
+      fyp_refreshed_at: string | null;
+    }> = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await db.from("seeds")
+        .select("id,user_id,pipeline_status,fyp_refresh_required_at,fyp_refreshed_at")
+        .eq("active", true)
+        .not("user_id", "is", null)
+        .not("fyp_refresh_required_at", "is", null)
+        .is("fyp_refreshed_at", null)
+        .order("created_at", { ascending: false })
+        .range(from, from + 999);
+      if (error) throw new Error(`Seed FYP recovery scan failed: ${error.message}`);
+      seeds.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    const result = await recoverSeedFypRefreshes(
+      seeds,
+      claimSeedFypRefresh,
+      (ownerUserId) => serializeQueueMutation(() => refreshPersonalizedQueue(ownerUserId, 3)),
+      writeSeedFypCheckpoint,
+      releaseSeedFypClaim,
+      (seed, refreshError) => log(
+        "fail",
+        `Seed FYP recovery failed for ${seed.id}: ${refreshError instanceof Error ? refreshError.message : refreshError}`,
+      ),
+    );
+    if (result.recovered > 0) {
+      log("ok", `Recovered ${result.recovered}/${result.claimed} claimed seed FYP refresh(es); ${result.pending} pending`);
+    }
+  } catch (error) {
+    log("fail", error instanceof Error ? error.message : String(error));
+  } finally {
+    seedFypRecoveryRunning = false;
+  }
+}
+
+async function processPrioritySeed(fence: SeedPipelineFence) {
+  const seedId = fence.id;
   const startTime = Date.now();
-  const { data: seed, error: seedErr } = await db.from("seeds").select("*").eq("id", seedId).single();
+  const { data: seed, error: seedErr } = await db.from("seeds")
+    .select("*")
+    .eq("id", fence.id)
+    .eq("user_id", fence.user_id)
+    .eq("active", true)
+    .eq("fyp_refresh_required_at", fence.fyp_refresh_required_at)
+    .maybeSingle();
   if (seedErr || !seed) {
-    log("fail", `Priority: could not read seed ${seedId}`);
-    return;
+    throw new Error(`Priority seed ${seedId} changed owner, activation, or generation`);
   }
 
   const seedLabel = `${seed.artist} – ${seed.title}`;
   log("info", `\n━━━ PRIORITY: Pipeline starting for ${seedLabel} ━━━`);
 
-  await updatePipelineStatus(seedId, { state: "discovering" }, `searching for "${seedLabel}"`);
+  await updatePipelineStatus(fence, { state: "discovering" }, `searching for "${seedLabel}"`);
 
   type Candidate = {
     url: string;
@@ -870,16 +1137,16 @@ async function processPrioritySeed(seedId: string) {
         page++;
       }
 
-      await updatePipelineStatus(seedId, {}, `lot radio: ${sourceEpisodes.length} matches`);
+      await updatePipelineStatus(fence, {}, `lot radio: ${sourceEpisodes.length} matches`);
     } else {
       try {
         const results = await source.searchForSeed(seed.artist, seed.title);
         sourceEpisodes = results.map((e) => ({ url: e.url, title: e.title, date: e.date }));
-        await updatePipelineStatus(seedId, {}, `${source.name}: ${sourceEpisodes.length} episodes found`);
       } catch (err) {
         log("fail", `Priority: ${source.name} search error: ${err instanceof Error ? err.message : err}`);
         continue;
       }
+      await updatePipelineStatus(fence, {}, `${source.name}: ${sourceEpisodes.length} episodes found`);
     }
 
     // Score episodes by track count
@@ -923,7 +1190,7 @@ async function processPrioritySeed(seedId: string) {
 
   if (candidates.length === 0) {
     await updatePipelineStatus(
-      seedId,
+      fence,
       { state: "done", completed_at: new Date().toISOString() },
       "no episodes found",
     );
@@ -933,7 +1200,7 @@ async function processPrioritySeed(seedId: string) {
 
   // Pick best: most tracks
   const best = candidates.sort((a, b) => b.trackCount - a.trackCount)[0];
-  await updatePipelineStatus(seedId, { episode_title: best.title }, `best episode: "${best.title}" (${best.trackCount} tracks)`);
+  await updatePipelineStatus(fence, { episode_title: best.title }, `best episode: "${best.title}" (${best.trackCount} tracks)`);
 
   const sourceObj = SOURCES.find((s) => s.name === best.sourceName)!;
   let episodeId = best.existingEpisodeId;
@@ -951,7 +1218,7 @@ async function processPrioritySeed(seedId: string) {
 
     if (!newEp) {
       await updatePipelineStatus(
-        seedId,
+        fence,
         { state: "error", error: `Episode insert failed: ${epErr?.message}` },
         "episode insert failed",
       );
@@ -1045,13 +1312,13 @@ async function processPrioritySeed(seedId: string) {
   }
 
   if (tracksToProcess.length === 0) {
-    await refreshSeedOwnerQueue(
+    await refreshSeedFypWithCheckpoint(
+      seedId,
       seed.user_id,
-      (userId) => serializeQueueMutation(() => refreshPersonalizedQueue(userId, 3)),
-      (error) => log("fail", `Seed FYP refresh failed for ${seed.user_id}: ${error instanceof Error ? error.message : error}`),
+      fence.fyp_refresh_required_at,
     );
     await updatePipelineStatus(
-      seedId,
+      fence,
       { state: "done", completed_at: new Date().toISOString() },
       "no tracks to enrich",
     );
@@ -1060,7 +1327,7 @@ async function processPrioritySeed(seedId: string) {
 
   // Phase 2: Enrich all tracks
   await updatePipelineStatus(
-    seedId,
+    fence,
     { state: "enriching", progress: `0/${tracksToProcess.length}` },
     `enriching ${tracksToProcess.length} tracks`,
   );
@@ -1072,28 +1339,28 @@ async function processPrioritySeed(seedId: string) {
     for (const r of results) {
       if (r.status === "fulfilled" && r.value) enriched++;
     }
-    await updatePipelineStatus(seedId, { progress: `${Math.min(i + PRIORITY_ENRICH_CONCURRENCY, tracksToProcess.length)}/${tracksToProcess.length}` });
+    await updatePipelineStatus(fence, { progress: `${Math.min(i + PRIORITY_ENRICH_CONCURRENCY, tracksToProcess.length)}/${tracksToProcess.length}` });
   }
 
-  await updatePipelineStatus(seedId, {}, `enriched ${enriched}/${tracksToProcess.length} tracks`);
+  await updatePipelineStatus(fence, {}, `enriched ${enriched}/${tracksToProcess.length} tracks`);
 
   // Phase 3: Re-rank per-user preparation queues. The bounded drain owns audio;
   // priority discovery must not download every track from the selected episode.
   let materializedTracks = 0;
-  await refreshSeedOwnerQueue(
+  await refreshSeedFypWithCheckpoint(
+    seedId,
     seed.user_id,
+    fence.fyp_refresh_required_at,
     async (userId) => {
-      await serializeQueueMutation(() => refreshPersonalizedQueue(userId, 3));
       const { count } = await db.from("audio_preparation_queue")
         .select("id", { count: "exact", head: true })
         .eq("user_id", userId);
       materializedTracks = count || 0;
     },
-    (error) => log("fail", `Seed FYP refresh failed for ${seed.user_id}: ${error instanceof Error ? error.message : error}`),
   );
 
   await updatePipelineStatus(
-    seedId,
+    fence,
     { state: "preparing", progress: `0/${materializedTracks}` },
     `queued bounded audio preparation for ${materializedTracks} ranked entries`,
   );
@@ -1116,14 +1383,14 @@ async function processPrioritySeed(seedId: string) {
           .update({ status: "skipped", metadata: { ...(existing?.metadata || {}), skip_reason: "no_spotify_or_youtube_match" } })
           .eq("id", t.id);
       }
-      await updatePipelineStatus(seedId, {}, `skipped ${dangling.length} tracks with no match`);
+      await updatePipelineStatus(fence, {}, `skipped ${dangling.length} tracks with no match`);
       log("info", `Priority: skipped ${dangling.length} dangling tracks for ${seedLabel}`);
     }
   }
 
   const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
   await updatePipelineStatus(
-    seedId,
+    fence,
     { state: "done", completed_at: new Date().toISOString() },
     `pipeline complete — ${tracksToProcess.length} tracks processed, ${enriched} enriched, audio queued in ${elapsedSec}s`,
   );
@@ -1139,43 +1406,64 @@ async function processPriorityQueue() {
 
     try {
       const { data: queuedSeeds } = await db.from("seeds")
-        .select("id")
+        .select("id,user_id,fyp_refresh_required_at")
+        .not("user_id", "is", null)
         .filter("pipeline_status->>state", "eq", "queued")
         .limit(1);
 
       if (!queuedSeeds || queuedSeeds.length === 0) continue;
 
-      const seedId = queuedSeeds[0].id;
+      const queuedSeed = queuedSeeds[0];
+      if (!queuedSeed.user_id) continue;
+      const seedId = queuedSeed.id;
+      const requiredAt = queuedSeed.fyp_refresh_required_at || new Date().toISOString();
       log("info", `Priority queue: picked up seed ${seedId}`);
 
-      // Mark as in-progress (CAS on 'queued' to avoid double-processing)
+      // Mark as in-progress using owner, activation, state, and generation CAS.
       const timeStr = new Date().toTimeString().slice(0, 8);
-      const { data: updated } = await db.from("seeds")
+      let claimQuery = db.from("seeds")
         .update({
           pipeline_status: {
             state: "discovering",
             started_at: new Date().toISOString(),
             log: [{ t: timeStr, msg: "pipeline started" }],
           },
+          fyp_refresh_required_at: requiredAt,
         })
         .eq("id", seedId)
-        .filter("pipeline_status->>state", "eq", "queued")
-        .select("id")
+        .eq("user_id", queuedSeed.user_id)
+        .eq("active", true)
+        .filter("pipeline_status->>state", "eq", "queued");
+      claimQuery = queuedSeed.fyp_refresh_required_at
+        ? claimQuery.eq("fyp_refresh_required_at", queuedSeed.fyp_refresh_required_at)
+        : claimQuery.is("fyp_refresh_required_at", null);
+      const { data: updated, error: claimError } = await claimQuery
+        .select("id,user_id,fyp_refresh_required_at")
         .maybeSingle();
+      if (claimError) throw new Error(`priority seed claim failed: ${claimError.message}`);
 
-      if (!updated) {
-        // Another processor may have grabbed it already
+      if (!updated?.user_id || !updated.fyp_refresh_required_at) {
+        // Another processor or generation won the claim.
         continue;
       }
+      const fence: SeedPipelineFence = {
+        id: updated.id,
+        user_id: updated.user_id,
+        fyp_refresh_required_at: updated.fyp_refresh_required_at,
+      };
 
       try {
-        await processPrioritySeed(seedId);
+        await processPrioritySeed(fence);
       } catch (err) {
-        await updatePipelineStatus(
-          seedId,
-          { state: "error", error: err instanceof Error ? err.message : String(err) },
-          `error: ${err instanceof Error ? err.message : err}`,
-        );
+        try {
+          await updatePipelineStatus(
+            fence,
+            { state: "error", error: err instanceof Error ? err.message : String(err) },
+            `error: ${err instanceof Error ? err.message : err}`,
+          );
+        } catch (statusError) {
+          log("skip", `Priority generation changed before error status for ${seedId}: ${statusError instanceof Error ? statusError.message : statusError}`);
+        }
         log("fail", `Priority pipeline error for ${seedId}: ${err instanceof Error ? err.message : err}`);
       }
     } catch (err) {
@@ -1189,7 +1477,10 @@ async function resetStalePipelineStatuses() {
   const fiveMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   try {
     const { data: stale } = await db.from("seeds")
-      .select("id, pipeline_status")
+      .select("id,user_id,pipeline_status,fyp_refresh_required_at")
+      .eq("active", true)
+      .not("user_id", "is", null)
+      .not("fyp_refresh_required_at", "is", null)
       .not("pipeline_status", "is", null)
       .not("pipeline_status->>state", "eq", "done")
       .not("pipeline_status->>state", "eq", "error")
@@ -1198,9 +1489,16 @@ async function resetStalePipelineStatuses() {
     if (!stale || stale.length === 0) return;
 
     for (const seed of stale) {
+      const startedAt = seed.pipeline_status?.started_at;
+      if (!seed.user_id || !seed.fyp_refresh_required_at || typeof startedAt !== "string") continue;
       await db.from("seeds").update({
-        pipeline_status: { state: "queued" },
-      }).eq("id", seed.id);
+        pipeline_status: { ...seed.pipeline_status, state: "queued" },
+      })
+        .eq("id", seed.id)
+        .eq("user_id", seed.user_id)
+        .eq("active", true)
+        .eq("fyp_refresh_required_at", seed.fyp_refresh_required_at)
+        .filter("pipeline_status->>started_at", "eq", startedAt);
     }
 
     log("info", `Reset ${stale.length} stale pipeline status(es) to "queued"`);
@@ -1324,6 +1622,7 @@ async function ensureApprovalSeed(trackId: string, userId: string): Promise<void
     title: track.title,
     user_id: userId,
     source: "auto:approved",
+    fyp_refresh_required_at: now.toISOString(),
     pipeline_status: {
       state: "queued",
       started_at: now.toISOString(),
@@ -1350,6 +1649,10 @@ function startWatcher() {
           return;
         }
         log("ok", `Seed INSERT detected: ${payload.new?.artist} – ${payload.new?.title} (${seedId})`);
+        if (isPriorityManagedSeed(payload.new || {})) {
+          log("info", `Seed ${seedId} delegated to priority pipeline`);
+          return;
+        }
         enqueueSeed(seedId);
         processSeedQueue();
       },
@@ -1462,6 +1765,7 @@ function startWatcher() {
         });
         updateStatusFile();
         await resetStalePipelineStatuses();
+        await recoverMissedSeedFypRefreshes();
         await enqueueBacklogSeeds();
         await enqueueBacklogTracks();
         await enqueueBacklogSuperLikes();
@@ -1490,6 +1794,11 @@ function startWatcher() {
           setInterval(async () => {
             if (shuttingDown) return;
             await pollForMissingSuperLikes();
+          }, 60_000);
+
+          setInterval(async () => {
+            if (shuttingDown) return;
+            await recoverMissedSeedFypRefreshes();
           }, 60_000);
 
           // Every 6 hours: run the curator affinity radar to discover new tracks

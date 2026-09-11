@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Create new re-seed
+  const now = new Date();
   const { data: newSeed, error } = await db
     .from("seeds")
     .insert({
@@ -85,6 +86,12 @@ export async function POST(req: NextRequest) {
       track_id: track_id || null,
       user_id: user.id,
       source: "re-seed",
+      fyp_refresh_required_at: now.toISOString(),
+      pipeline_status: {
+        state: "queued",
+        started_at: now.toISOString(),
+        log: [{ t: now.toTimeString().slice(0, 8), msg: "re-seed queued for discovery" }],
+      },
     })
     .select("id")
     .single();
