@@ -102,38 +102,11 @@ export async function POST(req: NextRequest) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
-
-
-  let discoverTriggered = false;
-  let discoverError: string | null = null;
-
-  try {
-    const discoverUrl = new URL("/api/discover", req.url);
-    const response = await fetch(discoverUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        cookie: req.headers.get("cookie") || "",
-      },
-      cache: "no-store",
-      body: JSON.stringify({
-        seed_id: newSeed.id,
-      }),
-    });
-    discoverTriggered = response.ok;
-    if (!response.ok) {
-      discoverError = await response.text();
-    }
-  } catch (err) {
-    discoverError = err instanceof Error ? err.message : String(err);
-  }
-
   return NextResponse.json(
     {
       action: "created",
       seed_id: newSeed.id,
-      discover_triggered: discoverTriggered,
-      discover_error: discoverError,
+      queued: true,
     },
     { status: 201 }
   );

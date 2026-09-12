@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-12 03:47'
-updated_date: '2026-09-12 04:02'
+updated_date: '2026-09-12 04:03'
 labels:
   - ux
   - seeds
@@ -46,4 +46,6 @@ Made the sprout a true add/remove re-seed toggle on mobile and desktop, includin
 Added a For You History view that retains the 50 most recent passed tracks for the browser tab, deduplicates them newest-first, avoids storing refreshable signed URLs, supports replay, and can be cleared.
 
 Verified with 170 client tests, TypeScript, production build, dependency audit, live add/remove API interaction, desktop replay, and a 390x844 mobile render with zero overflow.
+
+The create response now returns immediately after durably queueing discovery instead of blocking the control on the synchronous discovery request; the engine continues the queued pipeline.
 <!-- SECTION:FINAL_SUMMARY:END -->
