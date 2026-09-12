@@ -37,7 +37,8 @@ export interface TrackEpisodeLink {
 
 export type ExplicitDecisionStatus = "approved" | "rejected" | "skipped" | "listened";
 
-/** Deterministic explicit-label strength, with listening used only to qualify skips. */
+/** Deterministic explicit-label strength. A skip retires the track but is
+ * taste-neutral: it may mean "fine, not compelling" or "already familiar." */
 export function explicitOutcomeWeight(
   status: ExplicitDecisionStatus,
   superLiked = false,
@@ -46,14 +47,12 @@ export function explicitOutcomeWeight(
   if (superLiked) return 3;
   if (status === "approved") return 1;
   if (status === "rejected") return -1;
+  if (status === "skipped") return 0;
   if (status === "listened") {
     if (listenPct === null || listenPct === undefined || !Number.isFinite(listenPct) || listenPct < 80) return 0;
     return 0.15;
   }
-  if (listenPct === null || listenPct === undefined || !Number.isFinite(listenPct)) return -0.3;
-  const boundedListenPct = Math.max(0, Math.min(100, listenPct));
-  // Known depth nudges a skip by at most 0.1 around the missing-depth default.
-  return Math.round((-0.4 + boundedListenPct * 0.002) * 1000) / 1000;
+  return 0;
 }
 
 export function indexTrackEpisodes(

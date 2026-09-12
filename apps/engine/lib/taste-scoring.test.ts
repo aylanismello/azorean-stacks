@@ -10,21 +10,19 @@ import {
 } from "./taste-scoring";
 
 describe("explicitOutcomeWeight", () => {
-  test("keeps explicit likes strongest and preserves missing skip behavior", () => {
+  test("keeps explicit likes and rejects strong while skips stay taste-neutral", () => {
     expect(explicitOutcomeWeight("approved", true, 5)).toBe(3);
     expect(explicitOutcomeWeight("approved", false, 100)).toBe(1);
     expect(explicitOutcomeWeight("rejected", false, 100)).toBe(-1);
-    expect(explicitOutcomeWeight("skipped", false, null)).toBe(-0.3);
+    expect(explicitOutcomeWeight("skipped", false, null)).toBe(0);
     expect(explicitOutcomeWeight("listened", false, null)).toBe(0);
   });
 
-  test("treats an early skip as more negative than a mostly-listened skip", () => {
-    expect(explicitOutcomeWeight("skipped", false, 0)).toBe(-0.4);
-    expect(explicitOutcomeWeight("skipped", false, 5)).toBeLessThan(
-      explicitOutcomeWeight("skipped", false, 90),
-    );
-    expect(explicitOutcomeWeight("skipped", false, 90)).toBeLessThan(0);
-    expect(explicitOutcomeWeight("skipped", false, 100)).toBe(-0.2);
+  test("does not guess whether a skip meant neutral or already familiar", () => {
+    expect(explicitOutcomeWeight("skipped", false, 0)).toBe(0);
+    expect(explicitOutcomeWeight("skipped", false, 5)).toBe(0);
+    expect(explicitOutcomeWeight("skipped", false, 90)).toBe(0);
+    expect(explicitOutcomeWeight("skipped", false, 100)).toBe(0);
   });
 
   test("uses a completed listen as weak evidence well below approval", () => {

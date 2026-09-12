@@ -132,9 +132,93 @@ export function isObviousPlaceholderCandidate(track: QueueCandidate): boolean {
   return !artist || !title || artist === "tracklist" || title === "tracklist";
 }
 
-function normalizedArtist(track: QueueCandidate): string | null {
-  const artist = String(track.artist || "").trim().toLowerCase();
-  return artist || null;
+function normalizeContextValue(value: unknown): string | null {
+  const normalized = String(value || "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  return normalized || null;
+}
+
+const ARTIST_ALIASES: Record<string, string> = {
+  flylo: "flying lotus",
+};
+
+/** Artist identities used only for pacing—not for taste evidence. Structured
+ * collaborator arrays are safe to expand; free-form group names stay intact. */
+export function artistContextKeys(track: QueueCandidate): string[] {
+  const keys = new Set<string>();
+  const add = (value: unknown) => {
+    const normalized = normalizeContextValue(value);
+    if (!normalized) return;
+    const primary = normalized.split(/\s+(?:feat\.?|ft\.?|featuring)\s+/i)[0].trim();
+    keys.add(ARTIST_ALIASES[normalized] || normalized);
+    if (primary) keys.add(ARTIST_ALIASES[primary] || primary);
+  };
+  add(track.artist);
+  for (const field of ["artists", "spotify_artists", "artist_names"]) {
+    const values = track.metadata?.[field];
+    if (Array.isArray(values)) values.forEach(add);
+  }
+  return [...keys];
+}
+
+function primaryEpisodeKeys(track: QueueCandidate): string[] {
+  const primary = normalizeContextValue(track.episode_id || track.episode_ids?.[0]);
+  return primary ? [primary] : [];
+}
+
+function primaryShowKeys(track: QueueCandidate): string[] {
+  const primary = normalizeContextValue(track.source_contexts?.[0]);
+  return primary ? [primary] : [];
+}
+
+function overlaps(left: string[], right: string[]): boolean {
+  const rightSet = new Set(right);
+  return left.some((key) => rightSet.has(key));
+}
+
+function contextCount(
+  tracks: QueueCandidate[],
+  keys: string[],
+  keyFor: (track: QueueCandidate) => string[],
+): number {
+  if (!keys.length) return 0;
+  return tracks.reduce((count, track) => count + (overlaps(keys, keyFor(track)) ? 1 : 0), 0);
+}
+
+/** Final near-term pacing pass. Ranking remains the source order; this moves
+ * only the first available alternative needed to keep the dig varied. */
+export function paceQueueCandidates(
+  candidates: QueueCandidate[],
+  target = candidates.length,
+): QueueCandidate[] {
+  const pool = [...candidates];
+  const result: QueueCandidate[] = [];
+  const boundedTarget = Math.max(0, Math.min(pool.length, Math.floor(target)));
+
+  const violatesImmediate = (track: QueueCandidate) => {
+    const previous = result[result.length - 1];
+    if (!previous) return false;
+    return overlaps(artistContextKeys(track), artistContextKeys(previous))
+      || overlaps(primaryEpisodeKeys(track), primaryEpisodeKeys(previous))
+      || overlaps(primaryShowKeys(track), primaryShowKeys(previous));
+  };
+  const violatesWindow = (track: QueueCandidate) => {
+    const recent = result.slice(-9);
+    return contextCount(recent, artistContextKeys(track), artistContextKeys) >= 2
+      || contextCount(recent, primaryEpisodeKeys(track), primaryEpisodeKeys) >= 2
+      || contextCount(recent, primaryShowKeys(track), primaryShowKeys) >= 3;
+  };
+
+  while (result.length < boundedTarget && pool.length) {
+    let index = pool.findIndex((track) => !violatesImmediate(track) && !violatesWindow(track));
+    if (index < 0) index = pool.findIndex((track) => !violatesImmediate(track));
+    if (index < 0) index = 0;
+    result.push(pool.splice(index, 1)[0]);
+  }
+  return result;
 }
 
 function isSafeExplorationCandidate(track: QueueCandidate): boolean {
@@ -167,15 +251,12 @@ export function highConfidencePrefixLength(
   return length;
 }
 
-/** Build a balanced slate; relax caps only when no alternative fits. */
+/** Build a balanced slate, then enforce near-term artist/episode/show pacing. */
 export function diversifyQueueCandidates(
   candidates: QueueCandidate[],
   target = QUEUE_TARGET,
 ): QueueCandidate[] {
   const ranked = [...candidates];
-  const prefixLength = highConfidencePrefixLength(ranked, target);
-  const reservedPrefix = ranked.slice(0, prefixLength);
-  const reservedIds = new Set(reservedPrefix.map((track) => track.id));
   const explorationCount = target >= 8 ? Math.max(1, Math.round(target * 0.125)) : 0;
   const explorationFloor = Math.max(20, Math.ceil(target * 0.25));
   const exploration = ranked
@@ -188,45 +269,23 @@ export function diversifyQueueCandidates(
     .sort((a, b) => b.uncertainty - a.uncertainty || a.index - b.index)
     .slice(0, explorationCount);
   const explorationIds = new Set(exploration.map(({ track }) => track.id));
-  const explorationPool = exploration.map(({ track }) => track);
-  const mainPool = ranked.filter((track) => !reservedIds.has(track.id) && !explorationIds.has(track.id));
-  const episodeCounts = new Map<string, number>();
-  const sourceCounts = new Map<string, number>();
-  const artistCounts = new Map<string, number>();
-  const result: QueueCandidate[] = [];
-  const episodeCap = Math.max(2, Math.ceil(target * 0.1));
-  const sourceCap = Math.max(3, Math.ceil(target * 0.25));
-  const artistCap = Math.max(2, Math.ceil(target * 0.15));
-  const explorationInterval = explorationPool.length
-    ? Math.max(7, Math.round(target / explorationPool.length))
+  const staged = ranked.filter((track) => !explorationIds.has(track.id));
+  const explorationInterval = exploration.length
+    ? Math.max(7, Math.round(target / exploration.length))
     : Number.POSITIVE_INFINITY;
-  const episodeKeys = (track: QueueCandidate) => track.episode_ids?.length
-    ? track.episode_ids
-    : track.episode_id ? [track.episode_id] : [];
-  const violatesConsecutive = (track: QueueCandidate) => {
-    if (result.length < 2) return false;
-    const previous = result.slice(-2);
-    const artist = normalizedArtist(track);
-    if (artist && previous.every((item) => normalizedArtist(item) === artist)) return true;
-    const episodes = new Set(episodeKeys(track));
-    return episodes.size > 0 && previous.every((item) => episodeKeys(item).some((id) => episodes.has(id)));
-  };
-  const violatesGlobalCaps = (track: QueueCandidate) =>
-    episodeKeys(track).some((id) => (episodeCounts.get(id) || 0) >= episodeCap)
-    || (track.source_contexts || []).some((key) => (sourceCounts.get(key) || 0) >= sourceCap)
-    || Boolean(normalizedArtist(track) && (artistCounts.get(normalizedArtist(track)!) || 0) >= artistCap);
-  const take = (pool: QueueCandidate[], strict: boolean): QueueCandidate | null => {
-    const index = pool.findIndex((track) =>
-      !violatesConsecutive(track) && (!strict || !violatesGlobalCaps(track))
-    );
-    if (index < 0) return null;
-    return pool.splice(index, 1)[0];
-  };
 
-  const append = (track: QueueCandidate) => {
+  exploration.forEach(({ track }, index) => {
+    const insertionIndex = Math.min(
+      staged.length,
+      Math.max(0, Math.round((index + 1) * explorationInterval) - 1),
+    );
+    staged.splice(insertionIndex, 0, track);
+  });
+
+  return paceQueueCandidates(staged, target).map((track, index) => {
     const originalRank = candidates.findIndex((candidate) => candidate.id === track.id) + 1;
-    const nextRank = result.length + 1;
-    const annotated = {
+    const nextRank = index + 1;
+    return {
       ...track,
       metadata: {
         ...(track.metadata || {}),
@@ -234,30 +293,7 @@ export function diversifyQueueCandidates(
         _queue_diversity_rank_delta: originalRank - nextRank,
       },
     };
-    result.push(annotated);
-    for (const id of episodeKeys(annotated)) episodeCounts.set(id, (episodeCounts.get(id) || 0) + 1);
-    for (const key of annotated.source_contexts || []) sourceCounts.set(key, (sourceCounts.get(key) || 0) + 1);
-    const artist = normalizedArtist(annotated);
-    if (artist) artistCounts.set(artist, (artistCounts.get(artist) || 0) + 1);
-  };
-
-  // Diversity and exploration begin only after this evidence-based prefix.
-  for (const track of reservedPrefix) append(track);
-
-  while (result.length < target && (mainPool.length || explorationPool.length)) {
-    const explorationDue = explorationPool.length > 0
-      && result.length > 0
-      && (result.length + 1) % explorationInterval === 0;
-    const preferred = explorationDue ? explorationPool : mainPool;
-    const alternate = explorationDue ? mainPool : explorationPool;
-    let track = take(preferred, true) || take(alternate, true);
-    track ||= take(preferred, false) || take(alternate, false);
-    // Retain rows when one cluster is all that remains instead of deleting tail candidates.
-    track ||= preferred.shift() || alternate.shift() || null;
-    if (!track) break;
-    append(track);
-  }
-  return result;
+  });
 }
 
 export interface PreparationTrack extends QueueCandidate {
@@ -636,6 +672,60 @@ async function enrichQueueContexts(db: Db, candidates: QueueCandidate[]): Promis
   });
 }
 
+export function applyRecentSkipNoveltyPressure(
+  candidates: QueueCandidate[],
+  recentSkipped: QueueCandidate[],
+): QueueCandidate[] {
+  if (!recentSkipped.length) return candidates;
+  return candidates.map((candidate) => {
+    const artistKeys = artistContextKeys(candidate);
+    const episodeKeys = primaryEpisodeKeys(candidate);
+    const sourceKeys = primaryShowKeys(candidate);
+    let penalty = 0;
+    recentSkipped.forEach((skipped, index) => {
+      const decay = Math.exp(-index / 6);
+      if (artistKeys.length && overlaps(artistKeys, artistContextKeys(skipped))) penalty += 0.025 * decay;
+      if (episodeKeys.length && overlaps(episodeKeys, primaryEpisodeKeys(skipped))) penalty += 0.02 * decay;
+      if (sourceKeys.length && overlaps(sourceKeys, primaryShowKeys(skipped))) penalty += 0.015 * decay;
+    });
+    penalty = Math.min(0.08, penalty);
+    if (penalty <= 0) return candidate;
+    const components = (candidate.metadata?._score_components as Record<string, unknown> | undefined) || {};
+    const roundedPenalty = Math.round(penalty * 1000) / 1000;
+    return {
+      ...candidate,
+      taste_score: Math.round((Number(candidate.taste_score || 0) - roundedPenalty) * 1000) / 1000,
+      metadata: {
+        ...(candidate.metadata || {}),
+        _score_components: {
+          ...components,
+          novelty_cooldown: -roundedPenalty,
+        },
+      },
+    };
+  });
+}
+
+async function recentSkippedTracks(db: Db, userId: string): Promise<QueueCandidate[]> {
+  const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
+  const skippedResult = await db.from("user_tracks")
+    .select("track_id,voted_at")
+    .eq("user_id", userId)
+    .eq("status", "skipped")
+    .gte("voted_at", since)
+    .order("voted_at", { ascending: false })
+    .limit(20);
+  const skippedIds = requireOk(skippedResult, "recent skipped-track lookup")
+    .map((row: any) => row.track_id)
+    .filter(Boolean);
+  if (!skippedIds.length) return [];
+  const trackResult = await db.from("tracks").select("*").in("id", skippedIds);
+  const byId = new Map(requireOk(trackResult, "recent skipped-track context lookup")
+    .map((track: QueueCandidate) => [track.id, track]));
+  const ordered = skippedIds.map((id: string) => byId.get(id)).filter(Boolean) as QueueCandidate[];
+  return enrichQueueContexts(db, ordered);
+}
+
 type SoulectionEpisode = {
   id: string;
   release_date?: string | null;
@@ -832,15 +922,21 @@ export async function materializeUserQueue(
   const downloadable = ranked.filter(
     (track) => Boolean(track.storage_path) || Number(track.dl_attempts || 0) < MAX_DL_ATTEMPTS,
   );
-  const enrichedRanked = await enrichQueueContexts(db, downloadable);
-  const newlyRanked = diversifyQueueCandidates(enrichedRanked, queueTarget);
+  const [enrichedRanked, recentSkipped] = await Promise.all([
+    enrichQueueContexts(db, downloadable),
+    recentSkippedTracks(db, userId),
+  ]);
+  const noveltyRanked = applyRecentSkipNoveltyPressure(enrichedRanked, recentSkipped)
+    .sort((left, right) => Number(right.taste_score || 0) - Number(left.taste_score || 0)
+      || String(left.id).localeCompare(String(right.id)));
+  const newlyRanked = diversifyQueueCandidates(noveltyRanked, queueTarget);
   const existingCandidates = await activeQueueCandidates(db, userId, new Set(eligibleTrackIds));
   const preferredFreshTrackIds = freshInsertions > 0
     ? await seedCandidateTrackIds(db, userId, generationContext.seedId)
     : undefined;
   const rankedForMerge = preferredFreshTrackIds
     ? [
-        ...enrichedRanked.filter((track) => preferredFreshTrackIds.has(track.id)),
+        ...noveltyRanked.filter((track) => preferredFreshTrackIds.has(track.id)),
         ...newlyRanked,
       ]
     : newlyRanked;
@@ -852,7 +948,10 @@ export async function materializeUserQueue(
     5,
     preferredFreshTrackIds,
   );
-  const tracks = mergeSoulectionPreparationSlice(ordinary, exploration, queueTarget, WARM_TARGET);
+  const unpacedTracks = mergeSoulectionPreparationSlice(ordinary, exploration, queueTarget, WARM_TARGET);
+  // Stable queues, tangent insertion, and curated exploration all converge here.
+  // Nothing can bypass the final near-term digging cadence.
+  const tracks = paceQueueCandidates(unpacedTracks, queueTarget);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + QUEUE_TTL_DAYS * 86_400_000).toISOString();
 

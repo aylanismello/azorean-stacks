@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { diversifyTracks } from "./diversify";
+import { diversifyTracks, paceTracks } from "./diversify";
 
 describe("diversifyTracks", () => {
-  test("preserves clustered high-confidence ranks 1 through 5", () => {
+  test("does not let high-confidence tracks bypass episode pacing", () => {
     const tracks = [
       ...Array.from({ length: 8 }, (_, index) => ({
         id: `cluster-${index + 1}`,
@@ -24,9 +24,8 @@ describe("diversifyTracks", () => {
 
     const result = diversifyTracks(tracks);
     expect(result.slice(0, 5).map((track) => track.id)).toEqual([
-      "cluster-1", "cluster-2", "cluster-3", "cluster-4", "cluster-5",
+      "cluster-1", "alternative-1", "cluster-2", "alternative-2", "alternative-3",
     ]);
-    expect(result[5].id).toStartWith("alternative-");
   });
 
   test("never promotes negative or placeholder candidates into exploration", () => {
@@ -41,5 +40,34 @@ describe("diversifyTracks", () => {
     expect(result.findIndex((track) => track.id === "track-29")).toBeGreaterThanOrEqual(28);
     expect(result.findIndex((track) => track.id === "track-28")).toBeGreaterThanOrEqual(27);
     expect(result.findIndex((track) => Number(track.id.slice(6)) >= 20 && Number(track.id.slice(6)) < 28)).toBeLessThan(20);
+  });
+
+  test("paces artist aliases, exact episodes, and originating shows after exploration insertion", () => {
+    const showUrl = (episode: string) => `https://www.nts.live/shows/brainfeeder/episodes/${episode}`;
+    const tracks = [
+      { id: "flylo-1", artist: "Flying Lotus", episode_id: "ep-1", episode: { id: "ep-1", url: showUrl("one") } },
+      { id: "flylo-2", artist: "FlyLo", episode_id: "ep-2", episode: { id: "ep-2", url: showUrl("two") } },
+      { id: "flylo-3", artist: "Flying Lotus feat. Guest", episode_id: "ep-3", episode: { id: "ep-3", url: showUrl("three") } },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `other-${index}`,
+        artist: `Other ${index}`,
+        episode_id: index < 3 ? "ep-1" : `other-ep-${index}`,
+        episode: {
+          id: index < 3 ? "ep-1" : `other-ep-${index}`,
+          url: index < 5 ? showUrl(`other-${index}`) : `https://www.nts.live/shows/show-${index}/episodes/latest`,
+        },
+      })),
+    ];
+    const result = paceTracks(tracks);
+    const nearTerm = result.slice(0, 10);
+    expect(nearTerm.filter((track) => ["Flying Lotus", "FlyLo", "Flying Lotus feat. Guest"].includes(track.artist)).length).toBeLessThanOrEqual(2);
+    expect(nearTerm.filter((track) => track.episode_id === "ep-1").length).toBeLessThanOrEqual(2);
+    expect(nearTerm.filter((track) => track.episode.url.includes("/shows/brainfeeder/")).length).toBeLessThanOrEqual(3);
+    for (let index = 1; index < nearTerm.length; index++) {
+      expect(nearTerm[index].episode_id).not.toBe(nearTerm[index - 1].episode_id);
+      const currentShow = nearTerm[index].episode.url.match(/\/shows\/([^/]+)/)?.[1];
+      const previousShow = nearTerm[index - 1].episode.url.match(/\/shows\/([^/]+)/)?.[1];
+      expect(currentShow).not.toBe(previousShow);
+    }
   });
 });

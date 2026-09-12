@@ -18,6 +18,7 @@ interface TrackCardProps {
   canonicalTrackId?: string | null;
   onVote: (id: string, status: "approved" | "rejected" | "skipped" | "bad_source", advance?: boolean) => Promise<void>;
   onSuperLike?: (id: string) => Promise<void>;
+  onSeedChange?: (seeded: boolean) => void;
   onSkipEpisode?: () => void;
   skippingEpisode?: boolean;
   onShowContext?: () => void;
@@ -57,7 +58,7 @@ function audioSourceLabel(meta: Record<string, any>, track: { youtube_url: strin
   return "Audio";
 }
 
-export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkipEpisode, skippingEpisode, onShowContext, seedContext }: TrackCardProps) {
+export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeedChange, onSkipEpisode, skippingEpisode, onShowContext, seedContext }: TrackCardProps) {
   const [exiting, setExiting] = useState<"left" | "right" | null>(null);
   const [voting, setVoting] = useState(false);
   const votingRef = useRef(false);
@@ -117,12 +118,13 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
       const nextSeeded = data.action !== "removed";
       setSeeded(nextSeeded);
       globalPlayer.setTrackSeeded(actionTargets.trackId, nextSeeded, data.seed_id || null);
+      onSeedChange?.(nextSeeded);
     } catch {
       // Keep the current state when the request fails.
     } finally {
       setSeeding(false);
     }
-  }, [actionTargets, track.artist, track.title, seeding, globalPlayer]);
+  }, [actionTargets, track.artist, track.title, seeding, globalPlayer, onSeedChange]);
 
   const isValidFixUrl = useCallback((url: string) => {
     const prefixes = [

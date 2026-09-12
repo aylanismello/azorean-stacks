@@ -154,6 +154,16 @@ describe("honest empirical evaluation", () => {
     expect(unchanged.before).toEqual(unchanged.after);
   });
 
+  test("excludes ambiguous skips from empirical taste labels by default", () => {
+    const rows = [
+      observation(1, "approved", 1),
+      observation(2, "rejected", -1),
+      observation(3, "skipped", 0),
+    ];
+    expect(compareModels(rows, DEFAULT_RANKING_MODEL, DEFAULT_RANKING_MODEL).before.samples).toBe(2);
+    expect(compareModels(rows, DEFAULT_RANKING_MODEL, DEFAULT_RANKING_MODEL, true).before.samples).toBe(3);
+  });
+
   test("cannot lower or satisfy the production gate with duplicated or one-class evidence", () => {
     const balanced = Array.from({ length: MIN_EMPIRICAL_APPLY_SAMPLES }, (_, index) => observation(
       index,

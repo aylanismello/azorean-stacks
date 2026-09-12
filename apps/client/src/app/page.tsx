@@ -24,6 +24,13 @@ import {
   shouldApplyFypGeneration,
   type FypGeneration,
 } from "@/lib/live-fyp";
+import {
+  beginDiscoveryMutation,
+  completeDiscoveryMutation,
+  type DiscoveryAction,
+  type DiscoveryMutation,
+  type DiscoveryTrackRef,
+} from "@/lib/discovery-mutation";
 
 export default function StackPage() {
   return (
@@ -197,10 +204,41 @@ function StackPageContent() {
   const [tangentSeeding, setTangentSeeding] = useState(false);
   const [tangentMessage, setTangentMessage] = useState<string | null>(null);
   const [liveMutationIds, setLiveMutationIds] = useState<Set<string>>(() => new Set());
+  const [discoveryMutation, setDiscoveryMutation] = useState<DiscoveryMutation | null>(null);
   const lastFypGenerationRef = useRef(0);
   const lastSeenTangentRef = useRef<string | null>(null);
   const playerQueueRef = useRef(globalPlayer.queue);
   const liveRefreshChainRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingMutationRef = useRef<DiscoveryMutation | null>(null);
+  const activeMutationIdRef = useRef<string | null>(null);
+  const mutationSequenceRef = useRef(0);
+  const mutationTimerRef = useRef<number | null>(null);
+
+  const showDiscoveryMutation = useCallback((event: DiscoveryMutation) => {
+    activeMutationIdRef.current = event.id;
+    setDiscoveryMutation(event);
+    if (event.incomingIds.length === 0) setLiveMutationIds(new Set());
+    if (mutationTimerRef.current) window.clearTimeout(mutationTimerRef.current);
+    mutationTimerRef.current = window.setTimeout(() => {
+      if (activeMutationIdRef.current !== event.id) return;
+      activeMutationIdRef.current = null;
+      setDiscoveryMutation(null);
+      setLiveMutationIds(new Set());
+    }, 6500);
+  }, []);
+
+  const beginActionMutation = useCallback((
+    action: DiscoveryAction,
+    track: DiscoveryTrackRef | null,
+  ) => {
+    const event = beginDiscoveryMutation(action, track, ++mutationSequenceRef.current);
+    pendingMutationRef.current = event;
+    showDiscoveryMutation(event);
+  }, [showDiscoveryMutation]);
+
+  useEffect(() => () => {
+    if (mutationTimerRef.current) clearTimeout(mutationTimerRef.current);
+  }, []);
 
   const queueViewKey = episodeId
     ? `episode:${episodeId}`
@@ -320,16 +358,33 @@ function StackPageContent() {
           reconciledQueue.map((track) => track.id),
           lastSeenTangentRef.current,
         );
+        const pending = pendingMutationRef.current
+          && Date.now() - pendingMutationRef.current.createdAt < 30_000
+          ? pendingMutationRef.current
+          : null;
+        const completedMutation = completeDiscoveryMutation(
+          pending,
+          previousQueue,
+          reconciledQueue,
+          ++mutationSequenceRef.current,
+          {
+            protectedTrackId: playerCurrentTrackRef.current?.id,
+            tangentSeedName: revealTangent ? latestTangent?.seed_name : null,
+          },
+        );
+        if (completedMutation) {
+          showDiscoveryMutation(completedMutation);
+          setLiveMutationIds(new Set(completedMutation.incomingIds));
+          pendingMutationRef.current = null;
+        } else {
+          setLiveMutationIds(new Set());
+        }
         if (revealTangent && latestTangent) {
           setActiveTangent(latestTangent);
           setTangentPanelOpen(true);
           setTangentMessage(null);
-          setLiveMutationIds(new Set(latestTangent.tracks.map((track) => track.id)));
           lastSeenTangentRef.current = latestTangent.id;
           localStorage.setItem("stacks-last-tangent", latestTangent.id);
-        } else {
-          // Routine ranking/readiness maintenance is intentionally silent.
-          setLiveMutationIds(new Set());
         }
         return;
       }
@@ -482,6 +537,14 @@ function StackPageContent() {
 
       // Update vote in provider — single source of truth
       globalPlayer.updateTrackVote(actionTrackId, "approved", true);
+      const actedTrack = currentTrack && canonicalPlayerTrackId(currentTrack) === actionTrackId
+        ? currentTrack
+        : globalPlayer.queue.find((track) => canonicalPlayerTrackId(track) === actionTrackId);
+      beginActionMutation("super_like", actedTrack ? {
+        id: actedTrack.id,
+        artist: actedTrack.artist,
+        title: actedTrack.title,
+      } : null);
       setVoteCount((c) => c + 1);
     } catch (err) {
       console.error("Super like error:", err);
@@ -510,6 +573,11 @@ function StackPageContent() {
       const data = await res.json();
       const seeded = data.action !== "removed";
       globalPlayer.setTrackSeeded(actionTrackId, seeded, data.seed_id || null);
+      beginActionMutation(seeded ? "seed" : "unseed", {
+        id: track.id,
+        artist: track.artist,
+        title: track.title,
+      });
       setTangentMessage(seeded
         ? `Growing from ${track.artist} — ${track.title}. New branches will land in your upcoming feed.`
         : `Stopped growing from ${track.artist} — ${track.title}.`);
@@ -540,6 +608,23 @@ function StackPageContent() {
 
       // Update vote in provider — single source of truth
       globalPlayer.updateTrackVote(actionTrackId, status);
+      const mutationAction = status === "approved"
+        ? "like"
+        : status === "rejected"
+          ? "reject"
+          : status === "skipped"
+            ? "skip"
+            : null;
+      if (mutationAction) {
+        const actedTrack = currentTrack && canonicalPlayerTrackId(currentTrack) === actionTrackId
+          ? currentTrack
+          : globalPlayer.queue.find((track) => canonicalPlayerTrackId(track) === actionTrackId);
+        beginActionMutation(mutationAction, actedTrack ? {
+          id: actedTrack.id,
+          artist: actedTrack.artist,
+          title: actedTrack.title,
+        } : null);
+      }
       setVoteCount((c) => c + 1);
 
       if (!advance) return;
@@ -653,6 +738,40 @@ function StackPageContent() {
       globalPlayer.playFromQueue(idx, origin);
     }
   }, [globalPlayer]);
+
+  const handleTangentReplay = useCallback(async (track: DiscoveryTrackRef) => {
+    userHasInteracted.current = true;
+    const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
+    const sessionTrack = [...globalPlayer.queue, ...globalPlayer.history].find((candidate) =>
+      candidate.id === track.id || canonicalPlayerTrackId(candidate) === track.id
+    );
+    if (sessionTrack) {
+      globalPlayer.play(sessionTrack, origin);
+      setTangentPanelOpen(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/tracks/${encodeURIComponent(track.id)}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Track lookup failed (${response.status})`);
+      const catalogTrack = await response.json() as Track;
+      let audioUrl = catalogTrack.audio_url || catalogTrack.preview_url || null;
+      if (!audioUrl && catalogTrack.storage_path) {
+        const audioResponse = await fetch(`/api/tracks/${encodeURIComponent(track.id)}/download`, { cache: "no-store" });
+        if (audioResponse.ok) {
+          const audio = await audioResponse.json();
+          audioUrl = audio.audio_url || audio.url || null;
+        }
+      }
+      const replayTrack = toPlayerTrack({ ...catalogTrack, audio_url: audioUrl } as Track);
+      if (!isPlayable(replayTrack, spotifyConnected)) throw new Error("No playable source is ready for this track");
+      // play() changes only the loaded track. It does not replace the active 4U queue.
+      globalPlayer.play(replayTrack, origin);
+      setTangentPanelOpen(false);
+    } catch (replayError) {
+      setTangentMessage(replayError instanceof Error ? replayError.message : "Could not replay this branch");
+    }
+  }, [globalPlayer, spotifyConnected]);
 
   const handleSkipEpisode = async () => {
     userHasInteracted.current = true;
@@ -965,6 +1084,7 @@ function StackPageContent() {
     _match_type: t._match_type,
     _ranked_score: t._ranked_score,
     _live_mutation: liveMutationIds.has(t.id),
+    _tangent_seed_name: t._tangent_seed_name || null,
   }));
 
   // When viewing a specific seed's stack, derive seed context from URL params
@@ -1067,6 +1187,35 @@ function StackPageContent() {
         </div>
       </div>
 
+      {isHomeFyp && discoveryMutation && (
+        <div
+          key={discoveryMutation.id}
+          role="status"
+          aria-live="polite"
+          className={`discovery-mutation-chip pointer-events-none absolute left-1/2 top-12 z-20 flex w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 overflow-hidden rounded-2xl border px-3 py-2.5 shadow-2xl backdrop-blur-xl ${
+            discoveryMutation.tone === "negative"
+              ? "border-rose-300/20 bg-rose-950/80"
+              : discoveryMutation.tone === "strong"
+                ? "border-amber-300/25 bg-amber-950/80"
+                : "border-emerald-300/20 bg-emerald-950/80"
+          }`}
+        >
+          <span className="discovery-mutation-tree flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-emerald-200" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 20c5-2 6-7 6-15" />
+              <path d="M10 12c4 0 6-2 8-5" />
+              <path d="M10 16c4 1 7 1 10-2" />
+              <circle cx="18" cy="7" r="1.5" fill="currentColor" stroke="none" />
+              <circle cx="20" cy="14" r="1.5" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[10px] font-semibold text-foreground/90">{discoveryMutation.headline}</span>
+            <span className="mt-0.5 block truncate text-[9px] text-foreground/60">{discoveryMutation.detail}</span>
+          </span>
+        </div>
+      )}
+
       {isHomeFyp && tangentPanelOpen && (
         <aside
           role="dialog"
@@ -1146,12 +1295,21 @@ function StackPageContent() {
                         <path d="M1 2c0 12 7 12 24 12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
                         <circle cx="25" cy="14" r="2.6" fill="currentColor" />
                       </svg>
-                      <div className="rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2.5">
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-mono text-[9px] text-emerald-300">{activeTangent.start_rank ? activeTangent.start_rank + index : "•"}</span>
-                          <span className="truncate text-[11px] text-foreground">{track.artist} — {track.title}</span>
-                        </div>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleTangentReplay(track)}
+                        className="group flex w-full items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2.5 text-left transition-colors hover:border-emerald-300/25 hover:bg-emerald-400/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40"
+                        aria-label={`Play ${track.artist} — ${track.title}; branched from ${activeTangent.seed_name}`}
+                      >
+                        <span className="font-mono text-[9px] text-emerald-300">{activeTangent.start_rank ? activeTangent.start_rank + index : "•"}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[11px] text-foreground">{track.artist} — {track.title}</span>
+                          <span className="mt-0.5 block truncate text-[8px] text-emerald-300/55">from {activeTangent.seed_name}</span>
+                        </span>
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" className="shrink-0 text-emerald-200/45 transition-colors group-hover:text-emerald-200">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -1209,12 +1367,16 @@ function StackPageContent() {
               refreshKey={voteCount}
               seedId={fromSeedId}
               onTrackSelect={handleTrackSelect}
+              mutation={discoveryMutation}
+              onDiscoveryAction={beginActionMutation}
             />
           ) : (
             <EpisodeTracklist
               directTracks={queueAsTracklistItems as any}
               listTitle={seedName || genreFilter || "For You"}
               onTrackSelect={handleTrackSelect}
+              mutation={discoveryMutation}
+              onDiscoveryAction={beginActionMutation}
             />
           )}
         </div>
@@ -1229,6 +1391,7 @@ function StackPageContent() {
             canonicalTrackId={canonicalPlayerTrackId(currentTrack)}
             onVote={handleVote}
             onSuperLike={handleSuperLike}
+            onSeedChange={(seeded) => beginActionMutation(seeded ? "seed" : "unseed", currentTrack)}
             onSkipEpisode={currentEpisodeId ? handleSkipEpisode : undefined}
             skippingEpisode={skippingEpisode}
             onShowContext={() => setContextOpen(true)}
@@ -1248,6 +1411,8 @@ function StackPageContent() {
         open={tracklistOpen}
         onClose={() => setTracklistOpen(false)}
         onTrackSelect={handleTrackSelect}
+        mutation={discoveryMutation}
+        onDiscoveryAction={beginActionMutation}
       />
 
       {/* Keyboard hint (desktop only) */}

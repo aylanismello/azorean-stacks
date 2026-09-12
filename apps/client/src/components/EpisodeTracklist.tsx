@@ -11,6 +11,7 @@ import {
   performEpisodeTracklistAction,
   type EpisodeTracklistAction,
 } from "@/lib/episode-tracklist-actions";
+import type { DiscoveryAction, DiscoveryMutation, DiscoveryTrackRef } from "@/lib/discovery-mutation";
 
 interface TrackListItem {
   id: string;
@@ -37,12 +38,15 @@ interface TrackListItem {
   _match_type?: "full" | "artist" | "unknown";
   _ranked_score?: number;
   _live_mutation?: boolean;
+  _tangent_seed_name?: string | null;
 }
 
 interface BaseTracklistProps {
   listTitle?: string | null;
   onClose?: () => void;
   onTrackSelect?: (trackId: string) => void;
+  mutation?: DiscoveryMutation | null;
+  onDiscoveryAction?: (action: DiscoveryAction, track: DiscoveryTrackRef) => void;
   variant?: "sidebar" | "sheet";
 }
 
@@ -77,6 +81,8 @@ export function EpisodeTracklist(props: TracklistProps) {
     listTitle,
     onClose,
     onTrackSelect,
+    mutation,
+    onDiscoveryAction,
     variant = "sidebar",
   } = props;
 
@@ -341,6 +347,22 @@ export function EpisodeTracklist(props: TracklistProps) {
         applyLocalTrackPatch(contextMenu.canonicalId, { is_re_seed: true });
         globalPlayer.markTrackSeeded(contextMenu.canonicalId, result.seedId);
       }
+      const discoveryAction: DiscoveryAction | null = action === "like"
+        ? "like"
+        : action === "star"
+          ? "super_like"
+          : action === "reject"
+            ? "reject"
+            : action === "skip"
+              ? "skip"
+              : action === "reseed"
+                ? "seed"
+                : null;
+      if (discoveryAction) onDiscoveryAction?.(discoveryAction, {
+        id: contextMenu.track.id,
+        artist: contextMenu.track.artist,
+        title: contextMenu.track.title,
+      });
       setContextMenu(null);
     } catch (actionError) {
       setContextError(actionError instanceof Error ? actionError.message : "Action failed");
@@ -526,6 +548,26 @@ export function EpisodeTracklist(props: TracklistProps) {
           <p className="text-center text-muted text-xs py-8">No playable tracks yet — processing</p>
         ) : (
           <div className="space-y-0.5">
+            {!showHistory && mutation?.incoming && (
+              <div
+                key={mutation.id}
+                role="status"
+                aria-label={mutation.detail}
+                className="discovery-queue-swap mx-1 mb-2 overflow-hidden rounded-xl border border-emerald-300/15 bg-emerald-400/[0.035] px-2.5 py-2"
+              >
+                <div className="flex min-w-0 items-center gap-2 text-[9px] font-medium">
+                  {mutation.outgoing && (
+                    <span className="discovery-swap-out min-w-0 truncate text-muted/55 line-through">
+                      {mutation.outgoing.artist} — {mutation.outgoing.title}
+                    </span>
+                  )}
+                  {mutation.outgoing && <span aria-hidden="true" className="shrink-0 text-emerald-300/50">→</span>}
+                  <span className="discovery-swap-in min-w-0 truncate text-emerald-200/90">
+                    {mutation.incoming.artist} — {mutation.incoming.title}
+                  </span>
+                </div>
+              </div>
+            )}
             {tracks.map((t) => {
               const isPlaying = globalPlayer.currentTrack?.id === t.id;
               const seedBadge = getSeedBadge(t);
@@ -617,7 +659,11 @@ export function EpisodeTracklist(props: TracklistProps) {
                       <p className={`text-[10px] truncate ${
                         t.vote_status === "rejected" ? "line-through text-muted/30" : "text-muted"
                       }`}>{t.artist}</p>
-
+                      {t._tangent_seed_name && (
+                        <span className="shrink-0 truncate rounded-full bg-emerald-400/10 px-1.5 py-0.5 text-[8px] text-emerald-300/75" title={`Branched from ${t._tangent_seed_name}`}>
+                          via {t._tangent_seed_name}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -731,6 +777,8 @@ export function TracklistSheet({
   open,
   onClose,
   onTrackSelect,
+  mutation,
+  onDiscoveryAction,
 }: {
   episodeId?: string;
   episodeTitle?: string | null;
@@ -741,6 +789,8 @@ export function TracklistSheet({
   open: boolean;
   onClose: () => void;
   onTrackSelect?: (trackId: string) => void;
+  mutation?: DiscoveryMutation | null;
+  onDiscoveryAction?: (action: DiscoveryAction, track: DiscoveryTrackRef) => void;
 }) {
   if (!open) return null;
 
@@ -758,6 +808,8 @@ export function TracklistSheet({
             listTitle={listTitle}
             onClose={onClose}
             onTrackSelect={onTrackSelect}
+            mutation={mutation}
+            onDiscoveryAction={onDiscoveryAction}
             variant="sheet"
           />
         ) : episodeId ? (
@@ -769,6 +821,8 @@ export function TracklistSheet({
             seedId={seedId}
             onClose={onClose}
             onTrackSelect={onTrackSelect}
+            mutation={mutation}
+            onDiscoveryAction={onDiscoveryAction}
             variant="sheet"
           />
         ) : null}

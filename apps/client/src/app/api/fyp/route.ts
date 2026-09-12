@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
-import { diversifyTracks } from "@/lib/diversify";
+import { diversifyTracks, paceTracks } from "@/lib/diversify";
 import { loadPersonalizedFyp } from "@/lib/fyp-personalization";
 import {
   loadFypWithOptionalExploration,
@@ -198,7 +198,7 @@ export async function GET(req: NextRequest) {
     if (error) throw error;
     return signed?.signedUrl || null;
   });
-  const withSeriesExploration = injectSeriesExploration(diversified, seriesExploration);
+  const withSeriesExploration = paceTracks(injectSeriesExploration(diversified, seriesExploration));
 
   const generationResult = await db.from("user_fyp_generations")
     .select("generation,reason,seed_id,updated_at")

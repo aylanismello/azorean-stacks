@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import {
+  applyRecentSkipNoveltyPressure,
   applySeriesSeedContext,
   applyUserSonicContext,
   buildFypTangentDelta,
@@ -13,6 +14,7 @@ import {
   markPreparationState,
   mergeStableQueueCandidates,
   mergeSoulectionPreparationSlice,
+  paceQueueCandidates,
   SERIES_SEED_CONTEXT_BOOST,
   SOULECTION_EXPLORATION_EPISODE_LIMIT,
   SOULECTION_EXPLORATION_TRACK_LIMIT,
@@ -305,7 +307,7 @@ describe("applySeriesSeedContext", () => {
 });
 
 describe("diversifyQueueCandidates", () => {
-  test("preserves clustered high-confidence ranks 1 through 5 before applying caps", () => {
+  test("does not let a high-confidence prefix bypass episode and show pacing", () => {
     const candidates = [
       ...Array.from({ length: 8 }, (_, index) => ({
         id: `cluster-${index + 1}`,
@@ -328,10 +330,9 @@ describe("diversifyQueueCandidates", () => {
     ];
 
     const result = diversifyQueueCandidates(candidates, 50);
-    expect(result.slice(0, 5).map((track) => track.id)).toEqual([
-      "cluster-1", "cluster-2", "cluster-3", "cluster-4", "cluster-5",
-    ]);
-    expect(result[5].id).toStartWith("alternative-");
+    expect(result[0].id).toBe("cluster-1");
+    expect(result[1].id).toStartWith("alternative-");
+    expect(result.slice(0, 5).filter((track) => track.episode_ids?.[0] === "clustered-episode")).toHaveLength(2);
   });
 
   test("bounds the reserved prefix and stops at the first weak score", () => {
@@ -361,18 +362,40 @@ describe("diversifyQueueCandidates", () => {
     ];
 
     const result = diversifyQueueCandidates(candidates, 50);
-    const episodeCounts = result.flatMap((track) => track.episode_ids || []).reduce((counts, id) => {
-      counts.set(id, (counts.get(id) || 0) + 1);
-      return counts;
-    }, new Map<string, number>());
-
     expect(result).toHaveLength(50);
-    expect(episodeCounts.get("episode-a")).toBeLessThanOrEqual(5);
-    expect(episodeCounts.get("episode-b")).toBeLessThanOrEqual(5);
-    const prefixLength = highConfidencePrefixLength(candidates, 50);
-    for (let index = Math.max(2, prefixLength); index < result.length; index++) {
-      expect(new Set(result.slice(index - 2, index + 1).map((track) => track.episode_ids?.[0])).size).toBeGreaterThan(1);
+    for (let start = 0; start < result.length; start++) {
+      const window = result.slice(start, start + 10);
+      expect(window.filter((track) => track.episode_ids?.[0] === "episode-a").length).toBeLessThanOrEqual(2);
+      expect(window.filter((track) => track.episode_ids?.[0] === "episode-b").length).toBeLessThanOrEqual(2);
     }
+    for (let index = 1; index < result.length; index++) {
+      expect(result[index].episode_ids?.[0]).not.toBe(result[index - 1].episode_ids?.[0]);
+    }
+  });
+
+  test("spaces artist aliases, episodes, and shows in the final post-merge queue", () => {
+    const candidates = [
+      { id: "flylo-1", artist: "Flying Lotus", episode_id: "ep-a", source_contexts: ["show-a"] },
+      { id: "flylo-2", artist: "FlyLo", episode_id: "ep-b", source_contexts: ["show-a"] },
+      { id: "flylo-3", artist: "Flying Lotus feat. Guest", episode_id: "ep-c", source_contexts: ["show-a"] },
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `other-${index}`,
+        artist: `Other ${index}`,
+        episode_id: index < 3 ? "ep-a" : `ep-${index}`,
+        source_contexts: index < 5 ? ["show-a"] : [`show-${index}`],
+      })),
+    ];
+    const result = paceQueueCandidates(candidates, candidates.length);
+    for (let index = 1; index < Math.min(10, result.length); index++) {
+      const pair = result.slice(index - 1, index);
+      expect(pair[0].artist === result[index].artist && pair[0].artist === "Flying Lotus").toBe(false);
+      expect(pair[0].episode_id).not.toBe(result[index].episode_id);
+      expect(pair[0].source_contexts?.[0]).not.toBe(result[index].source_contexts?.[0]);
+    }
+    const nearTerm = result.slice(0, 10);
+    expect(nearTerm.filter((track) => ["Flying Lotus", "FlyLo", "Flying Lotus feat. Guest"].includes(String(track.artist || ""))).length).toBeLessThanOrEqual(2);
+    expect(nearTerm.filter((track) => track.episode_id === "ep-a").length).toBeLessThanOrEqual(2);
+    expect(nearTerm.filter((track) => track.source_contexts?.[0] === "show-a").length).toBeLessThanOrEqual(3);
   });
 
   test("reserves bounded exploration outside raw top 20 without disturbing a strong prefix", () => {
@@ -402,6 +425,48 @@ describe("diversifyQueueCandidates", () => {
       source_contexts: ["only-show"],
     }));
     expect(diversifyQueueCandidates(candidates, 10)).toHaveLength(10);
+  });
+});
+
+describe("applyRecentSkipNoveltyPressure", () => {
+  test("cools recently skipped artist, episode, and show without making skip a rejection", () => {
+    const [cooled, untouched] = applyRecentSkipNoveltyPressure([
+      {
+        id: "candidate-a",
+        artist: "FlyLo",
+        episode_id: "episode-a",
+        source_contexts: ["show-a"],
+        taste_score: 0.7,
+        metadata: { _score_components: { artist: 0.2 } },
+      },
+      {
+        id: "candidate-b",
+        artist: "Someone Else",
+        episode_id: "episode-b",
+        source_contexts: ["show-b"],
+        taste_score: 0.7,
+        metadata: { _score_components: { artist: 0.2 } },
+      },
+    ], [{
+      id: "skipped",
+      artist: "Flying Lotus feat. Guest",
+      episode_id: "episode-a",
+      source_contexts: ["show-a"],
+    }]);
+
+    expect(cooled.taste_score).toBe(0.64);
+    expect(cooled.metadata?._score_components).toEqual({ artist: 0.2, novelty_cooldown: -0.06 });
+    expect(untouched.taste_score).toBe(0.7);
+    expect(untouched.metadata?._score_components).toEqual({ artist: 0.2 });
+  });
+
+  test("bounds repeated familiarity pressure and preserves candidate eligibility", () => {
+    const candidates = [{ id: "candidate", artist: "Flying Lotus", taste_score: 0.5 }];
+    const skipped = Array.from({ length: 20 }, (_, index) => ({ id: `skip-${index}`, artist: "FlyLo" }));
+    const result = applyRecentSkipNoveltyPressure(candidates, skipped);
+    expect(result).toHaveLength(1);
+    expect(result[0].taste_score).toBe(0.42);
+    expect(result[0].metadata?._score_components).toEqual({ novelty_cooldown: -0.08 });
   });
 });
 
@@ -646,6 +711,7 @@ describe("soulection exploration preparation", () => {
             select() { return query; },
             eq(column: string, value: unknown) { filters[column] = value; return query; },
             gt(column: string, value: unknown) { filters[column] = value; return query; },
+            gte(column: string, value: unknown) { filters[column] = value; return query; },
             is(column: string, value: unknown) { filters[column] = value; return query; },
             in(column: string, values: unknown[]) { filters[column] = values; return query; },
             not() { return query; },

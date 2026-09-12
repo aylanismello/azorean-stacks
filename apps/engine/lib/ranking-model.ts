@@ -272,7 +272,7 @@ export function compareModels(
   observations: RankingObservation[],
   before: RankingModel,
   after: RankingModel,
-  includeSkips = true,
+  includeSkips = false,
 ): ModelComparison {
   const usable = observations
     .map((observation) => ({ observation, label: binaryOutcome(observation.outcome, includeSkips) }))
@@ -305,7 +305,7 @@ export function fitRankingModel(
   baseline: RankingModel = DEFAULT_RANKING_MODEL,
   options: FitOptions = {},
 ): RankingFitResult {
-  const includeSkips = options.includeSkips ?? true;
+  const includeSkips = options.includeSkips ?? false;
   const usable = [...observations]
     .sort((left, right) => Date.parse(left.outcomeAt) - Date.parse(right.outcomeAt)
       || left.exposureId.localeCompare(right.exposureId))

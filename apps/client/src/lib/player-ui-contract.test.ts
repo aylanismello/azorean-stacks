@@ -61,6 +61,8 @@ describe("player control layout contract", () => {
     expect(trackCard).toContain("aria-pressed={seeded}");
     expect(trackCard).toContain('seeded ? "Remove re-seed" : "Plant as re-seed"');
     expect(trackCard).not.toContain("disabled={seeding || seeded}");
+    expect(trackCard).toContain("onSeedChange?.(nextSeeded)");
+    expect(fypPage).toContain('onSeedChange={(seeded) => beginActionMutation(seeded ? "seed" : "unseed"');
     expect(globalPlayerProvider).toContain("setTrackSeeded: (trackId: string, seeded: boolean");
     expect(seedToggleRoute).toContain('action !== "ensure" && action !== "toggle"');
   });
@@ -86,12 +88,27 @@ describe("player control layout contract", () => {
     expect(fypPage).toContain('aria-label="Tangent feed"');
     expect(fypPage).toContain("Grow a tangent from this track");
     expect(fypPage).toContain("New branches will land in your upcoming feed");
+    expect(fypPage).toContain("handleTangentReplay(track)");
+    expect(fypPage).toContain("It does not replace the active 4U queue");
     expect(fypPage).toContain("tangent-tree-trunk");
     expect(fypPage).toContain("tangent-tree-branch");
     expect(globals).toContain("@keyframes tangent-feed-panel-in");
     expect(globals).toContain("@keyframes tangent-tree-draw");
     expect(globals).toContain("@keyframes tangent-trunk-grow");
     expect(globals).toContain("@keyframes tangent-leaf-pop");
+  });
+
+  test("shows restrained living-tree feedback and exact queue swaps for discovery actions", () => {
+    expect(fypPage).toContain("beginActionMutation(\"super_like\"");
+    expect(fypPage).toContain("completeDiscoveryMutation(");
+    expect(fypPage).toContain("discovery-mutation-chip");
+    expect(tracklist).toContain("discovery-queue-swap");
+    expect(tracklist).toContain("mutation.outgoing.artist");
+    expect(tracklist).toContain("mutation.incoming.artist");
+    expect(globals).toContain("@keyframes discovery-chip-in");
+    expect(globals).toContain("@keyframes discovery-swap-out");
+    expect(globals).toContain("@keyframes discovery-swap-in");
+    expect(globals).toContain("prefers-reduced-motion: reduce");
   });
 
   test("hides healthy connectivity and shows actionable problems at every width", () => {
