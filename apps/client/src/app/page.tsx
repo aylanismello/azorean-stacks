@@ -27,6 +27,9 @@ import {
 import {
   beginDiscoveryMutation,
   completeDiscoveryMutation,
+  correlatedPendingMutation,
+  remainingPendingMutations,
+  shouldShowCompletedMutation,
   type DiscoveryAction,
   type DiscoveryMutation,
   type DiscoveryTrackRef,
@@ -205,14 +208,16 @@ function StackPageContent() {
   const [tangentMessage, setTangentMessage] = useState<string | null>(null);
   const [liveMutationIds, setLiveMutationIds] = useState<Set<string>>(() => new Set());
   const [discoveryMutation, setDiscoveryMutation] = useState<DiscoveryMutation | null>(null);
+  const [queueMutation, setQueueMutation] = useState<DiscoveryMutation | null>(null);
   const lastFypGenerationRef = useRef(0);
   const lastSeenTangentRef = useRef<string | null>(null);
   const playerQueueRef = useRef(globalPlayer.queue);
   const liveRefreshChainRef = useRef<Promise<void>>(Promise.resolve());
-  const pendingMutationRef = useRef<DiscoveryMutation | null>(null);
+  const pendingMutationRef = useRef<DiscoveryMutation[]>([]);
   const activeMutationIdRef = useRef<string | null>(null);
   const mutationSequenceRef = useRef(0);
   const mutationTimerRef = useRef<number | null>(null);
+  const queueMutationTimerRef = useRef<number | null>(null);
 
   const showDiscoveryMutation = useCallback((event: DiscoveryMutation) => {
     activeMutationIdRef.current = event.id;
@@ -227,17 +232,36 @@ function StackPageContent() {
     }, 6500);
   }, []);
 
+  const showQueueMutation = useCallback((event: DiscoveryMutation) => {
+    setQueueMutation(event);
+    if (queueMutationTimerRef.current) window.clearTimeout(queueMutationTimerRef.current);
+    queueMutationTimerRef.current = window.setTimeout(() => {
+      setQueueMutation((active) => active?.id === event.id ? null : active);
+    }, 6500);
+  }, []);
+
   const beginActionMutation = useCallback((
     action: DiscoveryAction,
     track: DiscoveryTrackRef | null,
+    causalSeedId: string | null = null,
   ) => {
-    const event = beginDiscoveryMutation(action, track, ++mutationSequenceRef.current);
-    pendingMutationRef.current = event;
+    const event = beginDiscoveryMutation(
+      action,
+      track,
+      ++mutationSequenceRef.current,
+      Date.now(),
+      causalSeedId,
+    );
+    pendingMutationRef.current = [
+      ...pendingMutationRef.current.filter((pending) => Date.now() - pending.createdAt < 30_000),
+      event,
+    ];
     showDiscoveryMutation(event);
   }, [showDiscoveryMutation]);
 
   useEffect(() => () => {
     if (mutationTimerRef.current) clearTimeout(mutationTimerRef.current);
+    if (queueMutationTimerRef.current) clearTimeout(queueMutationTimerRef.current);
   }, []);
 
   const queueViewKey = episodeId
@@ -358,12 +382,12 @@ function StackPageContent() {
           reconciledQueue.map((track) => track.id),
           lastSeenTangentRef.current,
         );
-        const pending = pendingMutationRef.current
-          && Date.now() - pendingMutationRef.current.createdAt < 30_000
-          ? pendingMutationRef.current
-          : null;
-        const completedMutation = completeDiscoveryMutation(
-          pending,
+        const pending = pendingMutationRef.current.filter(
+          (event) => Date.now() - event.createdAt < 30_000,
+        );
+        const correlatedPending = correlatedPendingMutation(pending, generation);
+        let completedMutation = completeDiscoveryMutation(
+          correlatedPending,
           previousQueue,
           reconciledQueue,
           ++mutationSequenceRef.current,
@@ -373,10 +397,20 @@ function StackPageContent() {
           },
         );
         if (completedMutation) {
-          showDiscoveryMutation(completedMutation);
+          showQueueMutation(completedMutation);
+          // A seed-correlated completion stays visible for its full beat; later
+          // readiness-only generations must not immediately overwrite it with a
+          // generic refresh chip.
+          const shouldShowCompleted = shouldShowCompletedMutation(
+            correlatedPending ? 1 : 0,
+            Boolean(revealTangent),
+            activeMutationIdRef.current,
+          );
+          if (shouldShowCompleted) showDiscoveryMutation(completedMutation);
           setLiveMutationIds(new Set(completedMutation.incomingIds));
-          pendingMutationRef.current = null;
+          pendingMutationRef.current = remainingPendingMutations(pending, correlatedPending);
         } else {
+          pendingMutationRef.current = pending;
           setLiveMutationIds(new Set());
         }
         if (revealTangent && latestTangent) {
@@ -577,7 +611,7 @@ function StackPageContent() {
         id: track.id,
         artist: track.artist,
         title: track.title,
-      });
+      }, data.seed_id || null);
       setTangentMessage(seeded
         ? `Growing from ${track.artist} — ${track.title}. New branches will land in your upcoming feed.`
         : `Stopped growing from ${track.artist} — ${track.title}.`);
@@ -1187,7 +1221,7 @@ function StackPageContent() {
         </div>
       </div>
 
-      {isHomeFyp && discoveryMutation && (
+      {discoveryMutation && (
         <div
           key={discoveryMutation.id}
           role="status"
@@ -1367,7 +1401,7 @@ function StackPageContent() {
               refreshKey={voteCount}
               seedId={fromSeedId}
               onTrackSelect={handleTrackSelect}
-              mutation={discoveryMutation}
+              mutation={queueMutation}
               onDiscoveryAction={beginActionMutation}
             />
           ) : (
@@ -1375,7 +1409,7 @@ function StackPageContent() {
               directTracks={queueAsTracklistItems as any}
               listTitle={seedName || genreFilter || "For You"}
               onTrackSelect={handleTrackSelect}
-              mutation={discoveryMutation}
+              mutation={queueMutation}
               onDiscoveryAction={beginActionMutation}
             />
           )}
@@ -1391,7 +1425,11 @@ function StackPageContent() {
             canonicalTrackId={canonicalPlayerTrackId(currentTrack)}
             onVote={handleVote}
             onSuperLike={handleSuperLike}
-            onSeedChange={(seeded) => beginActionMutation(seeded ? "seed" : "unseed", currentTrack)}
+            onSeedChange={(seeded, seedId) => beginActionMutation(
+              seeded ? "seed" : "unseed",
+              currentTrack,
+              seedId,
+            )}
             onSkipEpisode={currentEpisodeId ? handleSkipEpisode : undefined}
             skippingEpisode={skippingEpisode}
             onShowContext={() => setContextOpen(true)}
@@ -1411,7 +1449,7 @@ function StackPageContent() {
         open={tracklistOpen}
         onClose={() => setTracklistOpen(false)}
         onTrackSelect={handleTrackSelect}
-        mutation={discoveryMutation}
+        mutation={queueMutation}
         onDiscoveryAction={beginActionMutation}
       />
 

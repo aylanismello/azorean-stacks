@@ -46,7 +46,11 @@ interface BaseTracklistProps {
   onClose?: () => void;
   onTrackSelect?: (trackId: string) => void;
   mutation?: DiscoveryMutation | null;
-  onDiscoveryAction?: (action: DiscoveryAction, track: DiscoveryTrackRef) => void;
+  onDiscoveryAction?: (
+    action: DiscoveryAction,
+    track: DiscoveryTrackRef,
+    causalSeedId?: string | null,
+  ) => void;
   variant?: "sidebar" | "sheet";
 }
 
@@ -362,7 +366,7 @@ export function EpisodeTracklist(props: TracklistProps) {
         id: contextMenu.track.id,
         artist: contextMenu.track.artist,
         title: contextMenu.track.title,
-      });
+      }, discoveryAction === "seed" ? result.seedId || null : null);
       setContextMenu(null);
     } catch (actionError) {
       setContextError(actionError instanceof Error ? actionError.message : "Action failed");
@@ -548,23 +552,42 @@ export function EpisodeTracklist(props: TracklistProps) {
           <p className="text-center text-muted text-xs py-8">No playable tracks yet — processing</p>
         ) : (
           <div className="space-y-0.5">
-            {!showHistory && mutation?.incoming && (
+            {!showHistory && mutation && mutation.queueChanges.length > 0 && (
               <div
                 key={mutation.id}
                 role="status"
                 aria-label={mutation.detail}
                 className="discovery-queue-swap mx-1 mb-2 overflow-hidden rounded-xl border border-emerald-300/15 bg-emerald-400/[0.035] px-2.5 py-2"
               >
-                <div className="flex min-w-0 items-center gap-2 text-[9px] font-medium">
-                  {mutation.outgoing && (
-                    <span className="discovery-swap-out min-w-0 truncate text-muted/55 line-through">
-                      {mutation.outgoing.artist} — {mutation.outgoing.title}
-                    </span>
-                  )}
-                  {mutation.outgoing && <span aria-hidden="true" className="shrink-0 text-emerald-300/50">→</span>}
-                  <span className="discovery-swap-in min-w-0 truncate text-emerald-200/90">
-                    {mutation.incoming.artist} — {mutation.incoming.title}
-                  </span>
+                <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1">
+                  {mutation.queueChanges.map((change) => (
+                    <div
+                      key={`${change.position}:${change.outgoing?.id || "none"}:${change.incoming?.id || "none"}:${change.moved?.id || "none"}`}
+                      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-[9px] font-medium"
+                    >
+                      <span className="shrink-0 pt-px tabular-nums text-muted/45">#{change.position}</span>
+                      <span className="min-w-0">
+                        {change.outgoing && (
+                          <span className="discovery-swap-out block break-words text-muted/55 line-through">
+                            {change.outgoing.artist} — {change.outgoing.title}
+                          </span>
+                        )}
+                        {change.incoming && (
+                          <span className="discovery-swap-in block break-words text-emerald-200/90">
+                            {change.incoming.artist} — {change.incoming.title}
+                          </span>
+                        )}
+                        {change.moved && (
+                          <span className="discovery-swap-in block break-words text-emerald-200/90">
+                            {change.moved.artist} — {change.moved.title}
+                            <span className="ml-1 text-muted/60">
+                              #{change.fromPosition} → #{change.position}
+                            </span>
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -790,7 +813,11 @@ export function TracklistSheet({
   onClose: () => void;
   onTrackSelect?: (trackId: string) => void;
   mutation?: DiscoveryMutation | null;
-  onDiscoveryAction?: (action: DiscoveryAction, track: DiscoveryTrackRef) => void;
+  onDiscoveryAction?: (
+    action: DiscoveryAction,
+    track: DiscoveryTrackRef,
+    causalSeedId?: string | null,
+  ) => void;
 }) {
   if (!open) return null;
 

@@ -164,14 +164,22 @@ export function artistContextKeys(track: QueueCandidate): string[] {
   return [...keys];
 }
 
-function primaryEpisodeKeys(track: QueueCandidate): string[] {
-  const primary = normalizeContextValue(track.episode_id || track.episode_ids?.[0]);
-  return primary ? [primary] : [];
+function episodeContextKeys(track: QueueCandidate): string[] {
+  const keys = new Set<string>();
+  for (const value of [track.episode_id, ...(track.episode_ids || [])]) {
+    const normalized = normalizeContextValue(value);
+    if (normalized) keys.add(normalized);
+  }
+  return [...keys];
 }
 
-function primaryShowKeys(track: QueueCandidate): string[] {
-  const primary = normalizeContextValue(track.source_contexts?.[0]);
-  return primary ? [primary] : [];
+function showContextKeys(track: QueueCandidate): string[] {
+  const keys = new Set<string>();
+  for (const value of track.source_contexts || []) {
+    const normalized = normalizeContextValue(value);
+    if (normalized) keys.add(normalized);
+  }
+  return [...keys];
 }
 
 function overlaps(left: string[], right: string[]): boolean {
@@ -193,23 +201,25 @@ function contextCount(
 export function paceQueueCandidates(
   candidates: QueueCandidate[],
   target = candidates.length,
+  protectedPrefix = 0,
 ): QueueCandidate[] {
-  const pool = [...candidates];
-  const result: QueueCandidate[] = [];
-  const boundedTarget = Math.max(0, Math.min(pool.length, Math.floor(target)));
+  const boundedTarget = Math.max(0, Math.min(candidates.length, Math.floor(target)));
+  const prefixLength = Math.max(0, Math.min(Math.floor(protectedPrefix), boundedTarget));
+  const result: QueueCandidate[] = candidates.slice(0, prefixLength);
+  const pool = candidates.slice(prefixLength);
 
   const violatesImmediate = (track: QueueCandidate) => {
     const previous = result[result.length - 1];
     if (!previous) return false;
     return overlaps(artistContextKeys(track), artistContextKeys(previous))
-      || overlaps(primaryEpisodeKeys(track), primaryEpisodeKeys(previous))
-      || overlaps(primaryShowKeys(track), primaryShowKeys(previous));
+      || overlaps(episodeContextKeys(track), episodeContextKeys(previous))
+      || overlaps(showContextKeys(track), showContextKeys(previous));
   };
   const violatesWindow = (track: QueueCandidate) => {
     const recent = result.slice(-9);
     return contextCount(recent, artistContextKeys(track), artistContextKeys) >= 2
-      || contextCount(recent, primaryEpisodeKeys(track), primaryEpisodeKeys) >= 2
-      || contextCount(recent, primaryShowKeys(track), primaryShowKeys) >= 3;
+      || contextCount(recent, episodeContextKeys(track), episodeContextKeys) >= 2
+      || contextCount(recent, showContextKeys(track), showContextKeys) >= 3;
   };
 
   while (result.length < boundedTarget && pool.length) {
@@ -219,6 +229,25 @@ export function paceQueueCandidates(
     result.push(pool.splice(index, 1)[0]);
   }
   return result;
+}
+
+export function protectedPacingPrefixLength(
+  reason: "ranking_refresh" | "seed_refresh",
+  existingLength: number,
+  totalLength: number,
+): number {
+  const boundedExisting = Math.min(
+    Math.max(0, Math.floor(existingLength)),
+    Math.max(0, Math.floor(totalLength)),
+  );
+  return reason === "seed_refresh" ? Math.min(5, boundedExisting) : boundedExisting;
+}
+
+export function shouldRefreshExplorationLane(
+  reason: "ranking_refresh" | "seed_refresh",
+  existingLength: number,
+): boolean {
+  return reason === "seed_refresh" || existingLength === 0;
 }
 
 function isSafeExplorationCandidate(track: QueueCandidate): boolean {
@@ -428,6 +457,7 @@ async function activeQueueCandidates(
   db: Db,
   userId: string,
   eligibleTrackIds: Set<string>,
+  retainedExplorationIds: Set<string> = new Set(),
 ): Promise<QueueCandidate[]> {
   const result = await db.from("audio_preparation_queue")
     .select("track_id,rank,score,score_components,track:tracks!inner(*)")
@@ -435,7 +465,9 @@ async function activeQueueCandidates(
     .in("state", ["ranked", "preparing", "ready"])
     .order("rank", { ascending: true });
   return requireOk(result, "active queue continuity lookup")
-    .filter((row: any) => eligibleTrackIds.has(row.track_id))
+    .filter((row: any) =>
+      eligibleTrackIds.has(row.track_id) || retainedExplorationIds.has(row.track_id),
+    )
     .map((row: any) => {
       const track = Array.isArray(row.track) ? row.track[0] : row.track;
       return track ? {
@@ -660,7 +692,7 @@ async function enrichQueueContexts(db: Db, candidates: QueueCandidate[]): Promis
   }
 
   return candidates.map((track) => {
-    const episode_ids = [...(episodesByTrack.get(track.id) || [])];
+    const episode_ids = [...(episodesByTrack.get(track.id) || [])].sort();
     return {
       ...track,
       episode_ids,
@@ -679,14 +711,14 @@ export function applyRecentSkipNoveltyPressure(
   if (!recentSkipped.length) return candidates;
   return candidates.map((candidate) => {
     const artistKeys = artistContextKeys(candidate);
-    const episodeKeys = primaryEpisodeKeys(candidate);
-    const sourceKeys = primaryShowKeys(candidate);
+    const episodeKeys = episodeContextKeys(candidate);
+    const sourceKeys = showContextKeys(candidate);
     let penalty = 0;
     recentSkipped.forEach((skipped, index) => {
       const decay = Math.exp(-index / 6);
       if (artistKeys.length && overlaps(artistKeys, artistContextKeys(skipped))) penalty += 0.025 * decay;
-      if (episodeKeys.length && overlaps(episodeKeys, primaryEpisodeKeys(skipped))) penalty += 0.02 * decay;
-      if (sourceKeys.length && overlaps(sourceKeys, primaryShowKeys(skipped))) penalty += 0.015 * decay;
+      if (episodeKeys.length && overlaps(episodeKeys, episodeContextKeys(skipped))) penalty += 0.02 * decay;
+      if (sourceKeys.length && overlaps(sourceKeys, showContextKeys(skipped))) penalty += 0.015 * decay;
     });
     penalty = Math.min(0.08, penalty);
     if (penalty <= 0) return candidate;
@@ -922,15 +954,22 @@ export async function materializeUserQueue(
   const downloadable = ranked.filter(
     (track) => Boolean(track.storage_path) || Number(track.dl_attempts || 0) < MAX_DL_ATTEMPTS,
   );
-  const [enrichedRanked, recentSkipped] = await Promise.all([
+  const [enrichedRanked, enrichedExploration, recentSkipped] = await Promise.all([
     enrichQueueContexts(db, downloadable),
+    enrichQueueContexts(db, exploration),
     recentSkippedTracks(db, userId),
   ]);
   const noveltyRanked = applyRecentSkipNoveltyPressure(enrichedRanked, recentSkipped)
     .sort((left, right) => Number(right.taste_score || 0) - Number(left.taste_score || 0)
       || String(left.id).localeCompare(String(right.id)));
   const newlyRanked = diversifyQueueCandidates(noveltyRanked, queueTarget);
-  const existingCandidates = await activeQueueCandidates(db, userId, new Set(eligibleTrackIds));
+  const generationReason = generationContext.reason || "ranking_refresh";
+  const existingCandidates = await activeQueueCandidates(
+    db,
+    userId,
+    new Set(eligibleTrackIds),
+    new Set(enrichedExploration.map((track) => track.id)),
+  );
   const preferredFreshTrackIds = freshInsertions > 0
     ? await seedCandidateTrackIds(db, userId, generationContext.seedId)
     : undefined;
@@ -948,10 +987,17 @@ export async function materializeUserQueue(
     5,
     preferredFreshTrackIds,
   );
-  const unpacedTracks = mergeSoulectionPreparationSlice(ordinary, exploration, queueTarget, WARM_TARGET);
+  const unpacedTracks = shouldRefreshExplorationLane(generationReason, existingCandidates.length)
+    ? mergeSoulectionPreparationSlice(ordinary, enrichedExploration, queueTarget, WARM_TARGET)
+    : ordinary;
   // Stable queues, tangent insertion, and curated exploration all converge here.
   // Nothing can bypass the final near-term digging cadence.
-  const tracks = paceQueueCandidates(unpacedTracks, queueTarget);
+  const protectedPrefix = protectedPacingPrefixLength(
+    generationReason,
+    existingCandidates.length,
+    unpacedTracks.length,
+  );
+  const tracks = paceQueueCandidates(unpacedTracks, queueTarget, protectedPrefix);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + QUEUE_TTL_DAYS * 86_400_000).toISOString();
 
@@ -970,6 +1016,7 @@ export async function materializeUserQueue(
     const scoringComponents = (track.metadata?._score_components as Record<string, unknown> | undefined) || {};
     const components = {
       ...scoringComponents,
+      ...(track.metadata?._series_exploration ? { _series_exploration: true } : {}),
       queue_original_rank: Number(track.metadata?._queue_original_rank || index + 1),
       queue_diversity_rank_delta: Number(track.metadata?._queue_diversity_rank_delta || 0),
     };

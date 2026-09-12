@@ -42,12 +42,33 @@ describe("live 4U generations", () => {
       .toBe("4U followed the new direction");
   });
 
-  test("preserves a currently playing row retired by a live refresh", () => {
+  test("preserves a currently playing row retired or reordered by a live refresh", () => {
     const previous = [{ id: "a" }, { id: "playing" }, { id: "b" }];
     const authoritative = [{ id: "a" }, { id: "fresh" }, { id: "b" }];
     expect(reconcileLiveFypQueue(previous, authoritative, "playing").map((track) => track.id))
       .toEqual(["a", "playing", "fresh", "b"]);
     expect(reconcileLiveFypQueue(previous, authoritative, "a")).toBe(authoritative);
+
+    const playing = { id: "playing", loaded: true };
+    const previousDeep = [
+      { id: "1" }, { id: "2" }, { id: "3" }, { id: "4" }, { id: "5" }, playing, { id: "tail" },
+    ];
+    const reordered = [
+      { id: "1" }, { id: "2" }, { id: "3" }, { id: "4" }, { id: "5" }, { id: "tail" }, { id: "playing" },
+    ];
+    const reconciled = reconcileLiveFypQueue(previousDeep, reordered, "playing");
+    expect(reconciled.map((track) => track.id)).toEqual([
+      "1", "2", "3", "4", "5", "playing", "tail",
+    ]);
+    expect(reconciled[5]).toBe(playing);
+
+    const pruned = reconcileLiveFypQueue(
+      [{ id: "retired-a" }, { id: "retired-b" }, playing, { id: "next" }],
+      [{ id: "playing" }, { id: "next" }],
+      "playing",
+    );
+    expect(pruned.map((track) => track.id)).toEqual(["playing", "next"]);
+    expect(pruned[0]).toBe(playing);
   });
 
   test("owner-scopes generation reads and realtime visibility", () => {

@@ -13,6 +13,21 @@ import { injectSeriesExploration, loadSeriesExploration } from "@/lib/series-exp
 
 export const dynamic = "force-dynamic";
 
+function episodeContextKey(episode: {
+  series_id?: string | null;
+  source?: string | null;
+  url?: string | null;
+  title?: string | null;
+} | null | undefined): string | null {
+  if (!episode) return null;
+  if (episode.series_id) return `series:${episode.series_id.toLowerCase()}`;
+  const source = (episode.source || "").toLowerCase().trim();
+  const show = (episode.url || "").match(/\/shows\/([^/]+)(?:\/|$)/i)?.[1];
+  if (show) return `nts:${show.toLowerCase()}`;
+  const title = (episode.title || "").toLowerCase().trim().replace(/\s+/g, " ");
+  return source && title ? `${source}:${title}` : null;
+}
+
 function getAuthClient(req: NextRequest) {
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -102,7 +117,7 @@ export async function GET(req: NextRequest) {
       ? db.from("tracks").select("id, artist, title").in("id", seedTrackIds)
       : { data: [], error: null },
     episodeIds.length > 0
-      ? db.from("episodes").select("id, title, source, aired_date, artwork_url, url").in("id", episodeIds)
+      ? db.from("episodes").select("id, series_id, title, source, aired_date, artwork_url, url").in("id", episodeIds)
       : { data: [], error: null },
     episodeIds.length > 0 && userSeedIds.length > 0
       ? db.from("episode_seeds")
@@ -165,6 +180,11 @@ export async function GET(req: NextRequest) {
     track.seed_track = seedTrackMap.get(track.seed_track_id) || null;
     const contextEpisodeId = lineageEpisodeId || track.episode_id || candidateEpisodeIds[0];
     track.episode = episodeMap.get(contextEpisodeId) || null;
+    track.episode_ids = candidateEpisodeIds;
+    track.source_contexts = Array.from(new Set(candidateEpisodeIds.flatMap((episodeId) => {
+      const context = episodeContextKey(episodeMap.get(episodeId));
+      return context ? [context] : [];
+    })));
     track._match_type = lineage?.matchType || null;
     track._seed_name = lineage ? `${lineage.seed.artist} — ${lineage.seed.title}` : undefined;
     track._seed_artist = lineage?.seed.artist;
@@ -192,14 +212,6 @@ export async function GET(req: NextRequest) {
   }
   await Promise.all(signPromises);
 
-  const diversified = diversifyTracks(rows);
-  await signOptionalExplorationAudio(seriesExploration, async (storagePath) => {
-    const { data: signed, error } = await db.storage.from("tracks").createSignedUrl(storagePath, 3600);
-    if (error) throw error;
-    return signed?.signedUrl || null;
-  });
-  const withSeriesExploration = paceTracks(injectSeriesExploration(diversified, seriesExploration));
-
   const generationResult = await db.from("user_fyp_generations")
     .select("generation,reason,seed_id,updated_at")
     .eq("user_id", user.id)
@@ -213,6 +225,21 @@ export async function GET(req: NextRequest) {
     seed_id: null,
     updated_at: null,
   };
+
+  // A durable materialized queue is the sole ordering authority. Re-running
+  // client-side diversification here would reshuffle retained playback rows on
+  // every readiness generation. Keep the legacy fallback only for accounts
+  // that do not have a materialized generation yet.
+  let withSeriesExploration = rows;
+  if (Number(generation.generation) <= 0) {
+    const diversified = diversifyTracks(rows);
+    await signOptionalExplorationAudio(seriesExploration, async (storagePath) => {
+      const { data: signed, error } = await db.storage.from("tracks").createSignedUrl(storagePath, 3600);
+      if (error) throw error;
+      return signed?.signedUrl || null;
+    });
+    withSeriesExploration = paceTracks(injectSeriesExploration(diversified, seriesExploration));
+  }
 
   const tangentResult = await db.from("user_fyp_tangents")
     .select("id,seed_id,seed_artist,seed_title,generation,track_ids,added_track_ids,moved_track_ids,removed_track_ids,track_snapshots,removed_track_snapshots,start_rank,created_at")

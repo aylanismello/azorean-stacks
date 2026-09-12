@@ -37,6 +37,10 @@ const globals = readFileSync(
   new URL("../app/globals.css", import.meta.url),
   "utf8",
 );
+const fypRoute = readFileSync(
+  new URL("../app/api/fyp/route.ts", import.meta.url),
+  "utf8",
+);
 
 describe("player control layout contract", () => {
   test("uses animated circular 30-second SVG controls instead of text pills", () => {
@@ -61,8 +65,8 @@ describe("player control layout contract", () => {
     expect(trackCard).toContain("aria-pressed={seeded}");
     expect(trackCard).toContain('seeded ? "Remove re-seed" : "Plant as re-seed"');
     expect(trackCard).not.toContain("disabled={seeding || seeded}");
-    expect(trackCard).toContain("onSeedChange?.(nextSeeded)");
-    expect(fypPage).toContain('onSeedChange={(seeded) => beginActionMutation(seeded ? "seed" : "unseed"');
+    expect(trackCard).toContain("onSeedChange?.(nextSeeded, data.seed_id || null)");
+    expect(fypPage).toContain("onSeedChange={(seeded, seedId) => beginActionMutation(");
     expect(globalPlayerProvider).toContain("setTrackSeeded: (trackId: string, seeded: boolean");
     expect(seedToggleRoute).toContain('action !== "ensure" && action !== "toggle"');
   });
@@ -103,8 +107,21 @@ describe("player control layout contract", () => {
     expect(fypPage).toContain("completeDiscoveryMutation(");
     expect(fypPage).toContain("discovery-mutation-chip");
     expect(tracklist).toContain("discovery-queue-swap");
-    expect(tracklist).toContain("mutation.outgoing.artist");
-    expect(tracklist).toContain("mutation.incoming.artist");
+    expect(tracklist).toContain("mutation.queueChanges.map");
+    expect(tracklist).toContain("change.outgoing.artist");
+    expect(tracklist).toContain("change.incoming.artist");
+    expect(tracklist).toContain("change.moved.artist");
+    expect(tracklist).toContain("#{change.fromPosition} → #{change.position}");
+    expect(tracklist).not.toContain("more queue changes");
+    expect(fypPage).toContain("pendingMutationRef = useRef<DiscoveryMutation[]>([])");
+    expect(fypPage).toContain("correlatedPendingMutation(pending, generation)");
+    expect(fypPage).toContain("{discoveryMutation && (");
+    expect(fypPage).not.toContain("{isHomeFyp && discoveryMutation && (");
+    expect(fypRoute).toContain("track.episode_ids = candidateEpisodeIds");
+    expect(fypRoute).toContain("track.source_contexts = Array.from(new Set(");
+    expect(fypRoute).toContain("let withSeriesExploration = rows");
+    expect(fypRoute).toContain("if (Number(generation.generation) <= 0)");
+    expect(fypRoute).not.toContain("const withSeriesExploration = paceTracks");
     expect(globals).toContain("@keyframes discovery-chip-in");
     expect(globals).toContain("@keyframes discovery-swap-out");
     expect(globals).toContain("@keyframes discovery-swap-in");

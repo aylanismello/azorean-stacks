@@ -31,26 +31,28 @@ export function describeFypMutation(previousIds: string[], nextIds: string[]): F
   };
 }
 
-/** Keep the loaded row in place until playback moves on, even if the latest
- * materialized queue has already retired it. */
+/** Keep the loaded row at its current index until playback moves on, even if
+ * the latest materialized queue retires or reorders it. */
 export function reconcileLiveFypQueue<T extends { id: string }>(
   previousQueue: T[],
   authoritativeQueue: T[],
   currentTrackId: string | null | undefined,
 ): T[] {
-  if (!currentTrackId || authoritativeQueue.some((track) => track.id === currentTrackId)) {
-    return authoritativeQueue;
-  }
+  if (!currentTrackId) return authoritativeQueue;
   const previousIndex = previousQueue.findIndex((track) => track.id === currentTrackId);
   if (previousIndex < 0) return authoritativeQueue;
+  const authoritativeIndex = authoritativeQueue.findIndex((track) => track.id === currentTrackId);
+  if (authoritativeIndex === previousIndex) return authoritativeQueue;
 
-  const reconciled = [...authoritativeQueue];
-  reconciled.splice(
-    Math.min(previousIndex, reconciled.length),
-    0,
-    previousQueue[previousIndex],
-  );
-  return reconciled;
+  const reconciled = authoritativeQueue.filter((track) => track.id !== currentTrackId);
+  const authoritativeById = new Map(reconciled.map((track) => [track.id, track]));
+  const before = previousQueue
+    .slice(0, previousIndex)
+    .map((track) => authoritativeById.get(track.id))
+    .filter((track): track is T => Boolean(track));
+  const beforeIds = new Set(before.map((track) => track.id));
+  const after = reconciled.filter((track) => !beforeIds.has(track.id));
+  return [...before, previousQueue[previousIndex], ...after];
 }
 
 export function fypGrowthLabel(summary: FypMutationSummary, reason: FypGeneration["reason"]): string {

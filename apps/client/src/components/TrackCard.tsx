@@ -18,7 +18,7 @@ interface TrackCardProps {
   canonicalTrackId?: string | null;
   onVote: (id: string, status: "approved" | "rejected" | "skipped" | "bad_source", advance?: boolean) => Promise<void>;
   onSuperLike?: (id: string) => Promise<void>;
-  onSeedChange?: (seeded: boolean) => void;
+  onSeedChange?: (seeded: boolean, seedId: string | null) => void;
   onSkipEpisode?: () => void;
   skippingEpisode?: boolean;
   onShowContext?: () => void;
@@ -118,7 +118,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeed
       const nextSeeded = data.action !== "removed";
       setSeeded(nextSeeded);
       globalPlayer.setTrackSeeded(actionTargets.trackId, nextSeeded, data.seed_id || null);
-      onSeedChange?.(nextSeeded);
+      onSeedChange?.(nextSeeded, data.seed_id || null);
     } catch {
       // Keep the current state when the request fails.
     } finally {

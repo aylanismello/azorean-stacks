@@ -14,6 +14,14 @@ export interface DiscoveryTrackRef {
   title: string;
 }
 
+export interface DiscoveryQueueChange {
+  position: number;
+  outgoing: DiscoveryTrackRef | null;
+  incoming: DiscoveryTrackRef | null;
+  moved: DiscoveryTrackRef | null;
+  fromPosition: number | null;
+}
+
 export interface DiscoveryMutation {
   id: string;
   action: DiscoveryAction;
@@ -21,8 +29,12 @@ export interface DiscoveryMutation {
   detail: string;
   tone: "neutral" | "positive" | "strong" | "negative" | "branch";
   source: DiscoveryTrackRef | null;
+  causalSeedId: string | null;
   outgoing: DiscoveryTrackRef | null;
   incoming: DiscoveryTrackRef | null;
+  outgoingTracks: DiscoveryTrackRef[];
+  incomingTracks: DiscoveryTrackRef[];
+  queueChanges: DiscoveryQueueChange[];
   incomingIds: string[];
   createdAt: number;
 }
@@ -75,14 +87,19 @@ export function beginDiscoveryMutation(
   source: DiscoveryTrackRef | null,
   sequence: number,
   createdAt = Date.now(),
+  causalSeedId: string | null = null,
 ): DiscoveryMutation {
   return {
     id: `${sequence}:${action}:${source?.id || "queue"}`,
     action,
     ...ACTION_COPY[action],
     source,
+    causalSeedId,
     outgoing: action === "skip" || action === "reject" ? source : null,
     incoming: null,
+    outgoingTracks: action === "skip" || action === "reject" ? (source ? [source] : []) : [],
+    incomingTracks: [],
+    queueChanges: [],
     incomingIds: [],
     createdAt,
   };
@@ -92,19 +109,83 @@ export function queueTrackChanges<T extends DiscoveryTrackRef>(
   previous: T[],
   next: T[],
   protectedTrackId?: string | null,
-): { outgoing: T[]; incoming: T[] } {
+): { outgoing: T[]; incoming: T[]; queueChanges: DiscoveryQueueChange[] } {
   const previousIds = new Set(previous.map((track) => track.id));
   const nextIds = new Set(next.map((track) => track.id));
-  return {
-    outgoing: previous.filter((track) =>
-      track.id !== protectedTrackId && !nextIds.has(track.id)
-    ),
-    incoming: next.filter((track) => !previousIds.has(track.id)),
-  };
+  const outgoing = previous.filter((track) =>
+    track.id !== protectedTrackId && !nextIds.has(track.id)
+  );
+  const incoming = next.filter((track) => !previousIds.has(track.id));
+  const outgoingIds = new Set(outgoing.map((track) => track.id));
+  const incomingIds = new Set(incoming.map((track) => track.id));
+  const queueChanges: DiscoveryQueueChange[] = [];
+  const length = Math.max(previous.length, next.length);
+  for (let index = 0; index < length; index++) {
+    const previousTrack = previous[index];
+    const nextTrack = next[index];
+    const outgoingTrack = previousTrack && outgoingIds.has(previousTrack.id) ? previousTrack : null;
+    const incomingTrack = nextTrack && incomingIds.has(nextTrack.id) ? nextTrack : null;
+    if (outgoingTrack || incomingTrack) {
+      queueChanges.push({
+        position: index + 1,
+        outgoing: outgoingTrack,
+        incoming: incomingTrack,
+        moved: null,
+        fromPosition: null,
+      });
+    }
+  }
+
+  // A tangent can reorder existing material without adding or removing anything.
+  // Report those exact moves instead of pretending the queue stayed unchanged.
+  if (!outgoing.length && !incoming.length) {
+    const previousPositions = new Map(previous.map((track, index) => [track.id, index + 1]));
+    next.forEach((track, index) => {
+      const fromPosition = previousPositions.get(track.id);
+      const position = index + 1;
+      if (fromPosition && fromPosition !== position && track.id !== protectedTrackId) {
+        queueChanges.push({
+          position,
+          outgoing: null,
+          incoming: null,
+          moved: track,
+          fromPosition,
+        });
+      }
+    });
+  }
+  return { outgoing, incoming, queueChanges };
 }
 
 function shortTrack(track: DiscoveryTrackRef): string {
   return `${track.artist} — ${track.title}`;
+}
+
+export function shouldShowCompletedMutation(
+  pendingCount: number,
+  revealsTangent: boolean,
+  activeMutationId: string | null,
+): boolean {
+  return pendingCount > 0 || revealsTangent || !activeMutationId;
+}
+
+export function correlatedPendingMutation(
+  pending: DiscoveryMutation[],
+  generation?: { reason: "ranking_refresh" | "seed_refresh"; seed_id: string | null },
+): DiscoveryMutation | null {
+  if (generation?.reason !== "seed_refresh" || !generation.seed_id) return null;
+  return [...pending].reverse().find((event) =>
+    event.action === "seed" && event.causalSeedId === generation.seed_id
+  ) || null;
+}
+
+export function remainingPendingMutations(
+  pending: DiscoveryMutation[],
+  correlated: DiscoveryMutation | null,
+): DiscoveryMutation[] {
+  return pending.filter((event) =>
+    event.action === "seed" && event.id !== correlated?.id
+  );
 }
 
 export function completeDiscoveryMutation<T extends DiscoveryTrackRef>(
@@ -119,12 +200,21 @@ export function completeDiscoveryMutation<T extends DiscoveryTrackRef>(
   } = {},
 ): DiscoveryMutation | null {
   const changes = queueTrackChanges(previous, next, options.protectedTrackId);
-  if (!changes.outgoing.length && !changes.incoming.length) return pending;
+  if (!changes.queueChanges.length) return null;
 
   const action: DiscoveryAction = options.tangentSeedName ? "tangent" : pending?.action || "refresh";
-  const event = beginDiscoveryMutation(action, pending?.source || null, sequence, options.createdAt);
-  const outgoing = changes.outgoing[0] || pending?.outgoing || null;
-  const incoming = changes.incoming[0] || null;
+  const event = beginDiscoveryMutation(
+    action,
+    pending?.source || null,
+    sequence,
+    options.createdAt,
+    pending?.causalSeedId || null,
+  );
+  const firstPairedChange = changes.queueChanges.find((change) => change.outgoing && change.incoming);
+  const firstChange = firstPairedChange || changes.queueChanges[0];
+  const outgoing = firstChange?.outgoing || null;
+  const incoming = firstChange?.incoming || null;
+  const moved = firstChange?.moved || null;
   let detail = event.detail;
 
   if (outgoing && incoming) {
@@ -133,16 +223,21 @@ export function completeDiscoveryMutation<T extends DiscoveryTrackRef>(
     detail = `${shortTrack(incoming)} grew into the upcoming queue.`;
   } else if (outgoing) {
     detail = `${shortTrack(outgoing)} left the upcoming queue.`;
+  } else if (moved && firstChange?.fromPosition) {
+    detail = `${shortTrack(moved)} moved #${firstChange.fromPosition} → #${firstChange.position}.`;
   }
   if (options.tangentSeedName) detail += ` Branched from ${options.tangentSeedName}.`;
 
   return {
     ...event,
-    headline: pending?.headline || event.headline,
+    headline: pending?.headline || (moved ? "The dig reordered" : event.headline),
     detail,
     tone: pending?.tone || event.tone,
     outgoing,
     incoming,
+    outgoingTracks: changes.outgoing,
+    incomingTracks: changes.incoming,
+    queueChanges: changes.queueChanges,
     incomingIds: changes.incoming.map((track) => track.id),
   };
 }

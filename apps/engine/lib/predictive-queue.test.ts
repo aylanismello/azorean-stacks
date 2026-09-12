@@ -15,6 +15,8 @@ import {
   mergeStableQueueCandidates,
   mergeSoulectionPreparationSlice,
   paceQueueCandidates,
+  protectedPacingPrefixLength,
+  shouldRefreshExplorationLane,
   SERIES_SEED_CONTEXT_BOOST,
   SOULECTION_EXPLORATION_EPISODE_LIMIT,
   SOULECTION_EXPLORATION_TRACK_LIMIT,
@@ -396,6 +398,41 @@ describe("diversifyQueueCandidates", () => {
     expect(nearTerm.filter((track) => ["Flying Lotus", "FlyLo", "Flying Lotus feat. Guest"].includes(String(track.artist || ""))).length).toBeLessThanOrEqual(2);
     expect(nearTerm.filter((track) => track.episode_id === "ep-a").length).toBeLessThanOrEqual(2);
     expect(nearTerm.filter((track) => track.source_contexts?.[0] === "show-a").length).toBeLessThanOrEqual(3);
+  });
+
+  test("paces only after the protected stable prefix", () => {
+    const candidates = [
+      { id: "stable-1", artist: "A" },
+      { id: "stable-2", artist: "A" },
+      { id: "alternative", artist: "B" },
+      { id: "tail", artist: "A" },
+    ];
+
+    expect(paceQueueCandidates(candidates, candidates.length, 2).map((track) => track.id)).toEqual([
+      "stable-1", "stable-2", "alternative", "tail",
+    ]);
+  });
+
+  test("protects the whole retained queue on routine refreshes and only five rows for seed branches", () => {
+    expect(protectedPacingPrefixLength("ranking_refresh", 8, 10)).toBe(8);
+    expect(protectedPacingPrefixLength("ranking_refresh", 12, 10)).toBe(10);
+    expect(protectedPacingPrefixLength("seed_refresh", 8, 10)).toBe(5);
+    expect(protectedPacingPrefixLength("seed_refresh", 3, 10)).toBe(3);
+    expect(shouldRefreshExplorationLane("ranking_refresh", 20)).toBe(false);
+    expect(shouldRefreshExplorationLane("ranking_refresh", 0)).toBe(true);
+    expect(shouldRefreshExplorationLane("seed_refresh", 20)).toBe(true);
+  });
+
+  test("paces shared secondary episode and show appearances", () => {
+    const candidates = [
+      { id: "first", artist: "A", episode_ids: ["ep-a", "shared-ep"], source_contexts: ["show-a", "shared-show"] },
+      { id: "second", artist: "B", episode_ids: ["ep-b", "shared-ep"], source_contexts: ["show-b", "shared-show"] },
+      { id: "alternative", artist: "C", episode_ids: ["ep-c"], source_contexts: ["show-c"] },
+    ];
+
+    expect(paceQueueCandidates(candidates).map((track) => track.id)).toEqual([
+      "first", "alternative", "second",
+    ]);
   });
 
   test("reserves bounded exploration outside raw top 20 without disturbing a strong prefix", () => {

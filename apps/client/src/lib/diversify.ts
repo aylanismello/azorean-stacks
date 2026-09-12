@@ -44,22 +44,34 @@ function artistKeys(track: any): string[] {
   return [...keys];
 }
 
-function episodeKey(track: any): string | null {
-  return normalize(track.episode?.id || track.episode_id);
+function episodeKeys(track: any): string[] {
+  const keys = new Set<string>();
+  for (const value of [track.episode?.id, track.episode_id, ...(track.episode_ids || [])]) {
+    const key = normalize(value);
+    if (key) keys.add(key);
+  }
+  return [...keys];
 }
 
-function showKey(track: any): string | null {
-  const explicit = normalize(track.source_context || track.metadata?._source_context_key);
-  if (explicit) return explicit;
+function showKeys(track: any): string[] {
+  const keys = new Set<string>();
+  for (const value of [
+    track.source_context,
+    track.metadata?._source_context_key,
+    ...(track.source_contexts || []),
+  ]) {
+    const key = normalize(value);
+    if (key) keys.add(key);
+  }
   const rawUrl = track.episode?.url;
   if (typeof rawUrl === "string") {
     try {
       const url = new URL(rawUrl);
       const show = url.pathname.match(/\/(?:shows?|programs?)\/([^/]+)/i)?.[1];
-      if (show) return `${url.hostname.toLowerCase()}:${show.toLowerCase()}`;
+      if (show) keys.add(`${url.hostname.toLowerCase()}:${show.toLowerCase()}`);
     } catch {}
   }
-  return null;
+  return [...keys];
 }
 
 function overlaps(left: string[], right: string[]): boolean {
@@ -77,18 +89,18 @@ export function paceTracks(tracks: any[]): any[] {
   const violates = (track: any, strictWindow: boolean) => {
     const previous = result[result.length - 1];
     const artist = artistKeys(track);
-    const episode = episodeKey(track);
-    const show = showKey(track);
+    const episode = episodeKeys(track);
+    const show = showKeys(track);
     if (previous) {
       if (artist.length && overlaps(artist, artistKeys(previous))) return true;
-      if (episode && episode === episodeKey(previous)) return true;
-      if (show && show === showKey(previous)) return true;
+      if (episode.length && overlaps(episode, episodeKeys(previous))) return true;
+      if (show.length && overlaps(show, showKeys(previous))) return true;
     }
     if (!strictWindow) return false;
     const recent = result.slice(-(window - 1));
     if (artist.length && recent.filter((item) => overlaps(artist, artistKeys(item))).length >= 2) return true;
-    if (episode && recent.filter((item) => episode === episodeKey(item)).length >= 2) return true;
-    if (show && recent.filter((item) => show === showKey(item)).length >= 3) return true;
+    if (episode.length && recent.filter((item) => overlaps(episode, episodeKeys(item))).length >= 2) return true;
+    if (show.length && recent.filter((item) => overlaps(show, showKeys(item))).length >= 3) return true;
     return false;
   };
 

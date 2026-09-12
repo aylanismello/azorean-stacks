@@ -16,13 +16,17 @@ function joinedTrack(row: any) {
 
 async function getPendingTrackIds(db: any, userId: string) {
   const pending = new Set<string>();
+  const excluded = new Set<string>();
   for (let page = 0; ; page++) {
     const { data, error } = await db.from("user_tracks")
       .select("track_id,status")
       .eq("user_id", userId)
       .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
     if (error) throw error;
-    for (const opinion of data || []) if (opinion.status === "pending") pending.add(opinion.track_id);
+    for (const opinion of data || []) {
+      if (opinion.status === "pending") pending.add(opinion.track_id);
+      else excluded.add(opinion.track_id);
+    }
     if (!data || data.length < QUERY_PAGE_SIZE) break;
   }
   for (let page = 0; ; page++) {
@@ -32,7 +36,10 @@ async function getPendingTrackIds(db: any, userId: string) {
       .gt("play_count", 0)
       .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
     if (error) throw error;
-    for (const played of data || []) pending.delete(played.track_id);
+    for (const played of data || []) {
+      pending.delete(played.track_id);
+      excluded.add(played.track_id);
+    }
     if (!data || data.length < QUERY_PAGE_SIZE) break;
   }
   for (let page = 0; ; page++) {
@@ -43,16 +50,20 @@ async function getPendingTrackIds(db: any, userId: string) {
       .not("track_id", "is", null)
       .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
     if (error) throw error;
-    for (const seed of data || []) pending.delete(seed.track_id);
+    for (const seed of data || []) {
+      pending.delete(seed.track_id);
+      excluded.add(seed.track_id);
+    }
     if (!data || data.length < QUERY_PAGE_SIZE) break;
   }
-  return pending;
+  return { pending, excluded };
 }
 
 /**
- * Select playable tracks exclusively from the authenticated user's pending rows
- * and personalized score snapshot. Shared tracks.status and shared RPC rankings
- * are deliberately not consulted.
+ * Select playable tracks from the authenticated user's durable queue. Ordinary
+ * rows require pending ownership plus a score; engine-marked exploration rows
+ * may be scoreless but are excluded as soon as this user acts, plays, or seeds.
+ * Shared tracks.status and shared RPC rankings are never consulted.
  */
 export async function getPersonalizedTracks(
   db: any,
@@ -64,7 +75,7 @@ export async function getPersonalizedTracks(
   const target = offset + limit;
   if (target <= 0) return [];
 
-  const pending = await getPendingTrackIds(db, userId);
+  const { pending, excluded } = await getPendingTrackIds(db, userId);
   const ranked: any[] = [];
   const seen = new Set<string>();
   const now = new Date().toISOString();
@@ -96,7 +107,14 @@ export async function getPersonalizedTracks(
     for (const queueRow of data || []) {
       const track = joinedTrack(queueRow);
       const score: any = track ? scoreMap.get(track.id) : null;
-      if (!track || !pending.has(track.id) || !score || seen.has(track.id)) continue;
+      const exploration = queueRow.score_components?._series_exploration === true;
+      const eligible = track && (pending.has(track.id) || (exploration && !excluded.has(track.id)));
+      if (!track || !eligible || (!score && !exploration) || seen.has(track.id)) continue;
+      const effectiveScore = score || {
+        score: queueRow.score,
+        confidence: 0,
+        components: queueRow.score_components || {},
+      };
       seen.add(track.id);
       ranked.push({
         ...track,
@@ -106,11 +124,11 @@ export async function getPersonalizedTracks(
         super_liked: false,
         voted_at: null,
         listen_pct: null,
-        taste_score: Number(score.score || 0),
+        taste_score: Number(effectiveScore.score || 0),
         metadata: {
           ...(track.metadata || {}),
-          _score_components: score.components || {},
-          _score_confidence: Number(score.confidence || 0),
+          _score_components: effectiveScore.components || {},
+          _score_confidence: Number(effectiveScore.confidence || 0),
         },
       });
       if (ranked.length >= target) break;

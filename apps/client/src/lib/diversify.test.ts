@@ -70,4 +70,16 @@ describe("diversifyTracks", () => {
       expect(currentShow).not.toBe(previousShow);
     }
   });
+
+  test("paces shared secondary episode and show appearances", () => {
+    const tracks = [
+      { id: "first", artist: "A", episode_ids: ["ep-a", "shared-ep"], source_contexts: ["show-a", "shared-show"] },
+      { id: "second", artist: "B", episode_ids: ["ep-b", "shared-ep"], source_contexts: ["show-b", "shared-show"] },
+      { id: "alternative", artist: "C", episode_ids: ["ep-c"], source_contexts: ["show-c"] },
+    ];
+
+    expect(paceTracks(tracks).map((track) => track.id)).toEqual([
+      "first", "alternative", "second",
+    ]);
+  });
 });

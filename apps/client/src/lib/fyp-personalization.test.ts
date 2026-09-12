@@ -120,6 +120,32 @@ describe("loadPersonalizedFyp", () => {
     expect(seedCall.filters).toContainEqual(["eq", "active", true]);
   });
 
+  test("admits only untouched engine-marked exploration rows without a personalized score", async () => {
+    const explorationRow = {
+      track_id: "track-1",
+      rank: 18,
+      score: 0,
+      score_components: { _series_exploration: true },
+      track: readyTrack,
+    };
+    const untouched = fixtureDb({ ready: [explorationRow], scores: [] });
+    const visible = await loadPersonalizedFyp(untouched.db, "user-a", {
+      limit: 20, offset: 0, hideLow: false,
+    });
+    expect(visible.map((track) => track.id)).toEqual(["track-1"]);
+    expect(visible[0].metadata._score_components._series_exploration).toBe(true);
+
+    const actioned = fixtureDb({
+      pending: [{ track_id: "track-1", status: "liked" }],
+      ready: [explorationRow],
+      scores: [],
+    });
+    const hidden = await loadPersonalizedFyp(actioned.db, "user-a", {
+      limit: 20, offset: 0, hideLow: false,
+    });
+    expect(hidden).toEqual([]);
+  });
+
   test("never invokes the weak global FYP RPC for filtered or unfiltered loads", async () => {
     for (const genre of [null, "House"]) {
       const fixture = fixtureDb({ pending: [] });
