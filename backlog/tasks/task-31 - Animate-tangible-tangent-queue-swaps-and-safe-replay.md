@@ -1,11 +1,11 @@
 ---
 id: TASK-31
 title: Make every discovery action visibly reshape the live queue
-status: In Progress
+status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-12 04:42'
-updated_date: '2026-09-12 07:09'
+updated_date: '2026-09-12 07:24'
 labels:
   - ux
   - tangents
@@ -28,7 +28,7 @@ Turn skip, like, super-like, reject, seed, unseed, and tangent refreshes into on
 - [x] #4 Tangent tracks explain which seed branched them into the feed
 - [x] #5 Tangent and history tracks can be replayed without replacing or corrupting the active queue
 - [x] #6 Animations are restrained, accessible, and disabled under reduced motion
-- [ ] #7 Tests, typecheck, build, browser QA, and production deployment pass
+- [x] #7 Tests, typecheck, build, browser QA, and production deployment pass
 - [x] #8 Skip, like, super-like, reject, seed, and unseed each produce a restrained action-specific mutation event
 - [x] #9 A subsequent material queue generation upgrades that event with exact outgoing-to-incoming track names
 - [x] #10 Desktop queue rows visibly show the replacement; mobile receives the same event as a compact non-blocking chip
@@ -55,4 +55,6 @@ Implemented one living-tree mutation event model across skip, like, super-like, 
 - Final release gate: client 184 tests, engine 133 tests, TypeScript, production build, and audit all passed after stopping the dev server that had raced .next.
 
 - Second adversarial pass fixed multi-pending seed matching and preserved exact seed events across unrelated readiness deltas. Seed causality now uses the durable seed row ID returned by every seed surface, never the track ID.
+
+- Released in 8b9e238cc970e2940238cd8e6a97340442d8e78d. Vercel Production deployment 6407186708 completed successfully; final clean client gate passed 185 tests, TypeScript, production build, and audit. Engine passed 133 tests, TypeScript, and runner syntax. Final adversarial review PASS; authenticated live API preserved its 19-row durable prefix in exact database rank order.
 <!-- SECTION:NOTES:END -->

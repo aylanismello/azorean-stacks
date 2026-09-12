@@ -1,11 +1,11 @@
 ---
 id: TASK-32
 title: Prevent repeated artists in the near-term 4U queue
-status: In Progress
+status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-12 04:44'
-updated_date: '2026-09-12 07:09'
+updated_date: '2026-09-12 07:25'
 labels:
   - ranking
   - ux
@@ -27,7 +27,7 @@ Likes, tangents, and source affinity may raise a neighborhood, but 4U is crate d
 - [x] #3 Artist normalization catches case, whitespace, featuring, and multi-artist variants without collapsing unrelated artists
 - [x] #4 Tangent and exploration insertion cannot bypass artist pacing
 - [x] #5 The live main-account queue is audited before and after without exposing account identifiers
-- [ ] #6 Tests, typecheck, build, worker restart, and production readback pass
+- [x] #6 Tests, typecheck, build, worker restart, and production readback pass
 - [x] #7 No episode or show appears back-to-back when another eligible context is available
 - [x] #8 No episode appears more than twice or show more than three times in any ten-track near-term window when alternatives exist
 - [x] #9 A skip retires the track and adds temporary artist/show/episode novelty pressure without becoming sonic rejection
@@ -59,4 +59,8 @@ Implemented artist alias-aware, exact episode, and originating-show pacing in bo
 - Main-account audit comparison (account identifier omitted): original 25-ready-track baseline had 2 adjacent artist aliases and 4 adjacent episode pairs; after rematerialization it had 0 adjacent artist aliases and 2 episode pairs. The later strict all-appearance 50-row audit found 0 avoidable adjacency conflicts after Soulection enrichment.
 
 - Second adversarial pass fixed preceding-row retirement around active playback and stopped routine refreshes from repositioning the Soulection lane. Existing exploration rows are retained explicitly; lane placement runs only for an initial queue or intentional seed refresh.
+
+- Released in 8b9e238cc970e2940238cd8e6a97340442d8e78d. Production deployment succeeded. Engine supervisor restarted on the release checkout and reported runner/watcher/sonic alive; live materialization remained 50 rows and the final all-appearance audit had zero avoidable adjacency conflicts.
+
+- Final architecture correction: generation > 0 serves the durable engine queue in exact rank order; client diversify/exploration pacing remains only as a generation-0 fallback. Engine-marked exploration rows remain eligible while untouched and are removed immediately after a user action, play, or seed.
 <!-- SECTION:NOTES:END -->
