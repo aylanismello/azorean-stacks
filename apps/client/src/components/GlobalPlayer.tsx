@@ -30,13 +30,13 @@ function generateGradient(artist: string, title: string): string {
   return `hsl(${h1}, 40%, 20%)`;
 }
 
-/** Tiny connection quality icon */
+/** Connection quality icon — phone-only in the player chrome. */
 function ConnectionIcon({ quality }: { quality: "good" | "recovering" | "stalled" }) {
   const color = quality === "good" ? "#22c55e" : quality === "recovering" ? "#eab308" : "#ef4444";
   const label = quality === "good" ? "Connection stable" : quality === "recovering" ? "Recovering from stall" : "Connection stalled";
   return (
-    <span className="flex-shrink-0" aria-label={label}>
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <span className="flex flex-shrink-0 items-center justify-center" aria-label={label} title={label}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M1 1l22 22" opacity={quality === "stalled" ? 1 : 0} />
         <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" opacity={quality === "good" ? 1 : 0.25} />
         <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" opacity={quality === "good" ? 1 : 0.25} />
@@ -154,7 +154,7 @@ export function GlobalPlayer() {
   const showBuffering = loading || buffering;
 
   return (
-    <div className="global-player fixed left-0 right-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-40 md:bottom-0">
+    <div className="global-player fixed left-0 right-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-40 lg:bottom-0">
       {/* Toast notification */}
       {toast && (
         <div className="absolute -top-10 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-surface-2 border border-surface-3 text-xs text-foreground/80 shadow-lg backdrop-enter whitespace-nowrap z-50">
@@ -210,7 +210,7 @@ export function GlobalPlayer() {
         </div>
 
         {/* Controls row */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-3">
         {/* Album art / gradient — click to return to where playback started */}
         <button
           onClick={() => {
@@ -227,7 +227,7 @@ export function GlobalPlayer() {
               router.push("/");
             }
           }}
-          className="w-10 h-10 rounded-md flex-shrink-0 overflow-hidden hover:ring-1 hover:ring-accent/50 transition-all active:scale-95"
+          className="h-9 w-9 flex-shrink-0 overflow-hidden rounded-md transition-all hover:ring-1 hover:ring-accent/50 active:scale-95 sm:h-10 sm:w-10"
           style={
             currentTrack.coverArtUrl
               ? { backgroundImage: `url(${currentTrack.coverArtUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
@@ -250,10 +250,11 @@ export function GlobalPlayer() {
         {currentTrack.spotifyUrl && (
           <button
             onClick={() => openSpotify(currentTrack.spotifyUrl!)}
-            className="flex-shrink-0 hover:scale-110 transition-transform active:scale-95"
+            className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-all hover:bg-surface-3 hover:scale-105 active:scale-95 sm:flex"
             title="Open in Spotify"
+            aria-label="Open in Spotify"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="#1DB954">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="#1DB954">
               <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z" />
             </svg>
           </button>
@@ -261,10 +262,11 @@ export function GlobalPlayer() {
         {currentTrack.youtubeUrl && (
           <button
             onClick={() => openYouTube(currentTrack.youtubeUrl!)}
-            className="flex-shrink-0 text-red-400/70 hover:text-red-400 hover:scale-110 transition-all active:scale-95"
+            className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-red-400/80 transition-all hover:bg-surface-3 hover:text-red-400 hover:scale-105 active:scale-95 sm:flex"
             title="Open on YouTube"
+            aria-label="Open on YouTube"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
           </button>
         )}
 
@@ -279,17 +281,23 @@ export function GlobalPlayer() {
           </span>
         ) : (
           <>
-            {/* Time + connection quality */}
-            <span className="flex items-center gap-1.5 text-[10px] text-muted font-mono flex-shrink-0 hidden sm:flex">
+            {/* Time stays on larger screens; connection status is phone-only. */}
+            <span className="hidden flex-shrink-0 items-center font-mono text-[11px] text-muted md:flex">
               {duration > 0 ? `${fmt(displayedProgress)} / ${fmt(duration)}` : ""}
-              {source === "audio" && <ConnectionIcon quality={connectionQuality} />}
             </span>
 
+            {source === "audio" && (
+              <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-surface-2 sm:hidden">
+                <ConnectionIcon quality={connectionQuality} />
+              </span>
+            )}
+
+            <div className="flex flex-shrink-0 items-center gap-1 sm:gap-2">
             {/* Previous track */}
             <button
               onClick={prev}
               disabled={!canGoPrevious}
-              className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-foreground hover:bg-surface-3 transition-all flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted"
+              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-foreground/75 transition-all hover:bg-surface-3 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted sm:h-9 sm:w-9"
               title="Previous track"
               aria-label="Previous track"
             >
@@ -302,7 +310,7 @@ export function GlobalPlayer() {
             {/* Play/pause — shows spinner when buffering */}
             <button
               onClick={togglePlayPause}
-              className="w-9 h-9 flex items-center justify-center rounded-full bg-foreground text-surface-0 hover:scale-105 transition-transform active:scale-95 flex-shrink-0"
+              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-foreground text-surface-0 transition-transform hover:scale-105 active:scale-95 sm:h-11 sm:w-11"
               title={showBuffering ? "Buffering…" : playing ? "Pause track" : "Play track"}
               aria-label={showBuffering ? "Buffering" : playing ? "Pause track" : "Play track"}
             >
@@ -326,7 +334,7 @@ export function GlobalPlayer() {
             <button
               onClick={next}
               disabled={!canGoNext}
-              className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-foreground hover:bg-surface-3 transition-all flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted"
+              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-foreground/75 transition-all hover:bg-surface-3 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted sm:h-9 sm:w-9"
               title="Next track"
               aria-label="Next track"
             >
@@ -342,7 +350,7 @@ export function GlobalPlayer() {
                 if (canonicalTrackId) toggleRepeatTrack(canonicalTrackId);
               }}
               disabled={!canonicalTrackId}
-              className={`w-7 h-7 flex items-center justify-center rounded-full transition-all flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-30 ${
+              className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-all disabled:cursor-not-allowed disabled:opacity-30 sm:h-9 sm:w-9 ${
                 isRepeating
                   ? "bg-accent/15 text-accent"
                   : "text-muted hover:text-foreground hover:bg-surface-3"
@@ -360,14 +368,16 @@ export function GlobalPlayer() {
                 <path d="M10 11l2-2" />
               </svg>
             </button>
+            </div>
           </>
         )}
 
         {/* Close */}
         <button
           onClick={stop}
-          className="w-7 h-7 flex items-center justify-center rounded-full text-muted hover:text-white hover:bg-surface-3 transition-all flex-shrink-0"
+          className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-foreground/70 transition-all hover:bg-surface-3 hover:text-foreground sm:h-9 sm:w-9"
           title="Close player"
+          aria-label="Close player"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />

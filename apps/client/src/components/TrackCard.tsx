@@ -366,21 +366,18 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
 
   // -- Shared sub-components --
 
-  // Shared skip icons — clean circular arrow with integrated "30"
+  // Explicit seek labels stay legible at every artwork size. Tiny numerals
+  // embedded in an SVG arc clip and blur on high-DPI screens.
   const rewindIcon = (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 5V1L7 5l5 4V5" />
-      <path d="M19.07 6.93A10 10 0 1 1 5.93 6.93" />
-      <text x="12" y="15.5" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700" fontFamily="system-ui">30</text>
-    </svg>
+    <span aria-hidden="true" className="whitespace-nowrap font-mono text-xs font-bold leading-none tracking-[-0.04em]">
+      −0:30
+    </span>
   );
 
   const forwardIcon = (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 5V1l5 4-5 4V5" />
-      <path d="M4.93 6.93A10 10 0 1 0 18.07 6.93" />
-      <text x="12" y="15.5" textAnchor="middle" fill="currentColor" stroke="none" fontSize="7" fontWeight="700" fontFamily="system-ui">30</text>
-    </svg>
+    <span aria-hidden="true" className="whitespace-nowrap font-mono text-xs font-bold leading-none tracking-[-0.04em]">
+      +0:30
+    </span>
   );
 
   // Desktop artwork block (rewind | play/pause | forward)
@@ -409,7 +406,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
       )}
 
       {hasPlayableSource && (
-        <div className={`relative z-10 flex items-center gap-5 transition-opacity duration-200 ${
+        <div className={`relative z-10 flex items-center gap-4 transition-opacity duration-200 ${
           controlsHidden
             ? "opacity-0 group-hover/artwork:opacity-100"
             : "opacity-100"
@@ -417,7 +414,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
           {/* Rewind 30s */}
           <button
             onClick={handleRewind}
-            className="w-10 h-10 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white/80 hover:text-white hover:bg-black/50 active:scale-90 transition-all"
+            className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/20 bg-black/45 px-3 text-white shadow-sm backdrop-blur-sm transition-all hover:border-white/40 hover:bg-black/65 active:scale-95"
             title="Rewind 30 seconds"
             aria-label="Rewind 30 seconds"
           >
@@ -451,7 +448,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
           {/* Forward 30s */}
           <button
             onClick={handleForward}
-            className="w-10 h-10 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white/80 hover:text-white hover:bg-black/50 active:scale-90 transition-all"
+            className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/20 bg-black/45 px-3 text-white shadow-sm backdrop-blur-sm transition-all hover:border-white/40 hover:bg-black/65 active:scale-95"
             title="Skip ahead 30 seconds"
             aria-label="Skip ahead 30 seconds"
           >
@@ -625,12 +622,12 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
   );
 
   const voteButtons = (
-    <div className="flex items-center justify-center gap-6">
+    <div className="grid w-full grid-cols-6 items-center gap-3">
       {/* Reject (X) */}
       <button
         onClick={() => handleVote("rejected", true)}
         disabled={voting}
-        className={`flex items-center justify-center w-14 h-14 md:w-16 md:h-16 rounded-full border-2 transition-all active:scale-90 disabled:opacity-50 ${
+        className={`flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 transition-all active:scale-90 disabled:opacity-50 md:h-14 md:w-14 ${
           rejected
             ? "bg-red-500/30 md:bg-red-500/30 border-red-400 text-red-400 ring-2 ring-red-400/40"
             : "bg-surface-2 md:bg-black/40 md:backdrop-blur-md border-red-400/30 text-red-400/80 hover:bg-red-950/50 hover:border-red-400/60 hover:text-red-400"
@@ -647,26 +644,31 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
       <button
         onClick={() => setFixModalOpen(true)}
         disabled={voting}
-        className={`flex items-center justify-center w-10 h-10 md:w-11 md:h-11 rounded-full border-2 transition-all active:scale-90 disabled:opacity-50 ${
+        className={`flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 transition-all active:scale-90 disabled:opacity-50 md:h-14 md:w-14 ${
           badSource
             ? "bg-orange-500/30 md:bg-orange-500/30 border-orange-400 text-orange-400 ring-2 ring-orange-400/40"
             : "bg-surface-2 md:bg-black/40 md:backdrop-blur-md border-orange-400/30 text-orange-400/80 hover:bg-orange-950/50 hover:border-orange-400/60 hover:text-orange-400"
         }`}
         title="Bad source — wrong track or bad audio"
+        aria-label="Bad source — wrong track or bad audio"
       >
-        <span className="text-sm">⚠️</span>
+        <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10.3 2.9 1.8 17.1A2 2 0 0 0 3.5 20h17a2 2 0 0 0 1.7-2.9L13.7 2.9a2 2 0 0 0-3.4 0Z" />
+          <path d="M12 8v5" /><path d="M12 17h.01" />
+        </svg>
       </button>
 
       {/* Skip (neutral) */}
       <button
         onClick={() => handleVote("skipped", true)}
         disabled={voting}
-        className={`flex items-center justify-center w-11 h-11 md:w-12 md:h-12 rounded-full border-2 transition-all active:scale-90 disabled:opacity-50 ${
+        className={`flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 transition-all active:scale-90 disabled:opacity-50 md:h-14 md:w-14 ${
           skippedVote
             ? "bg-amber-500/30 md:bg-amber-500/30 border-amber-400 text-amber-400 ring-2 ring-amber-400/40"
             : "bg-surface-2 md:bg-black/40 md:backdrop-blur-md border-amber-400/30 text-amber-400/80 hover:bg-amber-950/50 hover:border-amber-400/60 hover:text-amber-400"
         }`}
         title="Skip — no opinion"
+        aria-label="Skip — no opinion"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
           <path d="M5 12h14" /><path d="M12 5l7 7-7 7" />
@@ -677,16 +679,19 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
       <button
         onClick={seeded ? undefined : handlePlantSeed}
         disabled={seeding || seeded}
-        className={`flex items-center justify-center w-10 h-10 rounded-full border transition-all duration-500 ${
+        className={`flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 transition-all duration-500 md:h-14 md:w-14 ${
           seeded
             ? "bg-emerald-500/20 border-emerald-400/40 text-emerald-400 scale-110 cursor-default opacity-90"
             : seeding
             ? "bg-surface-2 border-emerald-400/30 text-emerald-400/50 animate-pulse"
-            : "bg-surface-2 md:bg-black/40 border-foreground/10 text-foreground/40 hover:border-emerald-400/40 hover:text-emerald-400/70 active:scale-90"
+            : "bg-surface-2 md:bg-black/40 border-emerald-400/30 text-emerald-400/80 hover:border-emerald-400/60 hover:text-emerald-300 active:scale-90"
         }`}
         title={seeded ? "Re-seeded ✓" : "Plant as re-seed"}
+        aria-label={seeded ? "Re-seeded" : "Plant as re-seed"}
       >
-        <span className={`text-sm transition-all duration-500 ${seeded ? "scale-125" : ""}`}>{seeded ? "🌿" : "🌱"}</span>
+        <svg aria-hidden="true" className={seeded ? "seed-sprout" : ""} width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 22V10" /><path d="M12 14C8 14 5 11 5 7c4 0 7 3 7 7Z" /><path d="M12 10c0-4 3-7 7-7 0 4-3 7-7 7Z" />
+        </svg>
       </button>
 
       {/* Super Like — gold star; after super-liking becomes [->] advance button */}
@@ -694,7 +699,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
         <button
           onClick={handleAdvance}
           disabled={voting}
-          className="flex items-center justify-center w-14 h-14 md:w-16 md:h-16 rounded-full bg-yellow-400/20 border-2 border-yellow-400 text-yellow-300 transition-all active:scale-90 disabled:opacity-50 kept-pop super-like-glow"
+          className="flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 border-yellow-400 bg-yellow-400/20 text-yellow-300 transition-all active:scale-90 disabled:opacity-50 md:h-14 md:w-14 kept-pop super-like-glow"
           title="Advance to next track"
           aria-label="Advance to next track"
         >
@@ -706,7 +711,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
         <button
           onClick={handleSuperLike}
           disabled={superLiking || voting}
-          className="flex items-center justify-center w-14 h-14 md:w-16 md:h-16 rounded-full border-2 transition-all active:scale-90 disabled:opacity-50 bg-surface-2 md:bg-black/40 md:backdrop-blur-md border-yellow-400/30 text-yellow-400/80 hover:bg-yellow-950/50 hover:border-yellow-400/60 hover:text-yellow-400"
+          className="flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 border-yellow-400/30 bg-surface-2 text-yellow-400/90 transition-all hover:border-yellow-400/60 hover:bg-yellow-950/50 hover:text-yellow-300 active:scale-90 disabled:opacity-50 md:h-14 md:w-14 md:bg-black/40 md:backdrop-blur-md"
           title="Super Like — download this track locally"
           aria-label="Super Like track"
         >
@@ -721,7 +726,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
         <button
           onClick={handleAdvance}
           disabled={voting}
-          className="flex items-center justify-center w-14 h-14 md:w-16 md:h-16 rounded-full bg-green-500/20 border-2 border-green-400 text-green-400 transition-all active:scale-90 disabled:opacity-50 kept-pop approve-glow"
+          className="flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 border-green-400 bg-green-500/20 text-green-400 transition-all active:scale-90 disabled:opacity-50 md:h-14 md:w-14 kept-pop approve-glow"
           title="Advance to next track"
           aria-label="Advance to next track"
         >
@@ -733,7 +738,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
         <button
           onClick={() => handleVote("approved", false)}
           disabled={voting}
-          className="flex items-center justify-center w-14 h-14 md:w-16 md:h-16 rounded-full bg-surface-2 md:bg-black/40 md:backdrop-blur-md border-2 border-green-400/30 text-green-400/80 hover:bg-green-950/50 hover:border-green-400/60 hover:text-green-400 transition-all active:scale-90 disabled:opacity-50"
+          className="flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 border-green-400/30 bg-surface-2 text-green-400/90 transition-all hover:border-green-400/60 hover:bg-green-950/50 hover:text-green-300 active:scale-90 disabled:opacity-50 md:h-14 md:w-14 md:bg-black/40 md:backdrop-blur-md"
           title="Keep track"
           aria-label="Keep track"
         >
@@ -748,7 +753,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
   // ── MOBILE LAYOUT ──
   // Full-bleed artwork filling the viewport, all controls overlaid
   const mobileLayout = (
-    <div className="md:hidden flex flex-col h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col xl:hidden">
       {/* Artwork — fills all available space, all controls overlaid */}
       <div
         className={`relative flex-1 min-h-0 rounded-2xl overflow-hidden shadow-2xl shadow-black/40 ${exitClass}`}
@@ -798,11 +803,11 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
         {/* Center playback controls: rewind | play/pause | forward — only when audio available */}
         {hasPlayableSource && (
           <div className="absolute inset-0 z-10 flex items-center justify-center">
-            <div className="flex items-center gap-6">
+            <div className="flex items-center gap-4">
               {/* Rewind 30s */}
               <button
                 onClick={handleRewind}
-                className="w-10 h-10 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white/80 active:scale-90 transition-all"
+                className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/25 bg-black/50 px-3 text-white shadow-sm backdrop-blur-sm transition-all active:scale-95"
                 title="Rewind 30 seconds"
                 aria-label="Rewind 30 seconds"
               >
@@ -841,7 +846,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               {/* Forward 30s */}
               <button
                 onClick={handleForward}
-                className="w-10 h-10 flex items-center justify-center rounded-full bg-black/30 backdrop-blur-sm text-white/80 active:scale-90 transition-all"
+                className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/25 bg-black/50 px-3 text-white shadow-sm backdrop-blur-sm transition-all active:scale-95"
                 title="Skip ahead 30 seconds"
                 aria-label="Skip ahead 30 seconds"
               >
@@ -1013,12 +1018,12 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
           </div>
 
           {/* Vote buttons row: X reject | skip neutral | seed | heart approve */}
-          <div className="flex items-center justify-center gap-5">
+          <div className="grid w-full grid-cols-6 items-center gap-2">
             {/* Reject (X) */}
             <button
               onClick={() => handleVote("rejected", true)}
               disabled={voting}
-              className={`flex items-center justify-center w-13 h-13 rounded-full backdrop-blur-md border-2 active:scale-90 transition-all disabled:opacity-50 ${
+              className={`flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50 ${
                 rejected
                   ? "bg-red-500/30 border-red-400 text-red-400 ring-2 ring-red-400/40"
                   : "bg-black/40 border-red-400/40 text-red-400/90"
@@ -1035,26 +1040,31 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
             <button
               onClick={() => handleVote("bad_source", true)}
               disabled={voting}
-              className={`flex items-center justify-center w-9 h-9 rounded-full backdrop-blur-md border-2 active:scale-90 transition-all disabled:opacity-50 ${
+              className={`flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50 ${
                 badSource
                   ? "bg-orange-500/30 border-orange-400 text-orange-400 ring-2 ring-orange-400/40"
                   : "bg-black/40 border-orange-400/40 text-orange-400/90"
               }`}
               title="Bad source — wrong track or bad audio"
+              aria-label="Bad source — wrong track or bad audio"
             >
-              <span className="text-xs">⚠️</span>
+              <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10.3 2.9 1.8 17.1A2 2 0 0 0 3.5 20h17a2 2 0 0 0 1.7-2.9L13.7 2.9a2 2 0 0 0-3.4 0Z" />
+                <path d="M12 8v5" /><path d="M12 17h.01" />
+              </svg>
             </button>
 
             {/* Skip (neutral — yellow) */}
             <button
               onClick={() => handleVote("skipped", true)}
               disabled={voting}
-              className={`flex items-center justify-center w-11 h-11 rounded-full backdrop-blur-md border-2 active:scale-90 transition-all disabled:opacity-50 ${
+              className={`flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50 ${
                 skippedVote
                   ? "bg-amber-500/30 border-amber-400 text-amber-400 ring-2 ring-amber-400/40"
                   : "bg-black/40 border-amber-400/40 text-amber-400/90"
               }`}
               title="Skip — no opinion"
+              aria-label="Skip — no opinion"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M5 12h14" /><path d="M12 5l7 7-7 7" />
@@ -1065,16 +1075,19 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
             <button
               onClick={seeded ? undefined : handlePlantSeed}
               disabled={seeding || seeded}
-              className={`flex items-center justify-center w-9 h-9 rounded-full border backdrop-blur-md transition-all duration-500 ${
+              className={`flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 backdrop-blur-md transition-all duration-500 ${
                 seeded
                   ? "bg-emerald-500/20 border-emerald-400/40 text-emerald-400 scale-110 cursor-default opacity-90"
                   : seeding
                   ? "bg-black/40 border-emerald-400/30 text-emerald-400/50 animate-pulse"
-                  : "bg-black/40 border-white/20 text-white/50 active:scale-90"
+                  : "bg-black/40 border-emerald-400/40 text-emerald-300/90 active:scale-90"
               }`}
               title={seeded ? "Re-seeded ✓" : "Plant as re-seed"}
+              aria-label={seeded ? "Re-seeded" : "Plant as re-seed"}
             >
-              <span className={`text-xs transition-all duration-500 ${seeded ? "scale-125" : ""}`}>{seeded ? "🌿" : "🌱"}</span>
+              <svg aria-hidden="true" className={seeded ? "seed-sprout" : ""} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22V10" /><path d="M12 14C8 14 5 11 5 7c4 0 7 3 7 7Z" /><path d="M12 10c0-4 3-7 7-7 0 4-3 7-7 7Z" />
+              </svg>
             </button>
 
             {/* Super Like — gold star; after super-liking becomes [->] advance button */}
@@ -1082,7 +1095,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               <button
                 onClick={handleAdvance}
                 disabled={voting}
-                className="flex items-center justify-center w-13 h-13 rounded-full bg-yellow-400/20 backdrop-blur-md border-2 border-yellow-400 text-yellow-300 transition-all active:scale-90 disabled:opacity-50 kept-pop super-like-glow"
+                className="flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 border-yellow-400 bg-yellow-400/20 text-yellow-300 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50 kept-pop super-like-glow"
                 title="Advance to next track"
                 aria-label="Advance to next track"
               >
@@ -1094,7 +1107,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               <button
                 onClick={handleSuperLike}
                 disabled={superLiking || voting}
-                className="flex items-center justify-center w-13 h-13 rounded-full border-2 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50 bg-black/40 border-yellow-400/40 text-yellow-400/90"
+                className="flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 border-yellow-400/40 bg-black/40 text-yellow-300 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50"
                 title="Super Like — download this track locally"
                 aria-label="Super Like track"
               >
@@ -1109,7 +1122,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               <button
                 onClick={handleAdvance}
                 disabled={voting}
-                className="flex items-center justify-center w-13 h-13 rounded-full bg-green-500/20 backdrop-blur-md border-2 border-green-400 text-green-400 transition-all active:scale-90 disabled:opacity-50 kept-pop approve-glow"
+                className="flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 border-green-400 bg-green-500/20 text-green-400 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50 kept-pop approve-glow"
                 title="Advance to next track"
                 aria-label="Advance to next track"
               >
@@ -1121,7 +1134,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               <button
                 onClick={() => handleVote("approved", false)}
                 disabled={voting}
-                className="flex items-center justify-center w-13 h-13 rounded-full bg-black/40 backdrop-blur-md border-2 border-green-400/40 text-green-400/90 active:scale-90 transition-all disabled:opacity-50"
+                className="flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 border-green-400/40 bg-black/40 text-green-300 backdrop-blur-md transition-all active:scale-90 disabled:opacity-50"
                 title="Keep track"
                 aria-label="Keep track"
               >
@@ -1139,7 +1152,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
   // ── DESKTOP LAYOUT ──
   // Side-by-side: artwork left, info + actions right
   const desktopLayout = (
-    <div className="hidden md:flex items-center gap-8 max-h-[70vh]">
+    <div className="hidden max-h-[70vh] items-center gap-8 xl:flex">
       {/* Artwork — square, max height constrained */}
       <div
         className={`flex-shrink-0 ${exitClass}`}

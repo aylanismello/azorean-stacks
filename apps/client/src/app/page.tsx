@@ -992,7 +992,7 @@ function StackPageContent() {
         {/* Right: tracklist button (mobile only — desktop always shows sidebar) */}
         <button
           onClick={() => setTracklistOpen(!tracklistOpen)}
-          className="md:hidden flex-shrink-0 p-2 text-muted hover:text-foreground transition-colors z-10"
+          className="z-10 flex-shrink-0 p-2 text-muted transition-colors hover:text-foreground xl:hidden"
           title="Show tracklist"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1039,9 +1039,9 @@ function StackPageContent() {
       )}
 
       {/* Desktop: tracklist always visible on left, card on right */}
-      <div className="flex-1 min-h-0 flex flex-col md:flex-row md:gap-6 md:max-w-6xl md:mx-auto md:w-full">
+      <div className="flex min-h-0 flex-1 flex-col xl:mx-auto xl:w-full xl:max-w-7xl xl:flex-row xl:gap-6">
         {/* Desktop tracklist sidebar — always visible */}
-        <div className="hidden md:block md:w-80 md:min-w-[20rem] md:max-w-[20rem] md:flex-shrink-0 md:self-stretch">
+        <div className="hidden xl:block xl:w-80 xl:min-w-[20rem] xl:max-w-[20rem] xl:flex-shrink-0 xl:self-stretch">
           {currentEpisodeId ? (
             <EpisodeTracklist
               episodeId={currentEpisodeId}
@@ -1061,7 +1061,7 @@ function StackPageContent() {
         </div>
 
         {/* Track card — fills remaining space on mobile, centered on desktop */}
-        <div className={`flex-1 min-h-0 md:flex md:items-center md:justify-center ${
+        <div className={`min-h-0 flex-1 xl:flex xl:items-center xl:justify-center ${
           liveMutationIds.has(currentTrack.id) ? "fyp-card-mutation" : ""
         }`}>
           <TrackCard
@@ -1092,7 +1092,7 @@ function StackPageContent() {
       />
 
       {/* Keyboard hint (desktop only) */}
-      <div className="hidden md:flex flex-wrap justify-center gap-x-5 gap-y-1 py-3 text-xs text-muted md:flex-shrink-0">
+      <div className="hidden flex-wrap justify-center gap-x-5 gap-y-1 py-3 text-xs text-muted xl:flex xl:flex-shrink-0">
         <span>← −30s</span>
         <span>→ +30s</span>
         <span>⇧→ next</span>

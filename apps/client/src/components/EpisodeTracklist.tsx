@@ -682,7 +682,7 @@ export function TracklistSheet({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 md:hidden sheet-enter">
+    <div className="fixed inset-0 z-50 sheet-enter xl:hidden">
       {/* Liquid glass sheet — full page coverage */}
       <div className="absolute inset-0 liquid-glass flex flex-col overflow-hidden">
         {/* Drag handle */}

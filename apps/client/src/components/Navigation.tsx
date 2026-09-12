@@ -152,7 +152,7 @@ export function Navigation() {
   return (
     <>
       {/* Desktop: top bar */}
-      <nav className="hidden md:flex items-center justify-between px-6 py-4 border-b border-surface-2">
+      <nav className="hidden lg:flex items-center justify-between px-6 py-4 border-b border-surface-2">
         <Link href="/" className="text-lg font-semibold tracking-tight">
           <span className="text-accent">the</span> stacks
         </Link>
@@ -194,7 +194,7 @@ function MobileTabBar({ pathname }: { pathname: string }) {
   const playingHref = globalPlayer.playbackOrigin || "/";
 
   return (
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-surface-1/95 backdrop-blur-md border-t border-surface-3 flex justify-around py-1.5 px-1 safe-area-bottom">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 flex justify-around border-t border-surface-3 bg-surface-1/95 px-1 py-1.5 backdrop-blur-md safe-area-bottom lg:hidden">
         {mobileLinks.map((link) => {
           const isPlayingTab = link.href === "/";
           const actualHref = isPlayingTab ? playingHref : link.href;
