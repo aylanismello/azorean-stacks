@@ -159,31 +159,56 @@ audio::-webkit-media-controls-panel {
   box-shadow: 0 -1px 0 rgba(0, 0, 0, 0.1);
 }
 
-/* Explicit seed tangent panel: animate in, then stay until dismissed. */
-@keyframes fyp-growth-toast-in {
-  0% { opacity: 0; transform: translate(-50%, -8px) scale(0.94); filter: blur(3px); }
-  100% { opacity: 1; transform: translate(-50%, 0) scale(1); filter: blur(0); }
+/* Tangent feed grows in from the side and draws each branch in sequence. */
+@keyframes tangent-feed-panel-in {
+  0% { opacity: 0; transform: translateX(18px) scale(0.97); filter: blur(3px); }
+  100% { opacity: 1; transform: translateX(0) scale(1); filter: blur(0); }
 }
-@keyframes fyp-growth-tree-draw {
-  0% { stroke-dashoffset: 48; opacity: 0.3; }
+@keyframes tangent-tree-draw {
+  0% { stroke-dashoffset: 44; opacity: 0.15; }
   100% { stroke-dashoffset: 0; opacity: 1; }
+}
+@keyframes tangent-trunk-grow {
+  0% { transform: scaleY(0); opacity: 0.2; }
+  100% { transform: scaleY(1); opacity: 1; }
+}
+@keyframes tangent-leaf-pop {
+  0% { opacity: 0; transform: translateX(-9px) scale(0.96); }
+  65% { opacity: 1; transform: translateX(2px) scale(1.01); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes tangent-seed-breathe {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 rgba(52, 211, 153, 0); }
+  50% { transform: scale(1.06); box-shadow: 0 0 24px rgba(52, 211, 153, 0.2); }
 }
 @keyframes fyp-branch-settle {
   0% { opacity: 0; transform: translateX(-10px) scale(0.97); box-shadow: 0 0 0 rgba(52, 211, 153, 0); }
   45% { opacity: 1; transform: translateX(2px) scale(1.01); box-shadow: 0 0 24px rgba(52, 211, 153, 0.18); }
   100% { opacity: 1; transform: translateX(0) scale(1); box-shadow: 0 0 0 rgba(52, 211, 153, 0); }
 }
-.fyp-growth-toast {
-  animation: fyp-growth-toast-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+.tangent-feed-panel {
+  animation: tangent-feed-panel-in 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.fyp-growth-tree path {
-  stroke-dasharray: 48;
-  animation: fyp-growth-tree-draw 700ms ease-out both;
+.tangent-nav-tree path,
+.tangent-tree-branch path {
+  stroke-dasharray: 44;
+  animation: tangent-tree-draw 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.fyp-growth-tree circle {
+.tangent-nav-tree circle,
+.tangent-tree-branch circle {
   transform-box: fill-box;
   transform-origin: center;
-  animation: gentle-pulse 1.4s ease-in-out 2;
+  animation: tangent-seed-breathe 1.8s ease-in-out infinite;
+}
+.tangent-seed-node {
+  animation: tangent-seed-breathe 2.4s ease-in-out infinite;
+}
+.tangent-tree-trunk {
+  animation: tangent-trunk-grow 720ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.tangent-tree-leaf {
+  opacity: 0;
+  animation: tangent-leaf-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 .fyp-branch-mutation,
 .fyp-card-mutation {
@@ -191,13 +216,19 @@ audio::-webkit-media-controls-panel {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fyp-growth-toast,
-  .fyp-growth-tree path,
-  .fyp-growth-tree circle,
+  .tangent-feed-panel,
+  .tangent-nav-tree path,
+  .tangent-tree-branch path,
+  .tangent-nav-tree circle,
+  .tangent-tree-branch circle,
+  .tangent-seed-node,
+  .tangent-tree-trunk,
+  .tangent-tree-leaf,
   .fyp-branch-mutation,
   .fyp-card-mutation {
     animation: none;
   }
+  .tangent-tree-leaf { opacity: 1; }
 }
 
 /* Circular seek controls: the arrow moves in the requested direction while

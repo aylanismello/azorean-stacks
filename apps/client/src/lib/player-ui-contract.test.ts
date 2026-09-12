@@ -33,6 +33,10 @@ const tracklist = readFileSync(
   new URL("../components/EpisodeTracklist.tsx", import.meta.url),
   "utf8",
 );
+const globals = readFileSync(
+  new URL("../app/globals.css", import.meta.url),
+  "utf8",
+);
 
 describe("player control layout contract", () => {
   test("uses animated circular 30-second SVG controls instead of text pills", () => {
@@ -69,6 +73,25 @@ describe("player control layout contract", () => {
     expect(tracklist).toContain("See recently passed tracks");
     expect(tracklist).toContain("globalPlayer.history.find");
     expect(tracklist).toContain("globalPlayer.clearHistory");
+  });
+
+  test("uses the tangent tree button as an accessible open/close toggle", () => {
+    expect(fypPage).toContain("const nextOpen = !tangentPanelOpen");
+    expect(fypPage).toContain("setTangentPanelOpen(nextOpen)");
+    expect(fypPage).toContain("aria-pressed={tangentPanelOpen}");
+    expect(fypPage).toContain('tangentPanelOpen ? "Close tangent feed" : "Open tangent feed"');
+  });
+
+  test("exposes a side tangent feed with an explicit branch action and growing tree", () => {
+    expect(fypPage).toContain('aria-label="Tangent feed"');
+    expect(fypPage).toContain("Grow a tangent from this track");
+    expect(fypPage).toContain("New branches will land in your upcoming feed");
+    expect(fypPage).toContain("tangent-tree-trunk");
+    expect(fypPage).toContain("tangent-tree-branch");
+    expect(globals).toContain("@keyframes tangent-feed-panel-in");
+    expect(globals).toContain("@keyframes tangent-tree-draw");
+    expect(globals).toContain("@keyframes tangent-trunk-grow");
+    expect(globals).toContain("@keyframes tangent-leaf-pop");
   });
 
   test("hides healthy connectivity and shows actionable problems at every width", () => {

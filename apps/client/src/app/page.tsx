@@ -193,7 +193,9 @@ function StackPageContent() {
   const [hideLowScored, setHideLowScored] = useState(false);
   const [recentTangents, setRecentTangents] = useState<FypTangent[]>([]);
   const [activeTangent, setActiveTangent] = useState<FypTangent | null>(null);
-  const [tangentExpanded, setTangentExpanded] = useState(false);
+  const [tangentPanelOpen, setTangentPanelOpen] = useState(false);
+  const [tangentSeeding, setTangentSeeding] = useState(false);
+  const [tangentMessage, setTangentMessage] = useState<string | null>(null);
   const [liveMutationIds, setLiveMutationIds] = useState<Set<string>>(() => new Set());
   const lastFypGenerationRef = useRef(0);
   const lastSeenTangentRef = useRef<string | null>(null);
@@ -320,7 +322,8 @@ function StackPageContent() {
         );
         if (revealTangent && latestTangent) {
           setActiveTangent(latestTangent);
-          setTangentExpanded(false);
+          setTangentPanelOpen(true);
+          setTangentMessage(null);
           setLiveMutationIds(new Set(latestTangent.tracks.map((track) => track.id)));
           lastSeenTangentRef.current = latestTangent.id;
           localStorage.setItem("stacks-last-tangent", latestTangent.id);
@@ -488,7 +491,10 @@ function StackPageContent() {
 
   const handleReseed = async (track: PlayerTrack) => {
     const actionTrackId = canonicalPlayerTrackId(track);
-    if (!actionTrackId) return;
+    if (!actionTrackId || tangentSeeding) return;
+    setTangentSeeding(true);
+    setTangentPanelOpen(true);
+    setTangentMessage(null);
     try {
       const res = await fetch("/api/seeds/toggle", {
         method: "POST",
@@ -502,10 +508,17 @@ function StackPageContent() {
       });
       if (!res.ok) throw new Error(`Re-seed update failed (${res.status})`);
       const data = await res.json();
-      globalPlayer.setTrackSeeded(actionTrackId, data.action !== "removed", data.seed_id || null);
+      const seeded = data.action !== "removed";
+      globalPlayer.setTrackSeeded(actionTrackId, seeded, data.seed_id || null);
+      setTangentMessage(seeded
+        ? `Growing from ${track.artist} — ${track.title}. New branches will land in your upcoming feed.`
+        : `Stopped growing from ${track.artist} — ${track.title}.`);
     } catch (err) {
       console.error("Re-seed error:", err);
       setError("Failed to update re-seed. Please try again.");
+      setTangentMessage("Could not update this tangent. Try again.");
+    } finally {
+      setTangentSeeding(false);
     }
   };
 
@@ -962,6 +975,8 @@ function StackPageContent() {
     return { artist: seedName, title: "" };
   })();
 
+  const currentTrackIsTangentSeed = Boolean(currentTrack.is_re_seed);
+
   // ── Main stack view ──
   return (
     <div className={`relative px-4 pt-2 pb-0 ${mobileHeightClass} flex flex-col overflow-hidden ${desktopPlayerFrameClass}`}>
@@ -1003,25 +1018,36 @@ function StackPageContent() {
           </span>
         </div>
 
-        {/* Right: tangent history and tracklist. */}
+        {/* Right: tangent feed and tracklist. */}
         <div className="z-10 flex flex-shrink-0 items-center gap-1">
-          {isHomeFyp && recentTangents.length > 0 && (
+          {isHomeFyp && (
             <button
               onClick={() => {
-                setActiveTangent(recentTangents[0]);
-                setTangentExpanded(true);
+                const nextOpen = !tangentPanelOpen;
+                setTangentPanelOpen(nextOpen);
+                if (nextOpen && !activeTangent && recentTangents[0]) {
+                  setActiveTangent(recentTangents[0]);
+                }
               }}
-              className="relative flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-white/5 hover:text-foreground"
-              aria-label={`Open tangent history, ${recentTangents.length} recent`}
-              title="Tangent history"
+              className={`relative flex h-9 w-9 items-center justify-center rounded-full border transition-all duration-300 ${
+                tangentPanelOpen
+                  ? "border-emerald-300/60 bg-emerald-400/10 text-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.16)]"
+                  : "border-transparent text-muted hover:border-white/10 hover:bg-white/5 hover:text-foreground"
+              }`}
+              aria-pressed={tangentPanelOpen}
+              aria-label={tangentPanelOpen ? "Close tangent feed" : "Open tangent feed"}
+              title={tangentPanelOpen ? "Close tangent feed" : "Open tangent feed"}
             >
-              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <svg aria-hidden="true" className={tangentPanelOpen ? "tangent-nav-tree" : ""} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M5 19c5-2 6-7 6-14" />
                 <path d="M10 12c4 0 6-2 8-5" />
                 <path d="M10 15c4 1 7 1 10-2" />
                 <circle cx="18" cy="7" r="1.5" fill="currentColor" stroke="none" />
                 <circle cx="20" cy="13" r="1.5" fill="currentColor" stroke="none" />
               </svg>
+              {recentTangents.length > 0 && !tangentPanelOpen && (
+                <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-300" />
+              )}
             </button>
           )}
           <button
@@ -1041,78 +1067,134 @@ function StackPageContent() {
         </div>
       </div>
 
-      {isHomeFyp && activeTangent && (
-        <section
-          role="status"
-          aria-live="polite"
-          className="fyp-growth-toast absolute left-1/2 top-12 z-30 w-[min(31rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-emerald-300/20 bg-surface-1/95 p-3 shadow-[0_18px_60px_rgba(16,185,129,0.18)] backdrop-blur-md"
+      {isHomeFyp && tangentPanelOpen && (
+        <aside
+          role="dialog"
+          aria-modal="false"
+          aria-label="Tangent feed"
+          className="tangent-feed-panel absolute right-3 top-12 z-30 flex max-h-[calc(100%-4rem)] w-[min(25rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-3xl border border-emerald-300/20 bg-surface-1/95 shadow-[-18px_24px_80px_rgba(2,44,32,0.42)] backdrop-blur-xl md:right-6"
         >
-          <div className="flex items-start gap-3">
-            <svg aria-hidden="true" width="30" height="26" viewBox="0 0 30 26" fill="none" className="fyp-growth-tree mt-0.5 shrink-0 text-emerald-300">
-              <path d="M4 23c6-3 7-9 8-19" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <path d="M11 14c5 0 8-3 10-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <path d="M10 18c6 1 10 1 16-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <circle cx="12" cy="4" r="2" fill="currentColor" />
-              <circle cx="21" cy="7" r="2" fill="currentColor" />
-              <circle cx="26" cy="14" r="2" fill="currentColor" />
-            </svg>
+          <header className="flex items-start gap-3 border-b border-white/10 p-4">
+            <div className="tangent-seed-node flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-emerald-300/40 bg-emerald-400/10 text-emerald-200">
+              <svg aria-hidden="true" width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 20c5-2 6-7 6-15" />
+                <path d="M10 12c4 0 6-2 8-5" />
+                <path d="M10 16c4 1 7 1 10-2" />
+                <circle cx="18" cy="7" r="1.5" fill="currentColor" stroke="none" />
+                <circle cx="20" cy="14" r="1.5" fill="currentColor" stroke="none" />
+              </svg>
+            </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold leading-snug text-foreground">{tangentHeadline(activeTangent)}</p>
-              <p className="mt-1 text-[10px] leading-relaxed text-muted">{tangentDetail(activeTangent)}</p>
-              {tangentExpanded && (
-                <div className="mt-3 space-y-1.5 border-t border-white/10 pt-2">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.22em] text-emerald-300/80">Tangent feed</p>
+              <h2 className="mt-0.5 text-sm font-semibold text-foreground">Grow the feed sideways</h2>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted">Branch from what is playing. Related tracks grow into your upcoming feed without interrupting this track.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setTangentPanelOpen(false)}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-white/5 hover:text-foreground"
+              aria-label="Close tangent feed"
+              title="Close tangent feed"
+            >
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          </header>
+
+          <div className="min-h-0 overflow-y-auto p-4">
+            <section className="rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.04] p-3">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-muted">Branch from current track</p>
+              <p className="mt-1 truncate text-xs font-medium text-foreground">{currentTrack.artist} — {currentTrack.title}</p>
+              <button
+                type="button"
+                onClick={() => void handleReseed(currentTrack)}
+                disabled={tangentSeeding}
+                aria-pressed={currentTrackIsTangentSeed}
+                className={`mt-3 flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border px-3 text-xs font-semibold transition-all disabled:opacity-50 ${
+                  currentTrackIsTangentSeed
+                    ? "border-emerald-300/40 bg-emerald-400/15 text-emerald-200 hover:bg-emerald-400/20"
+                    : "border-emerald-300/25 bg-emerald-400/10 text-emerald-200 hover:border-emerald-300/50 hover:bg-emerald-400/15"
+                }`}
+              >
+                <svg aria-hidden="true" className={tangentSeeding ? "animate-pulse" : ""} width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 20c5-2 6-7 6-15" /><path d="M10 12c4 0 6-2 8-5" /><circle cx="18" cy="7" r="1.5" fill="currentColor" stroke="none" />
+                </svg>
+                {tangentSeeding
+                  ? "Planting tangent…"
+                  : currentTrackIsTangentSeed
+                    ? "Remove this tangent seed"
+                    : "Grow a tangent from this track"}
+              </button>
+              {tangentMessage && (
+                <p role="status" aria-live="polite" className="mt-2 text-[10px] leading-relaxed text-emerald-200/80">{tangentMessage}</p>
+              )}
+            </section>
+
+            {activeTangent ? (
+              <section className="mt-4" aria-label={`Tangent from ${activeTangent.seed_name}`}>
+                <div className="mb-3">
+                  <p className="text-xs font-semibold leading-snug text-foreground">{tangentHeadline(activeTangent)}</p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-muted">{tangentDetail(activeTangent)}</p>
+                </div>
+
+                <div className="tangent-tree-list relative space-y-2">
+                  <div aria-hidden="true" className="tangent-tree-trunk absolute bottom-5 left-[11px] top-0 w-px origin-top bg-gradient-to-b from-emerald-300 via-emerald-400/60 to-emerald-400/10" />
                   {activeTangent.tracks.map((track, index) => (
-                    <div key={track.id} className="flex items-baseline gap-2 text-[11px]">
-                      <span className="font-mono text-emerald-300">{activeTangent.start_rank ? activeTangent.start_rank + index : "•"}</span>
-                      <span className="truncate text-foreground">{track.artist} — {track.title}</span>
-                    </div>
-                  ))}
-                  {activeTangent.removed_tracks.length > 0 && (
-                    <p className="pt-1 text-[10px] text-muted">Left the buffer: {activeTangent.removed_tracks.map((track) => `${track.artist} — ${track.title}`).join(", ")}</p>
-                  )}
-                  {recentTangents.length > 1 && (
-                    <div className="mt-2 border-t border-white/10 pt-2">
-                      <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted">Recent tangents</p>
-                      <div className="flex max-h-24 flex-col gap-1 overflow-y-auto">
-                        {recentTangents.slice(0, 10).map((tangent) => (
-                          <button
-                            key={tangent.id}
-                            type="button"
-                            onClick={() => setActiveTangent(tangent)}
-                            className={`flex min-h-8 items-center justify-between gap-3 rounded-lg px-2 text-left text-[10px] transition-colors ${
-                              tangent.id === activeTangent.id
-                                ? "bg-emerald-400/10 text-emerald-200"
-                                : "text-muted hover:bg-white/5 hover:text-foreground"
-                            }`}
-                          >
-                            <span className="truncate">{tangent.seed_name}</span>
-                            <time className="shrink-0 font-mono text-[9px]" dateTime={tangent.created_at}>
-                              {new Date(tangent.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                            </time>
-                          </button>
-                        ))}
+                    <div key={track.id} className="tangent-tree-leaf relative pl-10" style={{ animationDelay: `${index * 90}ms` }}>
+                      <svg aria-hidden="true" className="tangent-tree-branch absolute left-[10px] top-1/2 h-7 w-7 -translate-y-1/2 overflow-visible text-emerald-300/70" viewBox="0 0 28 28" fill="none">
+                        <path d="M1 2c0 12 7 12 24 12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                        <circle cx="25" cy="14" r="2.6" fill="currentColor" />
+                      </svg>
+                      <div className="rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2.5">
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-mono text-[9px] text-emerald-300">{activeTangent.start_rank ? activeTangent.start_rank + index : "•"}</span>
+                          <span className="truncate text-[11px] text-foreground">{track.artist} — {track.title}</span>
+                        </div>
                       </div>
                     </div>
-                  )}
+                  ))}
                 </div>
-              )}
-              <div className="mt-2 flex gap-2">
-                <button onClick={() => setTangentExpanded((value) => !value)} className="text-[10px] font-semibold text-emerald-300 hover:text-emerald-200">
-                  {tangentExpanded ? "Hide tracks" : "View tracks"}
-                </button>
-                <button
-                  onClick={() => {
-                    setActiveTangent(null);
-                    setLiveMutationIds(new Set());
-                  }}
-                  className="text-[10px] text-muted hover:text-foreground"
-                >
-                  Dismiss
-                </button>
+
+                {activeTangent.removed_tracks.length > 0 && (
+                  <div className="mt-3 rounded-xl border border-white/5 bg-black/10 px-3 py-2 text-[9px] leading-relaxed text-muted">
+                    Pruned from the buffer: {activeTangent.removed_tracks.map((track) => `${track.artist} — ${track.title}`).join(", ")}
+                  </div>
+                )}
+              </section>
+            ) : (
+              <div className="py-8 text-center">
+                <p className="text-xs font-medium text-foreground">No branches yet</p>
+                <p className="mx-auto mt-1 max-w-56 text-[10px] leading-relaxed text-muted">Choose “Grow a tangent” above. The evolving branch will appear here as it changes your upcoming feed.</p>
               </div>
-            </div>
+            )}
+
+            {recentTangents.length > 1 && (
+              <section className="mt-4 border-t border-white/10 pt-3">
+                <p className="mb-2 text-[9px] font-semibold uppercase tracking-[0.18em] text-muted">Earlier branches</p>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {recentTangents.slice(0, 10).map((tangent) => (
+                    <button
+                      key={tangent.id}
+                      type="button"
+                      onClick={() => setActiveTangent(tangent)}
+                      className={`min-w-36 rounded-xl border px-3 py-2 text-left transition-colors ${
+                        tangent.id === activeTangent?.id
+                          ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100"
+                          : "border-white/10 text-muted hover:bg-white/5 hover:text-foreground"
+                      }`}
+                    >
+                      <span className="block truncate text-[10px] font-medium">{tangent.seed_name}</span>
+                      <time className="mt-1 block font-mono text-[8px] opacity-60" dateTime={tangent.created_at}>
+                        {new Date(tangent.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      </time>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
-        </section>
+        </aside>
       )}
 
       {/* Desktop: tracklist always visible on left, card on right */}
