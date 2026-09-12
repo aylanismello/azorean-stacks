@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-11 23:29'
-updated_date: '2026-09-12 01:49'
+updated_date: '2026-09-12 02:17'
 labels:
   - audio
   - ml
@@ -53,4 +53,6 @@ Analyze track audio locally with segment-level CLAP embeddings so Azorean Stacks
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Implemented a complete local CLAP sonic map for Azorean Stacks. Audio is embedded with a pinned model and deterministic windows into isolated service-only vectors; durable fenced workers backfill and maintain embeddings, clustering, and text labels. 4U now uses user-scoped sonic affinity as a bounded supporting signal: active seeds and likes pull toward coherent regions while rejects add bounded avoidance, without bypassing candidate eligibility or interrupting playback. Verified with full tests, live model inference, live pgvector retrieval, and production queue materialization.
+
+Final release review hardened ranking evidence to service-only RPCs, records exact displayed positions, excludes bounded exploration-lane exposures from empirical production-model fitting, and propagates concrete sonic evidence through the API to Why this track. Production migration and privilege readback passed.
 <!-- SECTION:FINAL_SUMMARY:END -->

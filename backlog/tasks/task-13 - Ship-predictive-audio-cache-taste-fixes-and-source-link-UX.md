@@ -1,11 +1,11 @@
 ---
 id: TASK-13
 title: 'Ship predictive audio cache, taste fixes, and source-link UX'
-status: In Progress
+status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-08 23:22'
-updated_date: '2026-09-09 20:53'
+updated_date: '2026-09-12 02:17'
 labels: []
 dependencies: []
 documentation:
@@ -18,12 +18,12 @@ type: feature
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Autonomous discovery and reseeding continue while only ranked upcoming/permanent tracks are downloaded
-- [ ] #2 Cleanup tool protects all likes, super-likes, seeds, PicoDrops, and upcoming queue tracks and supports verified dry-run before deletion
-- [ ] #3 Taste scoring is fully per-user, learns canonical seed/show yield, and handles approval UPDATE reseeds
-- [ ] #4 Spotify and YouTube links prefer native apps on supported Apple platforms with safe web fallback
-- [ ] #5 Copy controls remain visible on white backgrounds and Why this track shows actual source/episode/seed lineage
-- [ ] #6 Build, tests, browser checks, and post-write production verification pass
+- [x] #1 Autonomous discovery and reseeding continue while only ranked upcoming/permanent tracks are downloaded
+- [x] #2 Cleanup tool protects all likes, super-likes, seeds, PicoDrops, and upcoming queue tracks and supports verified dry-run before deletion
+- [x] #3 Taste scoring is fully per-user, learns canonical seed/show yield, and handles approval UPDATE reseeds
+- [x] #4 Spotify and YouTube links prefer native apps on supported Apple platforms with safe web fallback
+- [x] #5 Copy controls remain visible on white backgrounds and Why this track shows actual source/episode/seed lineage
+- [x] #6 Build, tests, browser checks, and post-write production verification pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -51,3 +51,21 @@ type: feature
 
 - Late post-push release review found blockers in FYP/queue alignment, atomic download claiming, warm-window accounting, cache eviction, taste refresh atomicity, cleanup protection drift, and user-scoped lineage. Treat c637fd9 as provisional; hotfix work started before activating the engine runtime.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed and production-verified the predictive 4U/audio-cache release.
+
+Changes:
+- Durable user-scoped queue materialization drives bounded upcoming audio preparation while autonomous discovery continues.
+- Cleanup preserves explicit decisions, seeds, PicoDrops, and upcoming queue rows with dry-run safeguards.
+- Taste scoring and seed/show lineage are user-scoped; approval and re-seed updates refresh the queue correctly.
+- Native-capable Spotify/YouTube links keep safe web fallback, and Why this track now carries concrete source, episode, seed, tangent, and sonic evidence.
+- Release review fixes align recorded exposure ranks with the displayed queue and keep exploration evidence separate from empirical production-ranking evaluation.
+
+Verification:
+- Client: 163 tests, TypeScript, production build.
+- Engine: 126 tests, TypeScript, worker/runtime checks.
+- Production database, worker, deployment, and browser-accessible routes read back successfully.
+<!-- SECTION:FINAL_SUMMARY:END -->
