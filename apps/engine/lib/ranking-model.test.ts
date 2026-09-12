@@ -15,6 +15,7 @@ import {
   normalizeWeights,
   rankingMetrics,
   rankingScore,
+  type RankingExposure,
   type RankingObservation,
 } from "./ranking-model";
 
@@ -77,7 +78,7 @@ describe("chronological immutable observations", () => {
       { id: "future", trackId: "track", exposedAt: "2026-01-04T00:00:00Z", scoreComponents: { artist: 1 } },
       { id: "selected", trackId: "track", exposedAt: "2026-01-02T00:00:00Z", scoreComponents: { artist: -0.8 }, predictedScore: -0.3 },
       { id: "other", trackId: "track", exposedAt: "2026-01-01T00:00:00Z", scoreComponents: { artist: 0.8 } },
-    ], [{ exposureId: "selected", trackId: "track", status: "approved", outcomeAt: "2026-01-03T00:00:00Z" }]);
+    ].map((row) => ({ ...row, modelVersion: DEFAULT_RANKING_MODEL.version })), [{ exposureId: "selected", trackId: "track", status: "approved", outcomeAt: "2026-01-03T00:00:00Z" }]);
 
     expect(observations).toHaveLength(1);
     expect(observations[0].exposureId).toBe("selected");
@@ -86,18 +87,26 @@ describe("chronological immutable observations", () => {
   });
 
   test("fails closed on future, mismatched, duplicate, and incompatible pairs", () => {
-    const exposures = [
+    const exposures: RankingExposure[] = [
       { id: "future", trackId: "track", exposedAt: "2026-01-02T00:00:00Z", scoreComponents: {} },
       { id: "mismatch", trackId: "track-a", exposedAt: "2026-01-01T00:00:00Z", scoreComponents: {} },
       { id: "duplicate", trackId: "track", exposedAt: "2026-01-01T00:00:00Z", scoreComponents: {} },
       { id: "old-schema", trackId: "track", exposedAt: "2026-01-01T00:00:00Z", scoreComponents: {}, featureSchemaVersion: "old" },
-    ];
+    ].map((row) => ({ ...row, modelVersion: DEFAULT_RANKING_MODEL.version }));
+    exposures.push({
+      id: "exploration",
+      trackId: "exploration-track",
+      exposedAt: "2026-01-01T00:00:00Z",
+      scoreComponents: {},
+      modelVersion: "series_exploration_v1",
+    });
     const decisions = [
       { exposureId: "future", trackId: "track", status: "approved" as const, outcomeAt: "2026-01-01T00:00:00Z" },
       { exposureId: "mismatch", trackId: "track-b", status: "approved" as const, outcomeAt: "2026-01-02T00:00:00Z" },
       { exposureId: "duplicate", trackId: "track", status: "approved" as const, outcomeAt: "2026-01-02T00:00:00Z" },
       { exposureId: "duplicate", trackId: "track", status: "rejected" as const, outcomeAt: "2026-01-03T00:00:00Z" },
       { exposureId: "old-schema", trackId: "track", status: "approved" as const, outcomeAt: "2026-01-02T00:00:00Z" },
+      { exposureId: "exploration", trackId: "exploration-track", status: "approved" as const, outcomeAt: "2026-01-02T00:00:00Z" },
     ];
     expect(buildChronologicalObservations(exposures, decisions).map((row) => row.exposureId)).toEqual(["duplicate"]);
   });

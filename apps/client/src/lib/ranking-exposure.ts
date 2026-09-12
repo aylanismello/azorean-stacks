@@ -14,6 +14,8 @@ export type RankingFeatureSnapshot = Record<RankingFeatureKey, number>;
 
 export interface RankingExposureTrack {
   id: string;
+  _display_rank?: number | null;
+  _series_exploration?: boolean | null;
   _ranked_score?: number | null;
   _score_components?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
@@ -46,9 +48,11 @@ export function buildRankingExposureRows(
     user_id: userId,
     request_id: requestId,
     track_id: track.id,
-    rank: index + 1,
+    rank: Number.isInteger(track._display_rank) && Number(track._display_rank) > 0
+      ? Number(track._display_rank)
+      : index + 1,
     predicted_score: boundedNumber(track._ranked_score, -4, 4),
-    model_version: "production_ranking_v1",
+    model_version: track._series_exploration ? "series_exploration_v1" : "production_ranking_v1",
     feature_schema_version: "production_ranking_features_v1",
     score_components: rankingFeatureSnapshot(track),
   }));

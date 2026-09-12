@@ -1258,9 +1258,10 @@ function TrackContextModal({
     ? `${seedArtist}${seedTitle ? ` — ${seedTitle}` : ""}`
     : rankedSeedName || null;
   const explanation = explainTrackSelection({
+    seriesExploration: Boolean((track as any)._series_exploration),
     seedName: seedLineage,
     tangentSeedName: (track as any)._tangent_seed_name || null,
-    sonicSeedName: (track as any)._sonic_seed_name || (meta.sonic_seed_name as string | undefined) || null,
+    sonicSeedName: (track as any)._sonic_seed_name || (meta._sonic_seed_name as string | undefined) || null,
     matchType,
     episodeLabel,
     sourceName,

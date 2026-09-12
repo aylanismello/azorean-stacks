@@ -157,14 +157,14 @@ create trigger ranking_outcomes_immutable
 
 -- Clients cannot choose exposed_at: database receipt time is the causal boundary.
 -- Retries of one rendered slate are idempotent by request/track.
-create or replace function record_ranking_exposures(p_rows jsonb)
+create or replace function record_ranking_exposures(p_user_id uuid, p_rows jsonb)
 returns integer as $$
 declare
   inserted_count integer;
   recorded_at timestamptz := clock_timestamp();
 begin
-  if auth.uid() is null then
-    raise exception 'authentication required';
+  if coalesce(auth.jwt()->>'role', '') <> 'service_role' or p_user_id is null then
+    raise exception 'service role required';
   end if;
   if jsonb_typeof(p_rows) <> 'array' then
     raise exception 'p_rows must be a JSON array';
@@ -178,7 +178,7 @@ begin
     score_components, model_version, feature_schema_version, exposed_at
   )
   select
-    auth.uid(),
+    p_user_id,
     (row->>'track_id')::uuid,
     row->>'request_id',
     coalesce(nullif(row->>'surface', ''), 'fyp'),
@@ -198,14 +198,14 @@ $$ language plpgsql security definer set search_path = public, pg_temp;
 
 -- Atomically bind a decision to the latest exposure that existed before the
 -- server received the outcome. One exposure can yield at most one label.
-create or replace function record_ranking_outcome(p_track_id uuid, p_outcome text)
+create or replace function record_ranking_outcome(p_user_id uuid, p_track_id uuid, p_outcome text)
 returns boolean as $$
 declare
   recorded_at timestamptz := clock_timestamp();
   selected_exposure_id uuid;
 begin
-  if auth.uid() is null then
-    raise exception 'authentication required';
+  if coalesce(auth.jwt()->>'role', '') <> 'service_role' or p_user_id is null then
+    raise exception 'service role required';
   end if;
   if p_outcome not in ('approved', 'rejected', 'skipped', 'listened') then
     raise exception 'invalid ranking outcome';
@@ -213,7 +213,7 @@ begin
 
   select id into selected_exposure_id
   from ranking_exposures
-  where user_id = auth.uid()
+  where user_id = p_user_id
     and track_id = p_track_id
     and exposed_at < recorded_at
   order by exposed_at desc, id desc
@@ -224,14 +224,16 @@ begin
   end if;
 
   insert into ranking_outcomes (exposure_id, user_id, track_id, outcome, outcome_at)
-  values (selected_exposure_id, auth.uid(), p_track_id, p_outcome, recorded_at)
+  values (selected_exposure_id, p_user_id, p_track_id, p_outcome, recorded_at)
   on conflict (exposure_id) do nothing;
   return found;
 end;
 $$ language plpgsql security definer set search_path = public, pg_temp;
 
-grant execute on function record_ranking_exposures(jsonb) to authenticated;
-grant execute on function record_ranking_outcome(uuid, text) to authenticated;
+revoke all on function record_ranking_exposures(uuid, jsonb) from public, anon, authenticated;
+revoke all on function record_ranking_outcome(uuid, uuid, text) from public, anon, authenticated;
+grant execute on function record_ranking_exposures(uuid, jsonb) to service_role;
+grant execute on function record_ranking_outcome(uuid, uuid, text) to service_role;
 
 comment on table ranking_exposures is
   'Append-only pre-outcome production feature and score snapshots at database-recorded presentation time.';

@@ -4,13 +4,13 @@
 
 | Item | Current state | Completion contract |
 |---|---|---|
-| CLAP sonic map | Not started | Local segment embeddings, versioned vector storage, user-scoped nearest neighbors, clusters/labels, bounded ranking component, seed/feedback steering, incremental worker and verified production sample |
-| Seed tangent | Backend-only queue mutation | One durable seed-derived tangent object identifying seed, affected tracks, queue positions, additions/moves/retirements; ordinary maintenance stays silent; inspectable client notice/history |
-| Why this track | Raw diagnostics | Plain-language primary reason naming concrete seed/show/context/sonic evidence; numerical diagnostics secondary and explicitly relative |
-| Taste tuning | Existing static model, legacy tuner unused | Analyze actual user-scoped labeled queue history, fit bounded weights, persist model, apply it in scoring, compare baseline vs tuned and queue changes |
-| ±30 controls | Rejected text pills | 44px non-pill circular seek SVGs with direction animation, accessible labels and reduced-motion behavior; no clipping at tested widths |
-| Connection status | Healthy phone icon visible | No healthy indicator; phone-only actionable recovering/stalled state |
-| Missing artwork | One-time repair | Paginated recurring source recovery plus canonical appearance fallback; worker schedule, tests and production readback |
+| CLAP sonic map | Shipped and running | Local segment embeddings, versioned vector storage, user-scoped nearest neighbors, clusters/labels, bounded ranking component, seed/feedback steering, incremental worker and verified production sample |
+| Seed tangent | Shipped and production-backed | One durable seed-derived tangent object identifying seed, affected tracks, queue positions, additions/moves/retirements; ordinary maintenance stays silent; inspectable client notice/history |
+| Why this track | Shipped with evidence plumbing | Plain-language primary reason naming concrete seed/show/context/sonic evidence; numerical diagnostics secondary and explicitly relative |
+| Taste tuning | Prospective evidence live; tuning gated for insufficient data | Analyze actual user-scoped labeled queue history, fit bounded weights, persist model, apply it in scoring, compare baseline vs tuned and queue changes |
+| ±30 controls | Shipped | 44px non-pill circular seek SVGs with direction animation, accessible labels and reduced-motion behavior; no clipping at tested widths |
+| Connection status | Shipped | No healthy indicator; phone-only actionable recovering/stalled state |
+| Missing artwork | Recurring recovery live | Paginated recurring source recovery plus canonical appearance fallback; worker schedule, tests and production readback |
 
 ## Product contracts
 

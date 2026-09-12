@@ -124,6 +124,7 @@ export async function run(argv = process.argv.slice(2), suppliedDb?: any): Promi
     exposedAt: row.exposed_at,
     predictedScore: row.predicted_score,
     scoreComponents: row.score_components || {},
+    modelVersion: row.model_version,
     featureSchemaVersion: row.feature_schema_version,
   }));
   const decisions: RankingDecision[] = outcomeRows.map((row) => ({

@@ -27,4 +27,14 @@ describe("ranking exposure snapshots", () => {
       { request_id: "fyp:42", track_id: "b", rank: 2, predicted_score: 4 },
     ]);
   });
+
+  test("records exact displayed ranks and separates exploration from production ranking", () => {
+    expect(buildRankingExposureRows("user-1", 43, [
+      { id: "ordinary", _display_rank: 6, _ranked_score: 0.5 },
+      { id: "exploration", _display_rank: 7, _series_exploration: true, _ranked_score: 0 },
+    ])).toMatchObject([
+      { track_id: "ordinary", rank: 6, model_version: "production_ranking_v1" },
+      { track_id: "exploration", rank: 7, model_version: "series_exploration_v1" },
+    ]);
+  });
 });

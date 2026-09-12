@@ -27,6 +27,7 @@ export interface RankingExposure {
   scoreComponents: Record<string, unknown>;
   /** Raw relative score emitted by the production scorer, not a probability. */
   predictedScore?: number | null;
+  modelVersion?: string | null;
   featureSchemaVersion?: string | null;
 }
 
@@ -184,6 +185,7 @@ export function buildChronologicalObservations(
   for (const exposure of exposures) {
     if (!exposure.id || exposureById.has(exposure.id)) continue;
     if (!Number.isFinite(Date.parse(exposure.exposedAt))) continue;
+    if (exposure.modelVersion !== DEFAULT_RANKING_MODEL.version) continue;
     if ((exposure.featureSchemaVersion ?? RANKING_FEATURE_SCHEMA_VERSION) !== RANKING_FEATURE_SCHEMA_VERSION) continue;
     exposureById.set(exposure.id, exposure);
   }

@@ -53,7 +53,8 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
         { onConflict: "user_id,track_id" }
       );
     if (voteError) return NextResponse.json({ error: voteError.message }, { status: 500 });
-    const { error: outcomeError } = await authClient.rpc("record_ranking_outcome", {
+    const { error: outcomeError } = await supabase.rpc("record_ranking_outcome", {
+      p_user_id: user.id,
       p_track_id: params.id,
       p_outcome: "approved",
     });
@@ -187,7 +188,8 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       }
       return NextResponse.json({ error: listenError.message }, { status: 500 });
     }
-    const { error: outcomeError } = await authClient.rpc("record_ranking_outcome", {
+    const { error: outcomeError } = await supabase.rpc("record_ranking_outcome", {
+      p_user_id: user.id,
       p_track_id: params.id,
       p_outcome: "listened",
     });
@@ -224,7 +226,8 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   }
 
   if (["approved", "rejected", "skipped"].includes(status)) {
-    const { error: outcomeError } = await authClient.rpc("record_ranking_outcome", {
+    const { error: outcomeError } = await supabase.rpc("record_ranking_outcome", {
+      p_user_id: user.id,
       p_track_id: params.id,
       p_outcome: status,
     });

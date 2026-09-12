@@ -38,6 +38,17 @@ describe("track explanation", () => {
     expect(result.headline).not.toContain("0.8");
   });
 
+  test("labels bounded series exploration without inventing personalization", () => {
+    const result = explainTrackSelection({
+      seriesExploration: true,
+      episodeLabel: "Soulection Radio 700",
+      scoreComponents: {},
+    });
+    expect(result.headline).toContain("Soulection Radio 700");
+    expect(result.evidence).toContain("not presented as a prediction");
+    expect(result.evidence).not.toContain("your personal listening");
+  });
+
   test("falls back without pretending missing evidence exists", () => {
     const result = explainTrackSelection({});
     expect(result.headline).toContain("personal taste history");

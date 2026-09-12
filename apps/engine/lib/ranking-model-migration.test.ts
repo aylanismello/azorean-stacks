@@ -51,6 +51,12 @@ describe("empirical ranking migration contract", () => {
     expect(sql).toContain("revoke insert, update, delete on ranking_exposures from anon, authenticated");
     expect(sql).toContain("revoke insert, update, delete on ranking_outcomes from anon, authenticated");
     expect(sql).toContain("security definer set search_path = public, pg_temp");
+    expect(sql).toContain("record_ranking_exposures(p_user_id uuid, p_rows jsonb)");
+    expect(sql).toContain("record_ranking_outcome(p_user_id uuid, p_track_id uuid, p_outcome text)");
+    expect(sql.match(/service role required/g)?.length).toBe(2);
+    expect(sql).toContain("grant execute on function record_ranking_exposures(uuid, jsonb) to service_role");
+    expect(sql).toContain("grant execute on function record_ranking_outcome(uuid, uuid, text) to service_role");
+    expect(sql).not.toContain("to authenticated;\n\ngrant execute on function record_ranking_outcome");
   });
 
   test("accepts signed production inputs and does not label raw scores probabilities", () => {

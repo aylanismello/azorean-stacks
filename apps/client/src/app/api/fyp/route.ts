@@ -176,6 +176,8 @@ export async function GET(req: NextRequest) {
     const meta = (track.metadata || {}) as Record<string, unknown>;
     track._score_components = (meta._score_components as Record<string, number>) || {};
     track._ranked_score = track.taste_score ?? 0;
+    track._sonic_seed_name = (meta._sonic_seed_name as string | undefined) || null;
+    track._sonic_similarity = Number(meta._sonic_similarity ?? 0) || null;
 
     if (track.storage_path) {
       signPromises.push(
@@ -237,6 +239,10 @@ export async function GET(req: NextRequest) {
   const latestTangent = tangents[0] || null;
   if (latestTangent) {
     const latestTangentTrackIds = new Set(latestTangent.tracks.map((track: any) => track.id));
+    const displayedRanks = withSeriesExploration
+      .map((track, index) => latestTangentTrackIds.has(track.id) ? index + 1 : null)
+      .filter((rank): rank is number => rank !== null);
+    if (displayedRanks.length) latestTangent.start_rank = Math.min(...displayedRanks);
     for (const track of withSeriesExploration) {
       if (!latestTangentTrackIds.has(track.id)) continue;
       track._tangent_id = latestTangent.id;
@@ -246,7 +252,15 @@ export async function GET(req: NextRequest) {
   }
 
   if (shouldExplore && Number(generation.generation || 0) > 0) {
-    const exposureRows = buildRankingExposureRows(user.id, Number(generation.generation), rows);
+    const displayedExposureTracks = withSeriesExploration.map((track, index) => ({
+      ...track,
+      _display_rank: index + 1,
+    }));
+    const exposureRows = buildRankingExposureRows(
+      user.id,
+      Number(generation.generation),
+      displayedExposureTracks,
+    );
     if (exposureRows.length) {
       const exposureResult = await db.from("ranking_exposures").upsert(exposureRows, {
         onConflict: "user_id,request_id,track_id",

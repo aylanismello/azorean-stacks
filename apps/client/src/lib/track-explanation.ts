@@ -1,4 +1,5 @@
 export interface TrackExplanationInput {
+  seriesExploration?: boolean | null;
   seedName?: string | null;
   tangentSeedName?: string | null;
   sonicSeedName?: string | null;
@@ -32,6 +33,15 @@ export function explainTrackSelection(input: TrackExplanationInput): TrackExplan
     return {
       headline: `Added to your upcoming queue from a tangent off ${input.tangentSeedName}.`,
       evidence: "This was one of the bounded discoveries brought forward by that seed; the track you were already playing was left alone.",
+    };
+  }
+
+  if (input.seriesExploration) {
+    return {
+      headline: input.episodeLabel
+        ? `A fresh exploration pick from ${input.episodeLabel}.`
+        : "A fresh pick from the exploration lane.",
+      evidence: "This bounded slot samples a recent source directly; it is not presented as a prediction from your personal taste history.",
     };
   }
 
