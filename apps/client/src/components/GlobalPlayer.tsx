@@ -3,6 +3,7 @@
 import { useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useGlobalPlayer } from "./GlobalPlayerProvider";
+import { useArtworkFallback } from "@/lib/artwork-fallback";
 import { openYouTube } from "@/lib/youtube";
 import { openSpotify } from "@/lib/spotify-link";
 import { canonicalPlayerTrackId } from "@/lib/player-track-identity";
@@ -30,7 +31,7 @@ function generateGradient(artist: string, title: string): string {
   return `hsl(${h1}, 40%, 20%)`;
 }
 
-/** Connection quality icon — phone-only in the player chrome. */
+/** Actionable connection warning — healthy playback stays visually quiet. */
 function ConnectionIcon({ quality }: { quality: "good" | "recovering" | "stalled" }) {
   const color = quality === "good" ? "#22c55e" : quality === "recovering" ? "#eab308" : "#ef4444";
   const label = quality === "good" ? "Connection stable" : quality === "recovering" ? "Recovering from stall" : "Connection stalled";
@@ -72,6 +73,7 @@ export function GlobalPlayer() {
     repeatTrackId,
     toggleRepeatTrack,
   } = useGlobalPlayer();
+  const coverArtUrl = useArtworkFallback(currentTrack?.coverArtUrl, currentTrack?.episode?.artwork_url);
   const router = useRouter();
   const progressRef = useRef<HTMLDivElement>(null);
   const seekDragRef = useRef<SeekDrag | null>(null);
@@ -150,7 +152,7 @@ export function GlobalPlayer() {
 
   if (!currentTrack) return null;
 
-  const bgColor = currentTrack.coverArtUrl ? undefined : generateGradient(currentTrack.artist, currentTrack.title);
+  const bgColor = coverArtUrl ? undefined : generateGradient(currentTrack.artist, currentTrack.title);
   const showBuffering = loading || buffering;
 
   return (
@@ -229,8 +231,8 @@ export function GlobalPlayer() {
           }}
           className="h-9 w-9 flex-shrink-0 overflow-hidden rounded-md transition-all hover:ring-1 hover:ring-accent/50 active:scale-95 sm:h-10 sm:w-10"
           style={
-            currentTrack.coverArtUrl
-              ? { backgroundImage: `url(${currentTrack.coverArtUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
+            coverArtUrl
+              ? { backgroundImage: `url(${coverArtUrl})`, backgroundSize: "cover", backgroundPosition: "center" }
               : { backgroundColor: bgColor }
           }
           title="Go to playing track"
@@ -281,13 +283,13 @@ export function GlobalPlayer() {
           </span>
         ) : (
           <>
-            {/* Time stays on larger screens; connection status is phone-only. */}
+            {/* Time stays on larger screens; only actionable connection problems surface. */}
             <span className="hidden flex-shrink-0 items-center font-mono text-[11px] text-muted md:flex">
               {duration > 0 ? `${fmt(displayedProgress)} / ${fmt(duration)}` : ""}
             </span>
 
-            {source === "audio" && (
-              <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-surface-2 sm:hidden">
+            {source === "audio" && connectionQuality !== "good" && (
+              <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-surface-2">
                 <ConnectionIcon quality={connectionQuality} />
               </span>
             )}

@@ -1,4 +1,5 @@
 import { getSupabase } from "./supabase";
+import { applySonicAffinityRanking } from "./sonic-ranking";
 import { episodeContextKey } from "./taste-scoring";
 
 export const QUEUE_TARGET = Number(process.env.AUDIO_QUEUE_TARGET || 50);
@@ -21,9 +22,48 @@ export interface QueueCandidate {
   episode_ids?: string[];
   source_contexts?: string[];
   taste_score?: number | null;
+  sonic_similarity?: number | null;
   storage_path?: string | null;
   metadata?: Record<string, unknown> | null;
   [key: string]: any;
+}
+
+export interface FypTangentDelta {
+  trackIds: string[];
+  addedTrackIds: string[];
+  movedTrackIds: string[];
+  removedTrackIds: string[];
+  startRank: number | null;
+}
+
+/** Describe only the bounded seed-derived rows that actually changed the queue. */
+export function buildFypTangentDelta(
+  existing: QueueCandidate[],
+  next: QueueCandidate[],
+  preferredFreshTrackIds: Set<string>,
+  freshLimit: number,
+): FypTangentDelta {
+  const previousRankById = new Map(existing.map((track, index) => [track.id, index + 1]));
+  const nextRankById = new Map(next.map((track, index) => [track.id, index + 1]));
+  const requestedTrackIds = next
+    .filter((track) => preferredFreshTrackIds.has(track.id))
+    .slice(0, Math.max(0, Math.floor(freshLimit)))
+    .map((track) => track.id);
+  const addedTrackIds = requestedTrackIds.filter((trackId) => !previousRankById.has(trackId));
+  const movedTrackIds = requestedTrackIds.filter((trackId) => {
+    const previousRank = previousRankById.get(trackId);
+    const nextRank = nextRankById.get(trackId);
+    return previousRank !== undefined && nextRank !== undefined && previousRank !== nextRank;
+  });
+  const affected = new Set([...addedTrackIds, ...movedTrackIds]);
+  const trackIds = requestedTrackIds.filter((trackId) => affected.has(trackId));
+  const removedTrackIds = existing
+    .map((track) => track.id)
+    .filter((trackId) => !nextRankById.has(trackId));
+  const startRank = trackIds.length
+    ? Math.min(...trackIds.map((trackId) => nextRankById.get(trackId) || Number.MAX_SAFE_INTEGER))
+    : null;
+  return { trackIds, addedTrackIds, movedTrackIds, removedTrackIds, startRank };
 }
 
 /** Keep an in-progress queue stable while allowing a bounded fresh seed lane. */
@@ -374,14 +414,15 @@ async function activeQueueCandidates(
     .filter(Boolean);
 }
 
-async function latestSeedCandidateTrackIds(db: Db, userId: string): Promise<Set<string>> {
-  const seedResult = await db.from("seeds")
+async function seedCandidateTrackIds(db: Db, userId: string, seedId?: string | null): Promise<Set<string>> {
+  let seedQuery = db.from("seeds")
     .select("id")
     .eq("user_id", userId)
-    .eq("active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .eq("active", true);
+  seedQuery = seedId
+    ? seedQuery.eq("id", seedId)
+    : seedQuery.order("created_at", { ascending: false }).limit(1);
+  const seedResult = await seedQuery.maybeSingle();
   if (seedResult.error) throw new Error(`latest seed lookup: ${seedResult.error.message}`);
   if (!seedResult.data?.id) return new Set();
 
@@ -403,7 +444,111 @@ async function latestSeedCandidateTrackIds(db: Db, userId: string): Promise<Set<
   return trackIds;
 }
 
-async function rankedTracks(db: Db, userId: string, limit: number): Promise<QueueCandidate[]> {
+export async function applyUserSonicContext(
+  db: Db,
+  userId: string,
+  candidates: QueueCandidate[],
+  seedId?: string,
+): Promise<QueueCandidate[]> {
+  if (candidates.length === 0) return candidates;
+
+  let seedQuery = db
+    .from("seeds")
+    .select("id, track_id, artist, title")
+    .eq("user_id", userId)
+    .eq("active", true)
+    .not("track_id", "is", null);
+  if (seedId) seedQuery = seedQuery.eq("id", seedId);
+
+  const { data: seedRows, error: seedError } = await seedQuery.limit(seedId ? 1 : 12);
+  if (seedError || !seedRows?.length) {
+    if (seedError) console.warn("[sonic] active seed lookup failed; ranking remains neutral:", seedError.message);
+    return candidates;
+  }
+
+  const seedTrackIds = seedRows.map((seed: any) => seed.track_id).filter(Boolean);
+  if (seedTrackIds.length === 0) return candidates;
+
+  let approvedTrackIds: string[] = [];
+  let rejectedTrackIds: string[] = [];
+  if (!seedId) {
+    const feedbackResult = await db.from("user_tracks")
+      .select("track_id,status")
+      .eq("user_id", userId)
+      .in("status", ["approved", "rejected"])
+      .order("voted_at", { ascending: false })
+      .limit(24);
+    if (feedbackResult.error) {
+      console.warn("[sonic] feedback lookup failed; using active seeds only:", feedbackResult.error.message);
+    } else {
+      approvedTrackIds = (feedbackResult.data || [])
+        .filter((row: any) => row.status === "approved")
+        .slice(0, 12)
+        .map((row: any) => row.track_id);
+      rejectedTrackIds = (feedbackResult.data || [])
+        .filter((row: any) => row.status === "rejected")
+        .slice(0, 12)
+        .map((row: any) => row.track_id);
+    }
+  }
+
+  const candidateTrackIds = candidates.map((candidate) => candidate.id);
+  const matchNeighbors = async (referenceTrackIds: string[]) => {
+    if (referenceTrackIds.length === 0) return { data: [], error: null };
+    return db.rpc("match_user_sonic_neighbors", {
+      p_user_id: userId,
+      p_seed_track_ids: referenceTrackIds,
+      p_candidate_track_ids: candidateTrackIds,
+      p_limit: candidates.length,
+      p_max_distance: Number(process.env.CLAP_MAX_DISTANCE || 0.65),
+    });
+  };
+  const [positiveResult, negativeResult] = await Promise.all([
+    matchNeighbors(Array.from(new Set([...seedTrackIds, ...approvedTrackIds]))),
+    matchNeighbors(Array.from(new Set(rejectedTrackIds))),
+  ]);
+  if (positiveResult.error) {
+    console.warn("[sonic] positive neighbor lookup failed; ranking remains neutral:", positiveResult.error.message);
+    return candidates;
+  }
+  if (negativeResult.error) {
+    console.warn("[sonic] rejection-neighbor lookup failed; rejection avoidance remains neutral:", negativeResult.error.message);
+  }
+
+  const toSimilarityMap = (rows: any[] | null | undefined) => {
+    const similarities = new Map<string, number>();
+    for (const row of rows || []) {
+      const similarity = Number(row.sonic_similarity);
+      if (row.track_id && Number.isFinite(similarity)) similarities.set(row.track_id, similarity);
+    }
+    return similarities;
+  };
+  const positiveSimilarities = toSimilarityMap(positiveResult.data);
+  const negativeSimilarities = negativeResult.error ? new Map<string, number>() : toSimilarityMap(negativeResult.data);
+  if (positiveSimilarities.size === 0 && negativeSimilarities.size === 0) return candidates;
+
+  const seedName = seedRows.length === 1 && approvedTrackIds.length === 0
+    ? [seedRows[0].artist, seedRows[0].title].filter(Boolean).join(" — ") || "your active seed"
+    : approvedTrackIds.length > 0 ? "your active seeds and likes" : "your active seeds";
+  const sourceSeedId = seedRows.length === 1 && approvedTrackIds.length === 0 ? seedRows[0].id : null;
+
+  return candidates.map((candidate) => {
+    const positiveSimilarity = positiveSimilarities.get(candidate.id);
+    const negativeSimilarity = negativeSimilarities.get(candidate.id);
+    if (positiveSimilarity == null && negativeSimilarity == null) return candidate;
+    const ranked = applySonicAffinityRanking(candidate, positiveSimilarity, negativeSimilarity);
+    return {
+      ...ranked,
+      metadata: {
+        ...(ranked.metadata || {}),
+        ...(positiveSimilarity == null ? {} : { _sonic_seed_name: seedName }),
+        ...(sourceSeedId && positiveSimilarity != null ? { _sonic_seed_id: sourceSeedId } : {}),
+      },
+    };
+  });
+}
+
+async function rankedTracks(db: Db, userId: string, limit: number, sonicSeedId?: string): Promise<QueueCandidate[]> {
   const eligibleTrackIds = await pendingUserTrackIds(db, userId);
   if (!eligibleTrackIds.length) return [];
 
@@ -434,7 +579,12 @@ async function rankedTracks(db: Db, userId: string, limit: number): Promise<Queu
     userId,
     candidates.map((track) => track.id),
   );
-  const contextualCandidates = applySeriesSeedContext(candidates, seriesContextTrackIds);
+  const contextualCandidates = await applyUserSonicContext(
+    db,
+    userId,
+    applySeriesSeedContext(candidates, seriesContextTrackIds),
+    sonicSeedId,
+  );
   contextualCandidates.sort((left, right) =>
     Number(right.taste_score || 0) - Number(left.taste_score || 0)
       || Number((right.metadata as any)?._score_confidence || 0) - Number((left.metadata as any)?._score_confidence || 0)
@@ -659,6 +809,7 @@ export async function materializeUserQueue(
   generationContext: {
     reason?: "ranking_refresh" | "seed_refresh";
     seedId?: string | null;
+    seedRefreshRequiredAt?: string | null;
   } = {},
 ): Promise<number> {
   const queueTarget = Math.max(0, Math.floor(target));
@@ -674,7 +825,7 @@ export async function materializeUserQueue(
       })
     : Promise.resolve([]);
   const [ranked, exploration, eligibleTrackIds] = await Promise.all([
-    rankedTracks(db, userId, queueTarget * 4),
+    rankedTracks(db, userId, queueTarget * 4, generationContext.seedId || undefined),
     explorationPromise,
     pendingUserTrackIds(db, userId),
   ]);
@@ -685,7 +836,7 @@ export async function materializeUserQueue(
   const newlyRanked = diversifyQueueCandidates(enrichedRanked, queueTarget);
   const existingCandidates = await activeQueueCandidates(db, userId, new Set(eligibleTrackIds));
   const preferredFreshTrackIds = freshInsertions > 0
-    ? await latestSeedCandidateTrackIds(db, userId)
+    ? await seedCandidateTrackIds(db, userId, generationContext.seedId)
     : undefined;
   const rankedForMerge = preferredFreshTrackIds
     ? [
@@ -762,11 +913,31 @@ export async function materializeUserQueue(
     if (staleResult.error) throw new Error(`stale queue retirement: ${staleResult.error.message}`);
   }
 
-  const generationResult = await db.rpc("publish_fyp_generation", {
-    p_user_id: userId,
-    p_reason: generationContext.reason || (freshInsertions > 0 ? "seed_refresh" : "ranking_refresh"),
-    p_seed_id: generationContext.seedId || null,
-  });
+  const tangent = preferredFreshTrackIds
+    ? buildFypTangentDelta(existingCandidates, tracks, preferredFreshTrackIds, freshInsertions)
+    : { trackIds: [], addedTrackIds: [], movedTrackIds: [], removedTrackIds: [], startRank: null };
+
+  const shouldPublishTangent = freshInsertions > 0
+    && generationContext.reason === "seed_refresh"
+    && Boolean(generationContext.seedId)
+    && Boolean(generationContext.seedRefreshRequiredAt)
+    && tangent.trackIds.length > 0;
+  const generationResult = shouldPublishTangent
+    ? await db.rpc("publish_fyp_tangent", {
+        p_user_id: userId,
+        p_seed_id: generationContext.seedId,
+        p_refresh_required_at: generationContext.seedRefreshRequiredAt,
+        p_track_ids: tangent.trackIds,
+        p_added_track_ids: tangent.addedTrackIds,
+        p_moved_track_ids: tangent.movedTrackIds,
+        p_removed_track_ids: tangent.removedTrackIds,
+        p_start_rank: tangent.startRank,
+      })
+    : await db.rpc("publish_fyp_generation", {
+        p_user_id: userId,
+        p_reason: generationContext.reason || (freshInsertions > 0 ? "seed_refresh" : "ranking_refresh"),
+        p_seed_id: generationContext.seedId || null,
+      });
   if (generationResult.error) {
     throw new Error(`FYP generation publish: ${generationResult.error.message}`);
   }

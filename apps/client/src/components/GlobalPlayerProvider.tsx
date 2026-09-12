@@ -89,6 +89,10 @@ export interface PlayerTrack {
   _seed_name?: string;
   _seed_artist?: string;
   _seed_title?: string;
+  _tangent_id?: string;
+  _tangent_seed_name?: string;
+  _tangent_start_rank?: number;
+  _sonic_seed_name?: string;
 
   // Voted timestamp
   voted_at?: string | null;
@@ -573,6 +577,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         await audio.play();
         // If we get here, recovery succeeded
         setBuffering(false);
+        setConnectionQuality("good");
+        lastStallAtRef.current = 0;
         isRecoveringRef.current = false;
         return;
       } catch {
@@ -594,7 +600,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         await audio.play();
         setBuffering(false);
         isRecoveringRef.current = false;
-        setConnectionQuality("recovering");
+        setConnectionQuality("good");
+        lastStallAtRef.current = 0;
         return;
       } catch {
         // Failed — fall through

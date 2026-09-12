@@ -159,12 +159,10 @@ audio::-webkit-media-controls-panel {
   box-shadow: 0 -1px 0 rgba(0, 0, 0, 0.1);
 }
 
-/* Live 4U growth: a short branch-drawing cue, never a blocking loader. */
+/* Explicit seed tangent panel: animate in, then stay until dismissed. */
 @keyframes fyp-growth-toast-in {
   0% { opacity: 0; transform: translate(-50%, -8px) scale(0.94); filter: blur(3px); }
-  24% { opacity: 1; transform: translate(-50%, 0) scale(1); filter: blur(0); }
-  82% { opacity: 1; transform: translate(-50%, 0) scale(1); filter: blur(0); }
-  100% { opacity: 0; transform: translate(-50%, -4px) scale(0.98); filter: blur(1px); }
+  100% { opacity: 1; transform: translate(-50%, 0) scale(1); filter: blur(0); }
 }
 @keyframes fyp-growth-tree-draw {
   0% { stroke-dashoffset: 48; opacity: 0.3; }
@@ -176,7 +174,7 @@ audio::-webkit-media-controls-panel {
   100% { opacity: 1; transform: translateX(0) scale(1); box-shadow: 0 0 0 rgba(52, 211, 153, 0); }
 }
 .fyp-growth-toast {
-  animation: fyp-growth-toast-in 5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: fyp-growth-toast-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .fyp-growth-tree path {
   stroke-dasharray: 48;
@@ -200,6 +198,29 @@ audio::-webkit-media-controls-panel {
   .fyp-card-mutation {
     animation: none;
   }
+}
+
+/* Circular seek controls: the arrow moves in the requested direction while
+   the 30 remains optically centered. */
+@keyframes seek-step-forward {
+  0% { transform: rotate(0deg) scale(1); opacity: 0.8; }
+  55% { transform: rotate(34deg) scale(1.08); opacity: 1; }
+  100% { transform: rotate(0deg) scale(1); opacity: 1; }
+}
+@keyframes seek-step-back {
+  0% { transform: rotate(0deg) scale(1); opacity: 0.8; }
+  55% { transform: rotate(-34deg) scale(1.08); opacity: 1; }
+  100% { transform: rotate(0deg) scale(1); opacity: 1; }
+}
+.seek-step-glyph {
+  transform-origin: center;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+}
+.seek-step-glyph-forward { animation: seek-step-forward 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+.seek-step-glyph-back { animation: seek-step-back 320ms cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .seek-step-glyph-forward,
+  .seek-step-glyph-back { animation: none; }
 }
 
 /* Kept confirmation pop-in */

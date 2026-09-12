@@ -11,10 +11,15 @@ import { getFypKeyboardAction } from "@/lib/fyp-keyboard";
 import { destinationQueueStartIndex } from "@/lib/queue-navigation";
 import { canonicalPlayerTrackId, displayedPlayerTrackId, playerTrackActionId } from "@/lib/player-track-identity";
 import { formatRankingScore, rankingContributions } from "@/lib/ranking-display";
+import { explainTrackSelection } from "@/lib/track-explanation";
+import {
+  shouldRevealTangent,
+  tangentDetail,
+  tangentHeadline,
+  type FypTangent,
+} from "@/lib/fyp-tangent";
 import { createClient as createBrowserClient } from "@/lib/supabase-browser";
 import {
-  describeFypMutation,
-  fypGrowthLabel,
   reconcileLiveFypQueue,
   shouldApplyFypGeneration,
   type FypGeneration,
@@ -85,6 +90,10 @@ function toPlayerTrack(track: Track): PlayerTrack {
     _seed_name: (track as any)._seed_name,
     _seed_artist: (track as any)._seed_artist,
     _seed_title: (track as any)._seed_title,
+    _tangent_id: (track as any)._tangent_id,
+    _tangent_seed_name: (track as any)._tangent_seed_name,
+    _tangent_start_rank: (track as any)._tangent_start_rank,
+    _sonic_seed_name: (track as any)._sonic_seed_name,
 
     // Voted timestamp
     voted_at: track.voted_at,
@@ -131,6 +140,10 @@ function toTrackLike(pt: PlayerTrack): Track {
     _seed_name: pt._seed_name,
     _seed_artist: pt._seed_artist,
     _seed_title: pt._seed_title,
+    _tangent_id: (pt as any)._tangent_id,
+    _tangent_seed_name: (pt as any)._tangent_seed_name,
+    _tangent_start_rank: (pt as any)._tangent_start_rank,
+    _sonic_seed_name: (pt as any)._sonic_seed_name,
     // Pass through vote_status for TrackCard
     vote_status: pt.vote_status,
     is_artist_seed: pt.is_artist_seed,
@@ -178,14 +191,13 @@ function StackPageContent() {
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [hideLowScored, setHideLowScored] = useState(false);
-  const [fypGrowth, setFypGrowth] = useState<{
-    label: string;
-    reason: FypGeneration["reason"];
-  } | null>(null);
+  const [recentTangents, setRecentTangents] = useState<FypTangent[]>([]);
+  const [activeTangent, setActiveTangent] = useState<FypTangent | null>(null);
+  const [tangentExpanded, setTangentExpanded] = useState(false);
   const [liveMutationIds, setLiveMutationIds] = useState<Set<string>>(() => new Set());
   const lastFypGenerationRef = useRef(0);
+  const lastSeenTangentRef = useRef<string | null>(null);
   const playerQueueRef = useRef(globalPlayer.queue);
-  const growthTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const liveRefreshChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const queueViewKey = episodeId
@@ -203,6 +215,7 @@ function StackPageContent() {
     const stored = sessionStorage.getItem("stacks-hide-low-scored");
     if (stored === "1") setHideLowScored(true);
     activeQueueViewRef.current = sessionStorage.getItem("stacks-active-queue-view");
+    lastSeenTangentRef.current = localStorage.getItem("stacks-last-tangent");
   }, []);
   const [skippingEpisode, setSkippingEpisode] = useState(false);
   const [tracklistOpen, setTracklistOpen] = useState(false);
@@ -217,9 +230,6 @@ function StackPageContent() {
   const playerCurrentTrackRef = useRef(globalPlayer.currentTrack);
   useEffect(() => { playerCurrentTrackRef.current = globalPlayer.currentTrack; }, [globalPlayer.currentTrack]);
   useEffect(() => { playerQueueRef.current = globalPlayer.queue; }, [globalPlayer.queue]);
-  useEffect(() => () => {
-    if (growthTimerRef.current) clearTimeout(growthTimerRef.current);
-  }, []);
 
   useEffect(() => {
     setAdvancingEpisode(false);
@@ -268,6 +278,7 @@ function StackPageContent() {
       const apiTracks: Track[] = data.tracks || [];
       const playerTracks = apiTracks.map(toPlayerTrack);
       const generation = data.generation as FypGeneration | undefined;
+      const tangents = (data.tangents || []) as FypTangent[];
       const lastGeneration = lastFypGenerationRef.current;
 
       if (generation && generation.generation < lastGeneration) return;
@@ -284,6 +295,7 @@ function StackPageContent() {
       }
 
       setTotal(data.total || 0);
+      setRecentTangents(tangents);
       setError(null);
       setAdvancingEpisode(false);
 
@@ -296,23 +308,26 @@ function StackPageContent() {
           playerTracks,
           playerCurrentTrackRef.current?.id,
         );
-        const mutation = describeFypMutation(
-          previousQueue.map((track) => track.id),
-          reconciledQueue.map((track) => track.id),
-        );
         globalPlayer.setQueue(reconciledQueue);
         playerQueueRef.current = reconciledQueue;
         setHasEpisodeTracks(false);
-        setLiveMutationIds(new Set(mutation.changedIds));
-        setFypGrowth(mutation.changedIds.length > 0 ? {
-          label: fypGrowthLabel(mutation, generation?.reason || "ranking_refresh"),
-          reason: generation?.reason || "ranking_refresh",
-        } : null);
-        if (growthTimerRef.current) clearTimeout(growthTimerRef.current);
-        growthTimerRef.current = setTimeout(() => {
-          setFypGrowth(null);
+        const latestTangent = tangents[0] || null;
+        const revealTangent = shouldRevealTangent(
+          latestTangent,
+          previousQueue.map((track) => track.id),
+          reconciledQueue.map((track) => track.id),
+          lastSeenTangentRef.current,
+        );
+        if (revealTangent && latestTangent) {
+          setActiveTangent(latestTangent);
+          setTangentExpanded(false);
+          setLiveMutationIds(new Set(latestTangent.tracks.map((track) => track.id)));
+          lastSeenTangentRef.current = latestTangent.id;
+          localStorage.setItem("stacks-last-tangent", latestTangent.id);
+        } else {
+          // Routine ranking/readiness maintenance is intentionally silent.
           setLiveMutationIds(new Set());
-        }, 5_000);
+        }
         return;
       }
 
@@ -989,53 +1004,116 @@ function StackPageContent() {
           </span>
         </div>
 
-        {/* Right: tracklist button (mobile only — desktop always shows sidebar) */}
-        <button
-          onClick={() => setTracklistOpen(!tracklistOpen)}
-          className="z-10 flex-shrink-0 p-2 text-muted transition-colors hover:text-foreground xl:hidden"
-          title="Show tracklist"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="8" y1="6" x2="21" y2="6" />
-            <line x1="8" y1="12" x2="21" y2="12" />
-            <line x1="8" y1="18" x2="21" y2="18" />
-            <line x1="3" y1="6" x2="3.01" y2="6" />
-            <line x1="3" y1="12" x2="3.01" y2="12" />
-            <line x1="3" y1="18" x2="3.01" y2="18" />
-          </svg>
-        </button>
+        {/* Right: tangent history and tracklist. */}
+        <div className="z-10 flex flex-shrink-0 items-center gap-1">
+          {isHomeFyp && recentTangents.length > 0 && (
+            <button
+              onClick={() => {
+                setActiveTangent(recentTangents[0]);
+                setTangentExpanded(true);
+              }}
+              className="relative flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-white/5 hover:text-foreground"
+              aria-label={`Open tangent history, ${recentTangents.length} recent`}
+              title="Tangent history"
+            >
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 19c5-2 6-7 6-14" />
+                <path d="M10 12c4 0 6-2 8-5" />
+                <path d="M10 15c4 1 7 1 10-2" />
+                <circle cx="18" cy="7" r="1.5" fill="currentColor" stroke="none" />
+                <circle cx="20" cy="13" r="1.5" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+          )}
+          <button
+            onClick={() => setTracklistOpen(!tracklistOpen)}
+            className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition-colors hover:bg-white/5 hover:text-foreground xl:hidden"
+            title="Show tracklist"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="8" y1="6" x2="21" y2="6" />
+              <line x1="8" y1="12" x2="21" y2="12" />
+              <line x1="8" y1="18" x2="21" y2="18" />
+              <line x1="3" y1="6" x2="3.01" y2="6" />
+              <line x1="3" y1="12" x2="3.01" y2="12" />
+              <line x1="3" y1="18" x2="3.01" y2="18" />
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {isHomeFyp && fypGrowth && (
-        <div
+      {isHomeFyp && activeTangent && (
+        <section
           role="status"
           aria-live="polite"
-          className="fyp-growth-toast pointer-events-none absolute left-1/2 top-12 z-30 -translate-x-1/2"
+          className="fyp-growth-toast absolute left-1/2 top-12 z-30 w-[min(31rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-emerald-300/20 bg-surface-1/95 p-3 shadow-[0_18px_60px_rgba(16,185,129,0.18)] backdrop-blur-md"
         >
-          <div className="flex items-center gap-2.5 rounded-full border border-emerald-300/20 bg-surface-1/95 px-3 py-2 shadow-[0_12px_40px_rgba(16,185,129,0.18)] backdrop-blur-md">
-            <svg
-              aria-hidden="true"
-              width="28"
-              height="22"
-              viewBox="0 0 28 22"
-              fill="none"
-              className="fyp-growth-tree text-emerald-300"
-            >
-              <path d="M3 19C8 16 9 11 10 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-              <path d="M9 12C14 12 17 9 19 5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-              <path d="M8 15C14 16 18 17 24 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-              <circle cx="10" cy="4" r="2" fill="currentColor" />
-              <circle cx="19" cy="5" r="2" fill="currentColor" />
-              <circle cx="24" cy="13" r="2" fill="currentColor" />
+          <div className="flex items-start gap-3">
+            <svg aria-hidden="true" width="30" height="26" viewBox="0 0 30 26" fill="none" className="fyp-growth-tree mt-0.5 shrink-0 text-emerald-300">
+              <path d="M4 23c6-3 7-9 8-19" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M11 14c5 0 8-3 10-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M10 18c6 1 10 1 16-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <circle cx="12" cy="4" r="2" fill="currentColor" />
+              <circle cx="21" cy="7" r="2" fill="currentColor" />
+              <circle cx="26" cy="14" r="2" fill="currentColor" />
             </svg>
-            <div className="whitespace-nowrap">
-              <p className="text-[11px] font-semibold text-foreground">{fypGrowth.label}</p>
-              <p className="text-[9px] text-muted">
-                {fypGrowth.reason === "seed_refresh" ? "following your new direction" : "new paths are ready"}
-              </p>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold leading-snug text-foreground">{tangentHeadline(activeTangent)}</p>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted">{tangentDetail(activeTangent)}</p>
+              {tangentExpanded && (
+                <div className="mt-3 space-y-1.5 border-t border-white/10 pt-2">
+                  {activeTangent.tracks.map((track, index) => (
+                    <div key={track.id} className="flex items-baseline gap-2 text-[11px]">
+                      <span className="font-mono text-emerald-300">{activeTangent.start_rank ? activeTangent.start_rank + index : "•"}</span>
+                      <span className="truncate text-foreground">{track.artist} — {track.title}</span>
+                    </div>
+                  ))}
+                  {activeTangent.removed_tracks.length > 0 && (
+                    <p className="pt-1 text-[10px] text-muted">Left the buffer: {activeTangent.removed_tracks.map((track) => `${track.artist} — ${track.title}`).join(", ")}</p>
+                  )}
+                  {recentTangents.length > 1 && (
+                    <div className="mt-2 border-t border-white/10 pt-2">
+                      <p className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-muted">Recent tangents</p>
+                      <div className="flex max-h-24 flex-col gap-1 overflow-y-auto">
+                        {recentTangents.slice(0, 10).map((tangent) => (
+                          <button
+                            key={tangent.id}
+                            type="button"
+                            onClick={() => setActiveTangent(tangent)}
+                            className={`flex min-h-8 items-center justify-between gap-3 rounded-lg px-2 text-left text-[10px] transition-colors ${
+                              tangent.id === activeTangent.id
+                                ? "bg-emerald-400/10 text-emerald-200"
+                                : "text-muted hover:bg-white/5 hover:text-foreground"
+                            }`}
+                          >
+                            <span className="truncate">{tangent.seed_name}</span>
+                            <time className="shrink-0 font-mono text-[9px]" dateTime={tangent.created_at}>
+                              {new Date(tangent.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                            </time>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="mt-2 flex gap-2">
+                <button onClick={() => setTangentExpanded((value) => !value)} className="text-[10px] font-semibold text-emerald-300 hover:text-emerald-200">
+                  {tangentExpanded ? "Hide tracks" : "View tracks"}
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveTangent(null);
+                    setLiveMutationIds(new Set());
+                  }}
+                  className="text-[10px] text-muted hover:text-foreground"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </section>
       )}
 
       {/* Desktop: tracklist always visible on left, card on right */}
@@ -1179,6 +1257,17 @@ function TrackContextModal({
   const seedLineage = seedArtist
     ? `${seedArtist}${seedTitle ? ` — ${seedTitle}` : ""}`
     : rankedSeedName || null;
+  const explanation = explainTrackSelection({
+    seedName: seedLineage,
+    tangentSeedName: (track as any)._tangent_seed_name || null,
+    sonicSeedName: (track as any)._sonic_seed_name || (meta.sonic_seed_name as string | undefined) || null,
+    matchType,
+    episodeLabel,
+    sourceName,
+    curatorName: curatorSlug,
+    coOccurrence,
+    scoreComponents,
+  });
 
   const modeLabel = () => {
     if (episodeTitle) return `Episode: ${episodeTitle}${episodePos && episodeTotal ? ` — track ${episodePos} of ${episodeTotal}` : ""}`;
@@ -1208,6 +1297,11 @@ function TrackContextModal({
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           </button>
+        </div>
+
+        <div className="rounded-xl border border-accent/20 bg-accent/[0.07] p-3">
+          <p className="text-sm font-medium leading-relaxed text-foreground">{explanation.headline}</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">{explanation.evidence}</p>
         </div>
 
         {/* Actual discovery source and episode/show context */}
@@ -1271,11 +1365,16 @@ function TrackContextModal({
           <p className="text-sm text-foreground/80">{modeLabel()}</p>
         </div>
 
-        {/* Taste signals */}
+        {/* Secondary diagnostics: useful for auditing, not the explanation. */}
         {(typeof track.taste_score === "number" || genre || typeof rankedScore === "number") && (
-          <div>
-            <p className="text-[10px] text-muted uppercase tracking-wider mb-1">Taste Signals</p>
-            <div className="flex flex-wrap gap-2">
+          <details className="rounded-lg border border-foreground/10 bg-surface-2/40 px-3 py-2">
+            <summary className="cursor-pointer text-xs font-medium text-muted hover:text-foreground">
+              Ranking diagnostics
+            </summary>
+            <p className="mt-2 text-[10px] leading-relaxed text-muted">
+              Relative comparison only — not a percentage or predicted chance that you will like it.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
               {typeof rankedScore === "number" && (
                 <span
                   title="Relative ranking score, not a percentage"
@@ -1304,7 +1403,7 @@ function TrackContextModal({
                 ))}
               </div>
             )}
-          </div>
+          </details>
         )}
 
         {/* Co-occurrence */}

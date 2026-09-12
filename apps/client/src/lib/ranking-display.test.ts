@@ -12,10 +12,12 @@ describe("ranking display", () => {
       curator: 0.161,
       seed_freshness: 0.298,
       source_context: 0.268,
+      sonic_similarity: 1,
     })).toEqual({
       curator: 0.019,
       seed_freshness: 0.298,
       source_context: 0.048,
+      sonic_similarity: 0.1,
     });
   });
 });

@@ -12,12 +12,19 @@
     "update-signals": "bun run scripts/update-signals.ts",
     "audit": "bun run scripts/audit.ts",
     "watcher": "bun run scripts/watcher.ts",
+    "sonic-worker": "bun run scripts/sonic-worker.ts",
+    "sonic-backfill": "bun run scripts/backfill-sonic.ts",
+    "sonic-status": "bun run scripts/sonic-status.ts",
+    "sonic-cluster": "bun run scripts/cluster-sonic.ts",
+    "ranking-evaluate": "bun run scripts/tune-ranking-model.ts",
+    "artwork-recovery": "bun run scripts/backfill-artwork.ts",
     "segundo-sol:bpm": "bun run scripts/backfill-segundo-sol-bpm.ts",
     "crawl-lotradio": "bun run scripts/crawl-lotradio.ts",
     "crawl-soulection": "bun run scripts/crawl-soulection.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
+    "@xenova/transformers": "2.17.2",
     "cheerio": "^1.0.0",
     "pg": "^8.20.0"
   },

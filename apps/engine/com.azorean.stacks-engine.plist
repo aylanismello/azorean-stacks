@@ -8,11 +8,11 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/pico/.openclaw/workspace/repos/azorean-stacks/apps/engine/runner.sh</string>
+        <string>/Users/pico/repos/azorean-stacks/apps/engine/runner.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/pico/.openclaw/workspace/repos/azorean-stacks/apps/engine</string>
+    <string>/Users/pico/repos/azorean-stacks/apps/engine</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -24,10 +24,10 @@
     <integer>30</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/pico/.openclaw/logs/azorean-engine.log</string>
+    <string>/Users/pico/.hermes/logs/azorean-engine.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/pico/.openclaw/logs/azorean-engine.log</string>
+    <string>/Users/pico/.hermes/logs/azorean-engine.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

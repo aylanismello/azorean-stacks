@@ -9,6 +9,10 @@ const globalPlayer = readFileSync(
   new URL("../components/GlobalPlayer.tsx", import.meta.url),
   "utf8",
 );
+const seekStepButton = readFileSync(
+  new URL("../components/SeekStepButton.tsx", import.meta.url),
+  "utf8",
+);
 const navigation = readFileSync(
   new URL("../components/Navigation.tsx", import.meta.url),
   "utf8",
@@ -23,11 +27,15 @@ const tracklist = readFileSync(
 );
 
 describe("player control layout contract", () => {
-  test("uses explicit, unclipped 30-second seek labels", () => {
-    expect(trackCard).toContain("−0:30");
-    expect(trackCard).toContain("+0:30");
-    expect(trackCard).not.toContain('fontSize="7"');
-    expect(trackCard).toContain("min-w-16");
+  test("uses animated circular 30-second SVG controls instead of text pills", () => {
+    expect(trackCard).not.toContain("−0:30");
+    expect(trackCard).not.toContain("+0:30");
+    expect(trackCard).toContain('<SeekStepButton');
+    expect(seekStepButton).toContain('viewBox="0 0 34 34"');
+    expect(seekStepButton).toContain('fontSize="9.5"');
+    expect(seekStepButton).toContain("h-11 w-11");
+    expect(seekStepButton).toContain("Rewind 30 seconds");
+    expect(seekStepButton).toContain("Skip ahead 30 seconds");
   });
 
   test("keeps the six vote actions evenly sized on mobile", () => {
@@ -35,16 +43,16 @@ describe("player control layout contract", () => {
     expect(trackCard).toContain("h-11 w-11 items-center justify-center justify-self-center");
   });
 
-  test("shows connection quality only in phone player chrome", () => {
+  test("hides healthy connectivity and shows actionable problems at every width", () => {
     const timeBlock = globalPlayer.slice(
       globalPlayer.indexOf("Time stays on larger screens"),
       globalPlayer.indexOf("Previous track"),
     );
 
-    expect(timeBlock).toContain("sm:hidden");
+    expect(timeBlock).not.toContain("sm:hidden");
+    expect(timeBlock).toContain('connectionQuality !== "good"');
     expect(timeBlock).toContain("<ConnectionIcon quality={connectionQuality} />");
     expect(timeBlock).toContain("md:flex");
-    expect(timeBlock.indexOf("md:flex")).toBeLessThan(timeBlock.indexOf("sm:hidden"));
   });
 
   test("keeps tablet widths on the unclipped compact layout", () => {

@@ -22,6 +22,12 @@ import { SOULECTION_RECENT_EPISODE_LIMIT } from "../lib/sources/soulection";
 import { runCuratorRadar } from "./radar-curator";
 import { crawlSoulection } from "./crawl-soulection";
 import {
+  createRecurringTaskLoop,
+  createSupabaseArtworkRecoveryStore,
+  recoverArtwork,
+  type ArtworkRecoveryCursor,
+} from "../lib/artwork-recovery";
+import {
   claimPreparationTracks,
   evictRetiredQueueAudio,
   materializeAllQueues,
@@ -47,10 +53,43 @@ const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json
 const decisionRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const serializeQueueMutation = createQueueMutationSerializer();
 
+const ARTWORK_RECOVERY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const artworkRecoveryCursor: ArtworkRecoveryCursor = {
+  episodeAfterId: null,
+  trackAfterId: null,
+};
+const artworkRecoveryLoop = createRecurringTaskLoop({
+  initialDelayMs: 30_000,
+  intervalMs: ARTWORK_RECOVERY_INTERVAL_MS,
+  task: async () => {
+    const startedAt = Date.now();
+    log("info", "[Artwork Recovery] Starting bounded scheduled pass");
+    const metrics = await recoverArtwork({
+      store: createSupabaseArtworkRecoveryStore(db),
+      pageSize: 50,
+      maxPagesPerKind: 4,
+      cursor: artworkRecoveryCursor,
+      concurrency: 3,
+      timeoutMs: 10_000,
+      retries: 3,
+      retryDelayMs: 1_000,
+    });
+    log("ok", `[Artwork Recovery] ${JSON.stringify({
+      durationMs: Date.now() - startedAt,
+      cursor: artworkRecoveryCursor,
+      ...metrics,
+    })}`);
+  },
+  onError: (error) => {
+    log("fail", `[Artwork Recovery] Scheduled pass failed: ${error instanceof Error ? error.message : String(error)}`);
+  },
+});
+
 async function refreshPersonalizedQueue(
   userId: string,
   freshInsertions = 0,
   seedId: string | null = null,
+  seedRefreshRequiredAt: string | null = null,
 ): Promise<void> {
   await refreshDecisionQueue(userId, {
     refreshPersonalizedScores: async () => {
@@ -68,6 +107,7 @@ async function refreshPersonalizedQueue(
       {
         reason: freshInsertions > 0 ? "seed_refresh" : "ranking_refresh",
         seedId,
+        seedRefreshRequiredAt,
       },
     ),
   });
@@ -928,15 +968,20 @@ async function loadSeedFypRefresh(seedId: string): Promise<{
   id: string;
   user_id: string;
   fyp_refresh_required_at: string;
+  source: string | null;
 } | null> {
   const { data, error } = await db.from("seeds")
-    .select("id,user_id,fyp_refresh_required_at")
+    .select("id,user_id,fyp_refresh_required_at,source")
     .eq("id", seedId)
     .eq("active", true)
     .maybeSingle();
   if (error) throw new Error(`seed FYP requirement lookup failed: ${error.message}`);
   if (!data?.user_id || !data.fyp_refresh_required_at) return null;
-  return data as { id: string; user_id: string; fyp_refresh_required_at: string };
+  return data as { id: string; user_id: string; fyp_refresh_required_at: string; source: string | null };
+}
+
+function isVisibleTangentSource(source: string | null | undefined): boolean {
+  return source === "manual" || source === "re-seed";
 }
 
 async function claimSeedFypRefresh(seed: {
@@ -1021,7 +1066,12 @@ async function refreshSeedFypWithCheckpoint(
     ) return false;
     claimToken = await claimSeedFypRefresh(seed);
     if (!claimToken) return false;
-    await serializeQueueMutation(() => refreshPersonalizedQueue(seed!.user_id, 3, seedId));
+    await serializeQueueMutation(() => refreshPersonalizedQueue(
+      seed!.user_id,
+      3,
+      seedId,
+      isVisibleTangentSource(seed!.source) ? seed!.fyp_refresh_required_at : null,
+    ));
     await afterRefresh?.(seed.user_id);
     await writeSeedFypCheckpoint(seed, claimToken);
     return true;
@@ -1047,12 +1097,13 @@ async function recoverMissedSeedFypRefreshes(): Promise<void> {
       id: string;
       user_id: string | null;
       pipeline_status: Record<string, unknown> | null;
+      source: string | null;
       fyp_refresh_required_at: string | null;
       fyp_refreshed_at: string | null;
     }> = [];
     for (let from = 0; ; from += 1000) {
       const { data, error } = await db.from("seeds")
-        .select("id,user_id,pipeline_status,fyp_refresh_required_at,fyp_refreshed_at")
+        .select("id,user_id,pipeline_status,source,fyp_refresh_required_at,fyp_refreshed_at")
         .eq("active", true)
         .not("user_id", "is", null)
         .not("fyp_refresh_required_at", "is", null)
@@ -1067,7 +1118,14 @@ async function recoverMissedSeedFypRefreshes(): Promise<void> {
       seeds,
       claimSeedFypRefresh,
       (ownerUserId, pendingSeed) => serializeQueueMutation(() =>
-        refreshPersonalizedQueue(ownerUserId, 3, pendingSeed.id)
+        refreshPersonalizedQueue(
+          ownerUserId,
+          3,
+          pendingSeed.id,
+          isVisibleTangentSource(pendingSeed.source)
+            ? pendingSeed.fyp_refresh_required_at || null
+            : null,
+        )
       ),
       writeSeedFypCheckpoint,
       releaseSeedFypClaim,
@@ -2666,6 +2724,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, async () => {
     if (shuttingDown) { console.log("\n  Force quit."); process.exit(1); }
     shuttingDown = true;
+    artworkRecoveryLoop.stop();
     console.log(`\n  ${sig} received — shutting down watcher...`);
     await logEngineEvent("watcher_disconnected", "info", {
       message: `Watcher stopped (${sig})`,
@@ -2683,6 +2742,8 @@ console.log(`\n  The Stacks — Realtime Seed Watcher`);
 console.log(`  ${new Date().toISOString()}\n`);
 
 startWatcher();
+// Scheduling returns immediately; recovery runs independently of Realtime startup.
+artworkRecoveryLoop.start();
 void processPriorityQueue();
 
 // Polling is intentional: it keeps the worker reliable if Realtime misses an

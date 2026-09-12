@@ -46,12 +46,18 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
 
   // Super Like: upsert user_tracks with super_liked=true + approved
   if (super_liked === true) {
-    await supabase
+    const { error: voteError } = await supabase
       .from("user_tracks")
       .upsert(
         { user_id: user.id, track_id: params.id, super_liked: true, status: "approved", voted_at: now },
         { onConflict: "user_id,track_id" }
       );
+    if (voteError) return NextResponse.json({ error: voteError.message }, { status: 500 });
+    const { error: outcomeError } = await authClient.rpc("record_ranking_outcome", {
+      p_track_id: params.id,
+      p_outcome: "approved",
+    });
+    if (outcomeError) console.error("[tracks] ranking outcome logging failed:", outcomeError.message);
 
     const { data: track, error } = await supabase
       .from("tracks")
@@ -181,6 +187,11 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       }
       return NextResponse.json({ error: listenError.message }, { status: 500 });
     }
+    const { error: outcomeError } = await authClient.rpc("record_ranking_outcome", {
+      p_track_id: params.id,
+      p_outcome: "listened",
+    });
+    if (outcomeError) console.error("[tracks] ranking outcome logging failed:", outcomeError.message);
 
     const { data: track, error: trackErr } = await supabase
       .from("tracks")
@@ -210,6 +221,14 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   if (upsertError) {
     console.error(`Vote upsert failed for track ${params.id}:`, upsertError);
     return NextResponse.json({ error: `Vote failed: ${upsertError.message}` }, { status: 500 });
+  }
+
+  if (["approved", "rejected", "skipped"].includes(status)) {
+    const { error: outcomeError } = await authClient.rpc("record_ranking_outcome", {
+      p_track_id: params.id,
+      p_outcome: status,
+    });
+    if (outcomeError) console.error("[tracks] ranking outcome logging failed:", outcomeError.message);
   }
 
   // Fetch track data to return

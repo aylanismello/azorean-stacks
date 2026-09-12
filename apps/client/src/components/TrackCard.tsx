@@ -9,6 +9,8 @@ import { useSpotify } from "./SpotifyProvider";
 import { getSeedBadge } from "@/lib/seed-badge";
 import { playerTrackMatchesCanonicalId, trackCardActionTargets } from "@/lib/player-track-identity";
 import { sourceAttribution, sourceLabel } from "@/lib/source-attribution";
+import { useArtworkFallback } from "@/lib/artwork-fallback";
+import { SeekStepButton } from "./SeekStepButton";
 
 interface TrackCardProps {
   track: Track;
@@ -287,7 +289,10 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
   }, [swipeX, handleVote]);
 
   const gradient = generateGradient(track.artist, track.title);
-  const coverUrl = safeCoverUrl(track.cover_art_url) || safeCoverUrl(track.episode?.artwork_url ?? null);
+  const coverUrl = useArtworkFallback(
+    safeCoverUrl(track.cover_art_url),
+    safeCoverUrl(track.episode?.artwork_url ?? null),
+  );
   const meta = (track.metadata ?? {}) as Record<string, any>;
   const isRadarTrack = meta.discovery_method === "radar:curator";
   const hasAudio = !!(track.audio_url || track.preview_url);
@@ -335,6 +340,10 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
       _seed_name: (track as any)._seed_name,
       _seed_artist: (track as any)._seed_artist,
       _seed_title: (track as any)._seed_title,
+      _tangent_id: (track as any)._tangent_id,
+      _tangent_seed_name: (track as any)._tangent_seed_name,
+      _tangent_start_rank: (track as any)._tangent_start_rank,
+      _sonic_seed_name: (track as any)._sonic_seed_name,
     }, origin);
   }, [track, isCurrentTrack, globalPlayer]);
 
@@ -365,20 +374,6 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
   }, [isCurrentTrack, globalPlayer]);
 
   // -- Shared sub-components --
-
-  // Explicit seek labels stay legible at every artwork size. Tiny numerals
-  // embedded in an SVG arc clip and blur on high-DPI screens.
-  const rewindIcon = (
-    <span aria-hidden="true" className="whitespace-nowrap font-mono text-xs font-bold leading-none tracking-[-0.04em]">
-      −0:30
-    </span>
-  );
-
-  const forwardIcon = (
-    <span aria-hidden="true" className="whitespace-nowrap font-mono text-xs font-bold leading-none tracking-[-0.04em]">
-      +0:30
-    </span>
-  );
 
   // Desktop artwork block (rewind | play/pause | forward)
   // Controls hidden when playing, shown on hover over artwork
@@ -412,14 +407,11 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
             : "opacity-100"
         } ${isCurrentTrack && (globalPlayer.loading || globalPlayer.buffering) ? "!opacity-100" : ""}`}>
           {/* Rewind 30s */}
-          <button
-            onClick={handleRewind}
-            className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/20 bg-black/45 px-3 text-white shadow-sm backdrop-blur-sm transition-all hover:border-white/40 hover:bg-black/65 active:scale-95"
-            title="Rewind 30 seconds"
-            aria-label="Rewind 30 seconds"
-          >
-            {rewindIcon}
-          </button>
+          <SeekStepButton
+            direction="back"
+            onSeek={handleRewind}
+            className="bg-black/35 shadow-sm backdrop-blur-sm hover:bg-black/60"
+          />
 
           {/* Play/pause */}
           <button
@@ -446,14 +438,11 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
           </button>
 
           {/* Forward 30s */}
-          <button
-            onClick={handleForward}
-            className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/20 bg-black/45 px-3 text-white shadow-sm backdrop-blur-sm transition-all hover:border-white/40 hover:bg-black/65 active:scale-95"
-            title="Skip ahead 30 seconds"
-            aria-label="Skip ahead 30 seconds"
-          >
-            {forwardIcon}
-          </button>
+          <SeekStepButton
+            direction="forward"
+            onSeek={handleForward}
+            className="bg-black/35 shadow-sm backdrop-blur-sm hover:bg-black/60"
+          />
         </div>
       )}
     </div>
@@ -805,14 +794,11 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
           <div className="absolute inset-0 z-10 flex items-center justify-center">
             <div className="flex items-center gap-4">
               {/* Rewind 30s */}
-              <button
-                onClick={handleRewind}
-                className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/25 bg-black/50 px-3 text-white shadow-sm backdrop-blur-sm transition-all active:scale-95"
-                title="Rewind 30 seconds"
-                aria-label="Rewind 30 seconds"
-              >
-                {rewindIcon}
-              </button>
+              <SeekStepButton
+                direction="back"
+                onSeek={handleRewind}
+                className="bg-black/40 shadow-sm backdrop-blur-sm"
+              />
 
               {/* Play/pause */}
               <button
@@ -844,14 +830,11 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               </button>
 
               {/* Forward 30s */}
-              <button
-                onClick={handleForward}
-                className="flex h-11 min-w-16 items-center justify-center rounded-full border border-white/25 bg-black/50 px-3 text-white shadow-sm backdrop-blur-sm transition-all active:scale-95"
-                title="Skip ahead 30 seconds"
-                aria-label="Skip ahead 30 seconds"
-              >
-                {forwardIcon}
-              </button>
+              <SeekStepButton
+                direction="forward"
+                onSeek={handleForward}
+                className="bg-black/40 shadow-sm backdrop-blur-sm"
+              />
             </div>
           </div>
         )}
@@ -919,11 +902,12 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
             <span className="px-1.5 py-0.5 bg-black/30 backdrop-blur-sm rounded text-[10px] text-white/60 font-medium">
               {sourceLabel(track.source)}
             </span>
-            {typeof track.taste_score === "number" && track.taste_score !== 0 && (
-              <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold backdrop-blur-sm ${
-                track.taste_score > 0 ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-              }`}>
-                {track.taste_score > 0 ? "+" : ""}{track.taste_score.toFixed(2)}
+            {(track as any)._tangent_seed_name && (
+              <span
+                className="max-w-[14rem] truncate rounded bg-emerald-400/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-200 backdrop-blur-sm"
+                title={`Tangent from ${(track as any)._tangent_seed_name}`}
+              >
+                tangent from {(track as any)._tangent_seed_name}
               </span>
             )}
             {Array.isArray(meta.enrichment_sources) && Array.from(new Set(meta.enrichment_sources as string[]))
@@ -1229,16 +1213,9 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               🔭
             </span>
           )}
-          {typeof track.taste_score === "number" && track.taste_score !== 0 && (
-            <span
-              className={`px-2 py-1 rounded-lg text-xs font-mono font-semibold ${
-                track.taste_score > 0
-                  ? "bg-green-500/15 text-green-400"
-                  : "bg-red-500/15 text-red-400"
-              }`}
-              title="Taste score"
-            >
-              {track.taste_score > 0 ? "+" : ""}{track.taste_score.toFixed(2)}
+          {(track as any)._tangent_seed_name && (
+            <span className="max-w-[22rem] truncate rounded-lg bg-emerald-500/15 px-2 py-1 text-xs font-medium text-emerald-300" title={`Tangent from ${(track as any)._tangent_seed_name}`}>
+              tangent from {(track as any)._tangent_seed_name}
             </span>
           )}
           {/* Enrichment source pills — hide if same as download source */}

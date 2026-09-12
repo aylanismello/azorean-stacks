@@ -1,6 +1,8 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import {
   applySeriesSeedContext,
+  applyUserSonicContext,
+  buildFypTangentDelta,
   filterClaimedPreparationTracks,
   orderPreparationTracks,
   diversifyQueueCandidates,
@@ -20,6 +22,127 @@ import {
   type PreparationTrack,
   type WarmQueueRow,
 } from "./predictive-queue";
+
+describe("buildFypTangentDelta", () => {
+  const track = (id: string) => ({ id });
+
+  test("reports only seed-derived additions and movements with exact placement", () => {
+    const delta = buildFypTangentDelta(
+      [track("playing"), track("old-a"), track("fresh-existing"), track("retired")],
+      [track("playing"), track("fresh-new"), track("fresh-existing"), track("old-a")],
+      new Set(["fresh-new", "fresh-existing"]),
+      3,
+    );
+    expect(delta).toEqual({
+      trackIds: ["fresh-new"],
+      addedTrackIds: ["fresh-new"],
+      movedTrackIds: [],
+      removedTrackIds: ["retired"],
+      startRank: 2,
+    });
+  });
+
+  test("returns no tangent when seed candidates did not actually change", () => {
+    const queue = [track("playing"), track("fresh-a"), track("old-a")];
+    expect(buildFypTangentDelta(queue, queue, new Set(["fresh-a"]), 3)).toEqual({
+      trackIds: [],
+      addedTrackIds: [],
+      movedTrackIds: [],
+      removedTrackIds: [],
+      startRank: null,
+    });
+  });
+
+  test("bounds affected seed tracks to the requested lane size", () => {
+    const delta = buildFypTangentDelta(
+      [track("playing")],
+      [track("playing"), track("fresh-a"), track("fresh-b"), track("fresh-c"), track("fresh-d")],
+      new Set(["fresh-a", "fresh-b", "fresh-c", "fresh-d"]),
+      3,
+    );
+    expect(delta.trackIds).toEqual(["fresh-a", "fresh-b", "fresh-c"]);
+    expect(delta.startRank).toBe(2);
+  });
+});
+
+describe("applyUserSonicContext", () => {
+  test("adds bounded sonic evidence only to eligible ranked candidates", async () => {
+    const query: any = {
+      select() { return this; },
+      eq() { return this; },
+      not() { return this; },
+      limit: async () => ({
+        data: [{ id: "seed-1", track_id: "seed-track", artist: "Artist", title: "Seed" }],
+        error: null,
+      }),
+    };
+    let rpcArgs: Record<string, unknown> | null = null;
+    const db: any = {
+      from: (table: string) => {
+        expect(table).toBe("seeds");
+        return query;
+      },
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        expect(name).toBe("match_user_sonic_neighbors");
+        rpcArgs = args;
+        return { data: [{ track_id: "candidate-1", sonic_similarity: 1 }], error: null };
+      },
+    };
+
+    const [ranked, neutral] = await applyUserSonicContext(db, "user-1", [
+      { id: "candidate-1", taste_score: 0.2, metadata: {} },
+      { id: "candidate-2", taste_score: 0.2, metadata: {} },
+    ], "seed-1");
+
+    expect(ranked.taste_score).toBeCloseTo(0.3, 8);
+    expect(ranked.metadata?._score_components).toEqual({ sonic_similarity: 1 });
+    expect(ranked.metadata?._sonic_seed_name).toBe("Artist — Seed");
+    expect(neutral.taste_score).toBe(0.2);
+    const captured = rpcArgs as Record<string, unknown> | null;
+    expect(captured?.["p_candidate_track_ids"]).toEqual(["candidate-1", "candidate-2"]);
+    expect(captured?.["p_seed_track_ids"]).toEqual(["seed-track"]);
+  });
+
+  test("uses recent likes for attraction and rejects for bounded avoidance", async () => {
+    const chain = (rows: any[]) => ({
+      select() { return this; },
+      eq() { return this; },
+      not() { return this; },
+      in() { return this; },
+      order() { return this; },
+      limit: async () => ({ data: rows, error: null }),
+    });
+    const references: string[][] = [];
+    const db: any = {
+      from: (table: string) => table === "seeds"
+        ? chain([{ id: "seed-1", track_id: "seed-track", artist: "Artist", title: "Seed" }])
+        : chain([
+            { track_id: "liked-track", status: "approved" },
+            { track_id: "rejected-track", status: "rejected" },
+          ]),
+      rpc: async (_name: string, args: Record<string, any>) => {
+        references.push(args.p_seed_track_ids);
+        const rejected = args.p_seed_track_ids.includes("rejected-track");
+        return {
+          data: [{ track_id: "candidate-1", sonic_similarity: rejected ? 1 : 0.9 }],
+          error: null,
+        };
+      },
+    };
+
+    const [ranked] = await applyUserSonicContext(db, "user-1", [
+      { id: "candidate-1", taste_score: 0.4, metadata: {} },
+    ]);
+
+    expect(references).toEqual([
+      ["seed-track", "liked-track"],
+      ["rejected-track"],
+    ]);
+    expect(ranked.taste_score).toBeCloseTo(0.38);
+    expect((ranked.metadata?._score_components as Record<string, number>).sonic_similarity).toBeCloseTo(-0.2);
+    expect(ranked.metadata?._sonic_seed_name).toBe("your active seeds and likes");
+  });
+});
 
 describe("mergeStableQueueCandidates", () => {
   const track = (id: string) => ({ id });

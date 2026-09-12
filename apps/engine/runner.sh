@@ -12,6 +12,7 @@ LOG_FILE="$LOG_DIR/azorean-engine.log"
 STATUS_FILE="/Users/pico/.hermes/data/azorean-engine-status.json"
 LOCK_DIR="/tmp/azorean-stacks-engine.lock"
 WATCHER_PID=""
+SONIC_PID=""
 JOB_PID=""
 
 mkdir -p "$LOG_DIR" "$(dirname "$STATUS_FILE")"
@@ -41,11 +42,19 @@ write_status() {
   local phase="$1"
   local status="$2"
   local watcher_alive=false
+  local sonic_alive=false
+  local runtime_alive=false
   if [ -n "$WATCHER_PID" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then
     watcher_alive=true
   fi
-  printf '{"last_run":"%s","phase":"%s","status":"%s","running":%s,"pid":%s,"watcher_pid":%s,"watcher_alive":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" "$status" "$watcher_alive" "$$" "${WATCHER_PID:-null}" "$watcher_alive" > "$STATUS_FILE"
+  if [ -n "$SONIC_PID" ] && kill -0 "$SONIC_PID" 2>/dev/null; then
+    sonic_alive=true
+  fi
+  if [ "$watcher_alive" = true ] && [ "$sonic_alive" = true ]; then
+    runtime_alive=true
+  fi
+  printf '{"last_run":"%s","phase":"%s","status":"%s","running":%s,"pid":%s,"watcher_pid":%s,"watcher_alive":%s,"sonic_pid":%s,"sonic_alive":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$phase" "$status" "$runtime_alive" "$$" "${WATCHER_PID:-null}" "$watcher_alive" "${SONIC_PID:-null}" "$sonic_alive" > "$STATUS_FILE"
 }
 
 load_env() {
@@ -80,6 +89,21 @@ ensure_watcher() {
   fi
 }
 
+start_sonic_worker() {
+  rotate_log
+  printf '[%s] starting CLAP sonic worker\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
+  bun run sonic-worker >> "$LOG_FILE" 2>&1 &
+  SONIC_PID=$!
+}
+
+ensure_sonic_worker() {
+  if [ -z "$SONIC_PID" ] || ! kill -0 "$SONIC_PID" 2>/dev/null; then
+    local old_pid="${SONIC_PID:-none}"
+    printf '[%s] sonic worker PID %s exited; restarting\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$old_pid" >> "$LOG_FILE"
+    start_sonic_worker
+  fi
+}
+
 run_job() {
   local phase="$1"
   shift
@@ -88,6 +112,7 @@ run_job() {
   while kill -0 "$JOB_PID" 2>/dev/null; do
     sleep 5
     ensure_watcher
+    ensure_sonic_worker
   done
   wait "$JOB_PID"
   local code=$?
@@ -105,6 +130,10 @@ cleanup() {
     kill "$WATCHER_PID" 2>/dev/null || true
     wait "$WATCHER_PID" 2>/dev/null || true
   fi
+  if [ -n "$SONIC_PID" ] && kill -0 "$SONIC_PID" 2>/dev/null; then
+    kill "$SONIC_PID" 2>/dev/null || true
+    wait "$SONIC_PID" 2>/dev/null || true
+  fi
   rm -rf "$LOCK_DIR"
 }
 handle_signal() {
@@ -116,11 +145,13 @@ trap handle_signal INT TERM
 cd "$ENGINE_DIR" || exit 1
 load_env
 start_watcher
+start_sonic_worker
 
 printf '[%s] persistent engine supervisor started (PID %s)\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" >> "$LOG_FILE"
 
 while true; do
   ensure_watcher
+  ensure_sonic_worker
   rotate_log
   write_status "lotradio" "running"
   printf '[%s] refreshing Lot Radio index\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOG_FILE"
@@ -154,5 +185,6 @@ while true; do
   for _ in $(seq 1 60); do
     sleep 30
     ensure_watcher
+    ensure_sonic_worker
   done
 done

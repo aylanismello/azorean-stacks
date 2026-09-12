@@ -6,6 +6,7 @@ const SIGNAL_WEIGHTS: Record<string, number> = {
   source_context: 0.18,
   episode_density: 0.12,
   co_occurrence: 0.08,
+  sonic_similarity: 0.1,
 };
 
 export function formatRankingScore(score: number): string {

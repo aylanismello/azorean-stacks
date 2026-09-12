@@ -72,12 +72,17 @@ async function canonicalTrackId(db: SupabaseClient, episodeUrl: string, row: { a
 async function indexEpisode(db: SupabaseClient, seriesId: string, summary: SoulectionEpisodeSummary): Promise<number> {
   // Parse first. A source failure must not replace known-good episode/appearance data.
   const detail = await fetchSoulectionEpisode(summary);
+  const { data: existingEpisode, error: existingEpisodeError } = await db.from("episodes")
+    .select("artwork_url")
+    .eq("url", summary.url)
+    .maybeSingle();
+  if (existingEpisodeError) throw new Error(`Existing episode lookup failed: ${existingEpisodeError.message}`);
   const { data: episode, error: episodeError } = await db.from("episodes").upsert({
     url: summary.url,
     title: detail.title,
     source: "soulection",
     aired_date: summary.releaseDate?.slice(0, 10) || null,
-    artwork_url: detail.artworkUrl || summary.artworkUrl,
+    artwork_url: existingEpisode?.artwork_url || detail.artworkUrl || summary.artworkUrl || null,
     metadata: { source: "soulection", source_tracklist_count: detail.rows.length, indexed_at: new Date().toISOString() },
     series_id: seriesId,
     source_id: summary.id,

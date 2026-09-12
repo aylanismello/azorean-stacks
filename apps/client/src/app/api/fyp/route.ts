@@ -8,6 +8,7 @@ import {
   signOptionalExplorationAudio,
 } from "@/lib/fyp-with-optional-exploration";
 import { parsePagination } from "@/lib/pagination";
+import { buildRankingExposureRows } from "@/lib/ranking-exposure";
 import { injectSeriesExploration, loadSeriesExploration } from "@/lib/series-exploration";
 
 export const dynamic = "force-dynamic";
@@ -71,7 +72,18 @@ export async function GET(req: NextRequest) {
   }
 
   const seedTrackIds = Array.from(new Set(rows.map((t: any) => t.seed_track_id).filter(Boolean)));
-  const episodeIds = Array.from(new Set(rows.map((t: any) => t.episode_id).filter(Boolean)));
+  const rowTrackIds = rows.map((track: any) => track.id);
+  const appearanceResult = rowTrackIds.length
+    ? await db.from("episode_tracks").select("track_id,episode_id,position").in("track_id", rowTrackIds)
+    : { data: [], error: null };
+  if (appearanceResult.error) {
+    return NextResponse.json({ error: appearanceResult.error.message }, { status: 500 });
+  }
+  const appearanceEpisodeIds = (appearanceResult.data || []).map((row: any) => row.episode_id).filter(Boolean);
+  const episodeIds = Array.from(new Set([
+    ...rows.map((track: any) => track.episode_id).filter(Boolean),
+    ...appearanceEpisodeIds,
+  ]));
 
   // Resolve episode lineage only through this user's canonical seeds. The
   // service client bypasses RLS, so both seed ownership and link IDs are
@@ -112,6 +124,13 @@ export async function GET(req: NextRequest) {
   const directSeedByTrack = new Map(
     userSeeds.filter((seed: any) => seed.active && seed.track_id).map((seed: any) => [seed.track_id, seed]),
   );
+  const appearanceEpisodesByTrack = new Map<string, string[]>();
+  for (const appearance of appearanceResult.data || []) {
+    if (!appearance.track_id || !appearance.episode_id) continue;
+    const episodeIdsForTrack = appearanceEpisodesByTrack.get(appearance.track_id) || [];
+    if (!episodeIdsForTrack.includes(appearance.episode_id)) episodeIdsForTrack.push(appearance.episode_id);
+    appearanceEpisodesByTrack.set(appearance.track_id, episodeIdsForTrack);
+  }
 
   // Prefer the requested seed in a seed-filtered view, otherwise the strongest
   // canonical match when an episode has multiple links for this user.
@@ -135,9 +154,17 @@ export async function GET(req: NextRequest) {
 
   const signPromises: Promise<void>[] = [];
   for (const track of rows) {
-    const lineage = lineageMap.get(track.episode_id);
+    const candidateEpisodeIds = Array.from(new Set([
+      ...(track.episode_id ? [track.episode_id] : []),
+      ...(appearanceEpisodesByTrack.get(track.id) || []),
+    ]));
+    const lineageEpisodeId = candidateEpisodeIds.find((episodeId) => lineageMap.get(episodeId)?.requested)
+      || candidateEpisodeIds.find((episodeId) => lineageMap.get(episodeId)?.matchType === "full")
+      || candidateEpisodeIds.find((episodeId) => lineageMap.has(episodeId));
+    const lineage = lineageEpisodeId ? lineageMap.get(lineageEpisodeId) : undefined;
     track.seed_track = seedTrackMap.get(track.seed_track_id) || null;
-    track.episode = episodeMap.get(track.episode_id) || null;
+    const contextEpisodeId = lineageEpisodeId || track.episode_id || candidateEpisodeIds[0];
+    track.episode = episodeMap.get(contextEpisodeId) || null;
     track._match_type = lineage?.matchType || null;
     track._seed_name = lineage ? `${lineage.seed.artist} — ${lineage.seed.title}` : undefined;
     track._seed_artist = lineage?.seed.artist;
@@ -185,11 +212,57 @@ export async function GET(req: NextRequest) {
     updated_at: null,
   };
 
+  const tangentResult = await db.from("user_fyp_tangents")
+    .select("id,seed_id,seed_artist,seed_title,generation,track_ids,added_track_ids,moved_track_ids,removed_track_ids,track_snapshots,removed_track_snapshots,start_rank,created_at")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(10);
+  if (tangentResult.error) {
+    return NextResponse.json({ error: tangentResult.error.message }, { status: 500 });
+  }
+  const tangentRows = tangentResult.data || [];
+  const tangents = tangentRows.map((row: any) => ({
+    id: row.id,
+    seed_id: row.seed_id,
+    seed_name: `${row.seed_artist} — ${row.seed_title}`,
+    generation: Number(row.generation),
+    start_rank: row.start_rank,
+    added_track_ids: row.added_track_ids || [],
+    moved_track_ids: row.moved_track_ids || [],
+    removed_track_ids: row.removed_track_ids || [],
+    tracks: row.track_snapshots || [],
+    removed_tracks: row.removed_track_snapshots || [],
+    created_at: row.created_at,
+  }));
+  const latestTangent = tangents[0] || null;
+  if (latestTangent) {
+    const latestTangentTrackIds = new Set(latestTangent.tracks.map((track: any) => track.id));
+    for (const track of withSeriesExploration) {
+      if (!latestTangentTrackIds.has(track.id)) continue;
+      track._tangent_id = latestTangent.id;
+      track._tangent_seed_name = latestTangent.seed_name;
+      track._tangent_start_rank = latestTangent.start_rank;
+    }
+  }
+
+  if (shouldExplore && Number(generation.generation || 0) > 0) {
+    const exposureRows = buildRankingExposureRows(user.id, Number(generation.generation), rows);
+    if (exposureRows.length) {
+      const exposureResult = await db.from("ranking_exposures").upsert(exposureRows, {
+        onConflict: "user_id,request_id,track_id",
+        ignoreDuplicates: true,
+      });
+      // Ranking measurement must never take the listening queue down.
+      if (exposureResult.error) console.error("[fyp] ranking exposure logging failed:", exposureResult.error.message);
+    }
+  }
+
   // `total` describes the actual personalized page queue. The previous global
   // count included other users' already-actioned rows and was not an FYP count.
   return NextResponse.json({
     tracks: withSeriesExploration,
     total: withSeriesExploration.length,
     generation,
+    tangents,
   });
 }

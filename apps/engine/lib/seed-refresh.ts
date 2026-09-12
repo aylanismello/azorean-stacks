@@ -18,6 +18,7 @@ export interface SeedFypRefreshRecord {
   id: string;
   user_id?: string | null;
   pipeline_status?: Record<string, unknown> | null;
+  source?: string | null;
   fyp_refresh_required_at?: string | null;
   fyp_refreshed_at?: string | null;
 }
