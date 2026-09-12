@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-12 04:19'
-updated_date: '2026-09-12 04:27'
+updated_date: '2026-09-12 04:29'
 labels:
   - ux
   - tangents
@@ -55,4 +55,6 @@ Added an explicit “Grow a tangent from this track” action. It queues the exi
 Rendered each material queue change as an animated growing trunk and branch with staggered leaves, preserved exact insertion ranks and pruned-track details, retained earlier branch history, and disabled motion under prefers-reduced-motion.
 
 Verified with 172 client tests, TypeScript, production build, dependency audit, disposable-account API interaction, desktop and 390x844 browser renders, zero horizontal overflow, three rendered branches, and both tree/X close interactions.
+
+Production verification: commit 1711a7a deployed successfully. A disposable production account rendered the 390x844 tangent side feed with no horizontal overflow, and the same top-right tree button closed it. The disposable account was removed after QA.
 <!-- SECTION:FINAL_SUMMARY:END -->
