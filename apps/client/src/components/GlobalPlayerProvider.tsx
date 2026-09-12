@@ -7,6 +7,7 @@ import { refreshSignedUrl } from "@/lib/player-audio";
 import { canonicalPlayerTrackId } from "@/lib/player-track-identity";
 import { validatedQueueIndex } from "@/lib/queue-navigation";
 import { buildQualifiedListenEvidence } from "@/lib/listen-evidence";
+import { nextPlaybackHistory } from "@/lib/playback-history";
 import {
   createPlaybackSessionId,
   isRepeatLoopTransition,
@@ -163,6 +164,10 @@ interface GlobalPlayerContextType {
   preloadTrack: (track: PlayerTrack) => void;
   /** Ordered playback queue */
   queue: PlayerTrack[];
+  /** Most recently passed tracks, newest first, retained for this browser tab. */
+  history: PlayerTrack[];
+  /** Clear the browser-tab playback history. */
+  clearHistory: () => void;
   /** Current position within the queue */
   currentIndex: number;
   /** Replace the playback queue; if startIndex is provided, seek to that position */
@@ -177,7 +182,9 @@ interface GlobalPlayerContextType {
   prev: () => boolean;
   /** Update a track's vote status in the queue (no array rebuild, no index change) */
   updateTrackVote: (trackId: string, status: string, superLiked?: boolean) => void;
-  /** Mark a discovered track as a user re-seed without interrupting playback */
+  /** Synchronize a track's user-owned re-seed state without interrupting playback. */
+  setTrackSeeded: (trackId: string, seeded: boolean, seedId?: string | null) => void;
+  /** Mark a discovered track as a user re-seed without interrupting playback. */
   markTrackSeeded: (trackId: string, seedId?: string | null) => void;
   /** Append new tracks to the end of the queue (for batch loading) */
   appendToQueue: (tracks: PlayerTrack[]) => void;
@@ -210,6 +217,8 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   switchSource: () => {},
   preloadTrack: () => {},
   queue: [],
+  history: [],
+  clearHistory: () => {},
   currentIndex: 0,
   setQueue: () => {},
   setEpisodeQueue: () => {},
@@ -217,6 +226,7 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   next: () => false,
   prev: () => false,
   updateTrackVote: () => {},
+  setTrackSeeded: () => {},
   markTrackSeeded: () => {},
   appendToQueue: () => {},
   replaceAudioUrl: () => {},
@@ -248,6 +258,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
   // Queue management
   const [queue, setQueueState] = useState<PlayerTrack[]>([]);
+  const [history, setHistory] = useState<PlayerTrack[]>([]);
+  const historyRef = useRef<PlayerTrack[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const queueRef = useRef<PlayerTrack[]>([]);
   const currentIndexRef = useRef(0);
@@ -388,6 +400,37 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   // Track the current track ref for use in stall recovery (avoids stale closures)
   const currentTrackRef = useRef<PlayerTrack | null>(null);
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
+
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem("stacks-playback-history-v1");
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return;
+      const valid = parsed.filter((track): track is PlayerTrack =>
+        !!track && typeof track.id === "string" && typeof track.artist === "string" && typeof track.title === "string"
+      ).slice(0, 50);
+      historyRef.current = valid;
+      setHistory(valid);
+    } catch {
+      sessionStorage.removeItem("stacks-playback-history-v1");
+    }
+  }, []);
+
+  const clearHistory = useCallback(() => {
+    historyRef.current = [];
+    setHistory([]);
+    try { sessionStorage.removeItem("stacks-playback-history-v1"); } catch {}
+  }, []);
+
+  const rememberCurrentTrack = useCallback((nextTrackId: string) => {
+    const next = nextPlaybackHistory(historyRef.current, currentTrackRef.current, nextTrackId);
+    if (next === historyRef.current) return;
+    historyRef.current = next;
+    setHistory(next);
+    try { sessionStorage.setItem("stacks-playback-history-v1", JSON.stringify(next)); } catch {}
+  }, []);
+
   const sourceRef = useRef<PlaybackSource>(null);
   useEffect(() => { sourceRef.current = source; }, [source]);
   const playingRef = useRef(false);
@@ -887,19 +930,24 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     }
   }, []);
 
-  const markTrackSeeded = useCallback((trackId: string, seedId?: string | null) => {
+  const setTrackSeeded = useCallback((trackId: string, seeded: boolean, seedId?: string | null) => {
+    const patchSeedState = (track: PlayerTrack): PlayerTrack => seeded
+      ? { ...track, seed_id: seedId || track.seed_id || track.id, is_re_seed: true }
+      : { ...track, seed_id: null, is_re_seed: false };
     const updater = (list: PlayerTrack[]) =>
       list.map((track) => track.id === trackId || track.catalogTrackId === trackId
-        ? { ...track, seed_id: seedId || track.seed_id || track.id, is_re_seed: true }
+        ? patchSeedState(track)
         : track);
     queueRef.current = updater(queueRef.current);
     setQueueState(updater);
     if (currentTrackRef.current?.id === trackId || currentTrackRef.current?.catalogTrackId === trackId) {
-      setCurrentTrack((track) => track
-        ? { ...track, seed_id: seedId || track.seed_id || track.id, is_re_seed: true }
-        : track);
+      setCurrentTrack((track) => track ? patchSeedState(track) : track);
     }
   }, []);
+
+  const markTrackSeeded = useCallback((trackId: string, seedId?: string | null) => {
+    setTrackSeeded(trackId, true, seedId);
+  }, [setTrackSeeded]);
 
   const appendToQueue = useCallback((tracks: PlayerTrack[]) => {
     const existingIds = new Set(queueRef.current.map((t) => t.id));
@@ -960,6 +1008,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     stopSpotify();
     spotifyTrackStartedRef.current = false;
 
+    rememberCurrentTrack(track.id);
+    currentTrackRef.current = track;
     setCurrentTrack(track);
     setProgress(0);
     setDuration(0);
@@ -998,7 +1048,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       setSource(null);
       setNoSource(true);
     }
-  }, [clearRepeatForDifferentTrack, spotify, startPlaybackAccountingSession, stopAudio, stopSpotify]);
+  }, [clearRepeatForDifferentTrack, spotify, startPlaybackAccountingSession, stopAudio, stopSpotify, rememberCurrentTrack]);
 
   const play = useCallback((track: PlayerTrack, origin?: string) => {
     startPlaybackAccountingSession(track);
@@ -1012,6 +1062,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       .then(() => stopSpotify());
     spotifyTrackStartedRef.current = false;
 
+    rememberCurrentTrack(track.id);
+    currentTrackRef.current = track;
     setCurrentTrack(track);
     setProgress(0);
     setDuration(0);
@@ -1094,7 +1146,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       setLoading(false);
       setNoSource(true);
     }
-  }, [clearRepeatForDifferentTrack, spotify, startPlaybackAccountingSession, stopAudio, stopSpotify, replaceAudioUrl]);
+  }, [clearRepeatForDifferentTrack, spotify, startPlaybackAccountingSession, stopAudio, stopSpotify, replaceAudioUrl, rememberCurrentTrack]);
 
   const playFromQueue = useCallback((index: number, origin?: string) => {
     const track = queueRef.current[index];
@@ -1422,6 +1474,8 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         switchSource,
         preloadTrack,
         queue,
+        history,
+        clearHistory,
         currentIndex,
         setQueue,
         setEpisodeQueue,
@@ -1429,6 +1483,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         next,
         prev,
         updateTrackVote,
+        setTrackSeeded,
         markTrackSeeded,
         appendToQueue,
         replaceAudioUrl,

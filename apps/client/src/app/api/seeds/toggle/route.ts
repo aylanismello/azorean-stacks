@@ -33,6 +33,9 @@ export async function POST(req: NextRequest) {
   if (!artist || !title) {
     return NextResponse.json({ error: "artist and title required" }, { status: 400 });
   }
+  if (action !== "ensure" && action !== "toggle") {
+    return NextResponse.json({ error: "action must be ensure or toggle" }, { status: 400 });
+  }
 
   // Re-seeds are stored as user-owned seed rows so they don't collide with shared base seeds.
   let existingSeed: { id: string } | null = null;

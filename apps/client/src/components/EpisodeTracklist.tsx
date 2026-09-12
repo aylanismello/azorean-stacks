@@ -90,6 +90,7 @@ export function EpisodeTracklist(props: TracklistProps) {
   const [loading, setLoading] = useState(!isDirectMode);
   const [error, setError] = useState<string | null>(null);
   const [showUnplayable, setShowUnplayable] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [directOverrides, setDirectOverrides] = useState<Record<string, Partial<TrackListItem>>>({});
   const [contextMenu, setContextMenu] = useState<{
     track: TrackListItem;
@@ -195,9 +196,28 @@ export function EpisodeTracklist(props: TracklistProps) {
         ...(directOverrides[canonicalIdForRow(track) || track.id] || {}),
       }))
     : rawTracks;
+  const historyTracks: TrackListItem[] = globalPlayer.history.map((track) => ({
+    id: track.id,
+    artist: track.artist,
+    title: track.title,
+    status: track.vote_status || track.status || "pending",
+    spotify_url: track.spotifyUrl || null,
+    youtube_url: track.youtubeUrl || track.youtube_url || null,
+    cover_art_url: track.coverArtUrl || null,
+    preview_url: track.preview_url || null,
+    audio_url: track.audioUrl || null,
+    storage_path: track.storage_path || null,
+    is_seed: track.is_seed,
+    is_re_seed: track.is_re_seed,
+    is_artist_seed: track.is_artist_seed,
+    super_liked: track.super_liked,
+    vote_status: track.vote_status || null,
+    catalogTrackId: track.catalogTrackId || null,
+  }));
+  const displayedTracks = isDirectMode && showHistory ? historyTracks : allTracks;
   const isPlayable = (t: TrackListItem) => !!(t.storage_path || t.audio_url || t.preview_url || t.spotify_url);
-  const playableTracks = allTracks.filter(isPlayable);
-  const unplayableTracks = allTracks.filter((t) => !isPlayable(t));
+  const playableTracks = displayedTracks.filter(isPlayable);
+  const unplayableTracks = displayedTracks.filter((t) => !isPlayable(t));
   const tracks = playableTracks;
 
   // Auto-scroll to playing track when tracklist loads or track changes
@@ -249,6 +269,11 @@ export function EpisodeTracklist(props: TracklistProps) {
     const queuedTrack = globalPlayer.queue.find((queued) => queued.id === t.id);
     if (queuedTrack) {
       globalPlayer.play(queuedTrack, origin);
+      return;
+    }
+    const historyTrack = globalPlayer.history.find((candidate) => candidate.id === t.id);
+    if (historyTrack) {
+      globalPlayer.play(historyTrack, origin);
       return;
     }
     const trackPayload = {
@@ -352,7 +377,7 @@ export function EpisodeTracklist(props: TracklistProps) {
   // Header stats
   const playable = playableTracks.length;
 
-  const displayTitle = listTitle || episodeTitle || "Tracklist";
+  const displayTitle = isDirectMode && showHistory ? "History" : (listTitle || episodeTitle || "Tracklist");
 
   const contextMenuPortal = contextMenu && typeof document !== "undefined"
     ? createPortal(
@@ -431,21 +456,57 @@ export function EpisodeTracklist(props: TracklistProps) {
             </h3>
             {!loading && (
               <div className="flex items-center gap-3 mt-1 text-[10px] font-mono text-muted">
-                <span>{allTracks.length} tracks</span>
+                <span>{displayedTracks.length} tracks</span>
                 {playable > 0 && <span className="text-green-400/70">{playable} playable</span>}
               </div>
             )}
           </div>
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="p-2 rounded-full bg-foreground/10 hover:bg-foreground/20 text-foreground/80 hover:text-foreground transition-colors"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          )}
+          <div className="ml-2 flex flex-shrink-0 items-center gap-1">
+            {isDirectMode && (
+              <button
+                type="button"
+                onClick={() => setShowHistory((current) => !current)}
+                aria-pressed={showHistory}
+                className={`flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[10px] font-medium transition-colors ${
+                  showHistory
+                    ? "bg-accent/15 text-accent"
+                    : "bg-surface-2 text-muted hover:bg-surface-3 hover:text-foreground"
+                }`}
+                title={showHistory ? "Return to queue" : "See recently passed tracks"}
+              >
+                <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 12a9 9 0 1 0 3-6.7" />
+                  <path d="M3 4v6h6" />
+                  <path d="M12 7v5l3 2" />
+                </svg>
+                <span>{showHistory ? "Queue" : `History${globalPlayer.history.length ? ` ${globalPlayer.history.length}` : ""}`}</span>
+              </button>
+            )}
+            {isDirectMode && showHistory && globalPlayer.history.length > 0 && (
+              <button
+                type="button"
+                onClick={globalPlayer.clearHistory}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+                aria-label="Clear playback history"
+                title="Clear history"
+              >
+                <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" />
+                </svg>
+              </button>
+            )}
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-2 rounded-full bg-foreground/10 hover:bg-foreground/20 text-foreground/80 hover:text-foreground transition-colors"
+                aria-label="Close tracklist"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -458,7 +519,9 @@ export function EpisodeTracklist(props: TracklistProps) {
         ) : error ? (
           <p className="text-center text-red-400/70 text-xs py-8">{error}</p>
         ) : tracks.length === 0 && unplayableTracks.length === 0 ? (
-          <p className="text-center text-muted text-xs py-8">No tracks</p>
+          <p className="text-center text-muted text-xs py-8">
+            {isDirectMode && showHistory ? "Nothing has passed by yet." : "No tracks"}
+          </p>
         ) : tracks.length === 0 && unplayableTracks.length > 0 ? (
           <p className="text-center text-muted text-xs py-8">No playable tracks yet — processing</p>
         ) : (

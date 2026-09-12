@@ -94,7 +94,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
     setRejected(vs === "rejected");
     setSkippedVote(vs === "skipped");
     setBadSource(vs === "bad_source");
-    if (trackSeedId || (track as any).is_seeded) setSeeded(true);
+    setSeeded(Boolean(trackSeedId || (track as any).is_seeded || (track as any).is_re_seed));
   }, [track.id, track.status, trackVoteStatus, trackSuperLiked, trackSeedId]);
 
   const handleCopy = useCallback(async () => {
@@ -103,24 +103,26 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
     setTimeout(() => setCopied(false), 1500);
   }, [track.artist, track.title]);
 
-  const handlePlantSeed = useCallback(async () => {
-    if (!actionTargets || seeding || seeded) return; // one-time, irreversible from this screen
+  const handleToggleSeed = useCallback(async () => {
+    if (!actionTargets || seeding) return;
     setSeeding(true);
     try {
       const res = await fetch("/api/seeds/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: actionTargets.trackId, artist: track.artist, title: track.title, action: "ensure" }),
+        body: JSON.stringify({ track_id: actionTargets.trackId, artist: track.artist, title: track.title, action: "toggle" }),
       });
       if (!res.ok) return;
       const data = await res.json();
-      if (data.action === "created" || data.action === "existing") setSeeded(true);
+      const nextSeeded = data.action !== "removed";
+      setSeeded(nextSeeded);
+      globalPlayer.setTrackSeeded(actionTargets.trackId, nextSeeded, data.seed_id || null);
     } catch {
-      // silently fail
+      // Keep the current state when the request fails.
     } finally {
       setSeeding(false);
     }
-  }, [actionTargets, track.artist, track.title, seeding, seeded]);
+  }, [actionTargets, track.artist, track.title, seeding, globalPlayer]);
 
   const isValidFixUrl = useCallback((url: string) => {
     const prefixes = [
@@ -664,19 +666,20 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
         </svg>
       </button>
 
-      {/* Re-seed — one-time operation, irreversible from this screen */}
+      {/* Re-seed toggle */}
       <button
-        onClick={seeded ? undefined : handlePlantSeed}
-        disabled={seeding || seeded}
-        className={`flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 transition-all duration-500 md:h-14 md:w-14 ${
+        onClick={handleToggleSeed}
+        disabled={seeding}
+        aria-pressed={seeded}
+        className={`flex h-12 w-12 items-center justify-center justify-self-center rounded-full border-2 transition-all duration-500 disabled:opacity-50 md:h-14 md:w-14 ${
           seeded
-            ? "bg-emerald-500/20 border-emerald-400/40 text-emerald-400 scale-110 cursor-default opacity-90"
+            ? "bg-emerald-500/20 border-emerald-400 text-emerald-400 scale-110 hover:bg-emerald-500/30 active:scale-95"
             : seeding
             ? "bg-surface-2 border-emerald-400/30 text-emerald-400/50 animate-pulse"
             : "bg-surface-2 md:bg-black/40 border-emerald-400/30 text-emerald-400/80 hover:border-emerald-400/60 hover:text-emerald-300 active:scale-90"
         }`}
-        title={seeded ? "Re-seeded ✓" : "Plant as re-seed"}
-        aria-label={seeded ? "Re-seeded" : "Plant as re-seed"}
+        title={seeded ? "Remove re-seed" : "Plant as re-seed"}
+        aria-label={seeded ? "Remove re-seed" : "Plant as re-seed"}
       >
         <svg aria-hidden="true" className={seeded ? "seed-sprout" : ""} width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 22V10" /><path d="M12 14C8 14 5 11 5 7c4 0 7 3 7 7Z" /><path d="M12 10c0-4 3-7 7-7 0 4-3 7-7 7Z" />
@@ -1055,19 +1058,20 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSkip
               </svg>
             </button>
 
-            {/* Re-seed — one-time, irreversible from this screen */}
+            {/* Re-seed toggle */}
             <button
-              onClick={seeded ? undefined : handlePlantSeed}
-              disabled={seeding || seeded}
-              className={`flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 backdrop-blur-md transition-all duration-500 ${
+              onClick={handleToggleSeed}
+              disabled={seeding}
+              aria-pressed={seeded}
+              className={`flex h-11 w-11 items-center justify-center justify-self-center rounded-full border-2 backdrop-blur-md transition-all duration-500 disabled:opacity-50 ${
                 seeded
-                  ? "bg-emerald-500/20 border-emerald-400/40 text-emerald-400 scale-110 cursor-default opacity-90"
+                  ? "bg-emerald-500/20 border-emerald-400 text-emerald-400 scale-110 hover:bg-emerald-500/30 active:scale-95"
                   : seeding
                   ? "bg-black/40 border-emerald-400/30 text-emerald-400/50 animate-pulse"
                   : "bg-black/40 border-emerald-400/40 text-emerald-300/90 active:scale-90"
               }`}
-              title={seeded ? "Re-seeded ✓" : "Plant as re-seed"}
-              aria-label={seeded ? "Re-seeded" : "Plant as re-seed"}
+              title={seeded ? "Remove re-seed" : "Plant as re-seed"}
+              aria-label={seeded ? "Remove re-seed" : "Plant as re-seed"}
             >
               <svg aria-hidden="true" className={seeded ? "seed-sprout" : ""} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 22V10" /><path d="M12 14C8 14 5 11 5 7c4 0 7 3 7 7Z" /><path d="M12 10c0-4 3-7 7-7 0 4-3 7-7 7Z" />

@@ -487,7 +487,6 @@ function StackPageContent() {
   };
 
   const handleReseed = async (track: PlayerTrack) => {
-    if (track.seed_id || track.is_re_seed) return;
     const actionTrackId = canonicalPlayerTrackId(track);
     if (!actionTrackId) return;
     try {
@@ -498,15 +497,15 @@ function StackPageContent() {
           track_id: actionTrackId,
           artist: track.artist,
           title: track.title,
-          action: "ensure",
+          action: "toggle",
         }),
       });
-      if (!res.ok) throw new Error(`Re-seed failed (${res.status})`);
+      if (!res.ok) throw new Error(`Re-seed update failed (${res.status})`);
       const data = await res.json();
-      globalPlayer.markTrackSeeded(actionTrackId, data.seed_id);
+      globalPlayer.setTrackSeeded(actionTrackId, data.action !== "removed", data.seed_id || null);
     } catch (err) {
       console.error("Re-seed error:", err);
-      setError("Failed to re-seed. Please try again.");
+      setError("Failed to update re-seed. Please try again.");
     }
   };
 

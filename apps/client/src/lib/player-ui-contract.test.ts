@@ -9,6 +9,14 @@ const globalPlayer = readFileSync(
   new URL("../components/GlobalPlayer.tsx", import.meta.url),
   "utf8",
 );
+const globalPlayerProvider = readFileSync(
+  new URL("../components/GlobalPlayerProvider.tsx", import.meta.url),
+  "utf8",
+);
+const seedToggleRoute = readFileSync(
+  new URL("../app/api/seeds/toggle/route.ts", import.meta.url),
+  "utf8",
+);
 const seekStepButton = readFileSync(
   new URL("../components/SeekStepButton.tsx", import.meta.url),
   "utf8",
@@ -41,6 +49,26 @@ describe("player control layout contract", () => {
   test("keeps the six vote actions evenly sized on mobile", () => {
     expect(trackCard).toContain('className="grid w-full grid-cols-6 items-center gap-2"');
     expect(trackCard).toContain("h-11 w-11 items-center justify-center justify-self-center");
+  });
+
+  test("keeps the re-seed sprout clickable as an accessible add/remove toggle", () => {
+    expect(trackCard).toContain('action: "toggle"');
+    expect(trackCard).toContain("onClick={handleToggleSeed}");
+    expect(trackCard).toContain("aria-pressed={seeded}");
+    expect(trackCard).toContain('seeded ? "Remove re-seed" : "Plant as re-seed"');
+    expect(trackCard).not.toContain("disabled={seeding || seeded}");
+    expect(globalPlayerProvider).toContain("setTrackSeeded: (trackId: string, seeded: boolean");
+    expect(seedToggleRoute).toContain('action !== "ensure" && action !== "toggle"');
+  });
+
+  test("keeps recently passed tracks in a replayable browser-tab history", () => {
+    expect(globalPlayerProvider).toContain('sessionStorage.getItem("stacks-playback-history-v1")');
+    expect(globalPlayerProvider).toContain("rememberCurrentTrack(track.id)");
+    expect(globalPlayerProvider).toContain("history,");
+    expect(tracklist).toContain('showHistory ? "Queue"');
+    expect(tracklist).toContain("See recently passed tracks");
+    expect(tracklist).toContain("globalPlayer.history.find");
+    expect(tracklist).toContain("globalPlayer.clearHistory");
   });
 
   test("hides healthy connectivity and shows actionable problems at every width", () => {
