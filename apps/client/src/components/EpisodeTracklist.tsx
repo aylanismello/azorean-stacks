@@ -570,24 +570,24 @@ export function EpisodeTracklist(props: TracklistProps) {
                   {mutation.queueChanges.map((change) => (
                     <div
                       key={`${change.position}:${change.outgoing?.id || "none"}:${change.incoming?.id || "none"}:${change.moved?.id || "none"}`}
-                      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-[9px] font-medium"
+                      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-[11px] font-medium"
                     >
-                      <span className="shrink-0 pt-px tabular-nums text-muted/45">#{change.position}</span>
+                      <span className="shrink-0 pt-px tabular-nums text-foreground/60">#{change.position}</span>
                       <span className="min-w-0">
                         {change.outgoing && (
-                          <span className="discovery-swap-out block break-words text-muted/55 line-through">
+                          <span className="discovery-swap-out block break-words text-foreground/60 line-through">
                             {change.outgoing.artist} — {change.outgoing.title}
                           </span>
                         )}
                         {change.incoming && (
-                          <span className="discovery-swap-in block break-words text-emerald-200/90">
+                          <span className="discovery-swap-in block break-words text-foreground">
                             {change.incoming.artist} — {change.incoming.title}
                           </span>
                         )}
                         {change.moved && (
-                          <span className="discovery-swap-in block break-words text-emerald-200/90">
+                          <span className="discovery-swap-in block break-words text-foreground">
                             {change.moved.artist} — {change.moved.title}
-                            <span className="ml-1 text-muted/60">
+                            <span className="ml-1 text-foreground/65">
                               #{change.fromPosition} → #{change.position}
                             </span>
                           </span>

@@ -1256,13 +1256,13 @@ function StackPageContent() {
           aria-live="polite"
           className={`discovery-mutation-chip pointer-events-none absolute left-1/2 top-12 z-20 flex w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 overflow-hidden rounded-2xl border px-3 py-2.5 shadow-2xl backdrop-blur-xl ${
             discoveryMutation.tone === "negative"
-              ? "border-rose-300/20 bg-rose-950/80"
+              ? "border-rose-300/30 bg-rose-950/95"
               : discoveryMutation.tone === "strong"
-                ? "border-amber-300/25 bg-amber-950/80"
-                : "border-emerald-300/20 bg-emerald-950/80"
+                ? "border-amber-300/30 bg-amber-950/95"
+                : "border-emerald-300/30 bg-emerald-950/95"
           }`}
         >
-          <span className="discovery-mutation-tree flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-emerald-200" aria-hidden="true">
+          <span className="discovery-mutation-tree flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-white" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
               <path d="M5 20c5-2 6-7 6-15" />
               <path d="M10 12c4 0 6-2 8-5" />
@@ -1272,8 +1272,8 @@ function StackPageContent() {
             </svg>
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-[10px] font-semibold text-foreground/90">{discoveryMutation.headline}</span>
-            <span className="mt-0.5 block truncate text-[9px] text-foreground/60">{discoveryMutation.detail}</span>
+            <span className="block text-xs font-semibold text-white">{discoveryMutation.headline}</span>
+            <span className="mt-0.5 block truncate text-[11px] text-white/85">{discoveryMutation.detail}</span>
           </span>
         </div>
       )}

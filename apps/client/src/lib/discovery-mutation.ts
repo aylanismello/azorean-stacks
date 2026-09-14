@@ -41,43 +41,43 @@ export interface DiscoveryMutation {
 
 const ACTION_COPY: Record<DiscoveryAction, Pick<DiscoveryMutation, "headline" | "detail" | "tone">> = {
   skip: {
-    headline: "Keep digging",
-    detail: "Retiring this track and widening the search — not treating it as dislike.",
+    headline: "Skipped",
+    detail: "No opinion saved. Looking for something different.",
     tone: "neutral",
   },
   like: {
-    headline: "Leaning this way",
-    detail: "Nearby sounds gain a little pull; this artist still gets breathing room.",
+    headline: "Liked",
+    detail: "You’ll hear a little more music like this.",
     tone: "positive",
   },
   super_like: {
-    headline: "Strong signal",
-    detail: "This pocket gains more pull without turning the queue into artist radio.",
+    headline: "Loved",
+    detail: "You’ll hear more music like this.",
     tone: "strong",
   },
   reject: {
-    headline: "Moving away",
-    detail: "This sonic pocket recedes from what comes next.",
+    headline: "Not for you",
+    detail: "You’ll hear less music like this.",
     tone: "negative",
   },
   seed: {
-    headline: "New branch planted",
-    detail: "Growing outward from this exact track.",
+    headline: "Finding related tracks",
+    detail: "We’ll add music related to this track.",
     tone: "branch",
   },
   unseed: {
-    headline: "Branch released",
-    detail: "Future digging no longer follows this seed.",
+    headline: "Stopped finding related tracks",
+    detail: "This track will no longer shape what comes next.",
     tone: "neutral",
   },
   tangent: {
-    headline: "A tangent landed",
-    detail: "A seed-derived branch changed the upcoming queue.",
+    headline: "Related tracks added",
+    detail: "Your upcoming queue has been updated.",
     tone: "branch",
   },
   refresh: {
-    headline: "The dig shifted",
-    detail: "The upcoming queue changed with your latest signals.",
+    headline: "Queue updated",
+    detail: "Your upcoming tracks have changed.",
     tone: "neutral",
   },
 };

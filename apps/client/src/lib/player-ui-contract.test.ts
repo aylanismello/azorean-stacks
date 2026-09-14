@@ -115,17 +115,17 @@ describe("player control layout contract", () => {
     expect(tracklist).toContain("neutralSkipOnManualAdvance: false");
   });
 
-  test("uses the tangent tree button as an accessible open/close toggle", () => {
+  test("uses the related-tracks button as an accessible open/close toggle", () => {
     expect(fypPage).toContain("const nextOpen = !tangentPanelOpen");
     expect(fypPage).toContain("setTangentPanelOpen(nextOpen)");
     expect(fypPage).toContain("aria-pressed={tangentPanelOpen}");
-    expect(fypPage).toContain('tangentPanelOpen ? "Close tangent feed" : "Open tangent feed"');
+    expect(fypPage).toContain('tangentPanelOpen ? "Close related tracks" : "Open related tracks"');
   });
 
-  test("exposes a side tangent feed with an explicit branch action and growing tree", () => {
-    expect(fypPage).toContain('aria-label="Tangent feed"');
-    expect(fypPage).toContain("Grow a tangent from this track");
-    expect(fypPage).toContain("New branches will land in your upcoming feed");
+  test("exposes related tracks with an explicit discovery action and growing tree", () => {
+    expect(fypPage).toContain('aria-label="Related tracks"');
+    expect(fypPage).toContain("Find similar tracks");
+    expect(fypPage).toContain("Finding more music like");
     expect(fypPage).toContain("handleTangentReplay(track)");
     expect(fypPage).toContain("It does not replace the active 4U queue");
     expect(fypPage).toContain("tangent-tree-trunk");

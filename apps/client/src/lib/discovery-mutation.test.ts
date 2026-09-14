@@ -11,10 +11,10 @@ import {
 const track = (id: string, artist = `artist-${id}`, title = `title-${id}`) => ({ id, artist, title });
 
 describe("discovery mutation events", () => {
-  test("describes skips as novelty pressure rather than dislike", () => {
+  test("describes skips as neutral in plain language", () => {
     const event = beginDiscoveryMutation("skip", track("old"), 1, 10);
-    expect(event.headline).toBe("Keep digging");
-    expect(event.detail).toContain("not treating it as dislike");
+    expect(event.headline).toBe("Skipped");
+    expect(event.detail).toContain("No opinion saved");
     expect(event.outgoing?.id).toBe("old");
   });
 
@@ -41,7 +41,7 @@ describe("discovery mutation events", () => {
       2,
       { createdAt: 20 },
     );
-    expect(event?.headline).toBe("Leaning this way");
+    expect(event?.headline).toBe("Liked");
     expect(event?.detail).toBe("Old Artist — Old Song out · New Artist — New Song in");
     expect(event?.incomingIds).toEqual(["new"]);
     expect(event?.queueChanges).toEqual([
