@@ -1,11 +1,11 @@
 ---
 id: TASK-33
 title: Treat undecided next-track advances as neutral skips
-status: In Progress
+status: Done
 assignee:
   - '@pico'
 created_date: '2026-09-14 03:13'
-updated_date: '2026-09-14 04:11'
+updated_date: '2026-09-14 15:35'
 labels:
   - player
   - taste
@@ -22,12 +22,12 @@ When a listener advances away from a pending 4U track without making any explici
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Pressing any next-track control on an undecided pending 4U track persists status skipped before advancing
-- [ ] #2 Shift+Right next-track keyboard navigation has the same behavior
-- [ ] #3 Natural track completion does not create an implicit skip
-- [ ] #4 Explicitly decided, seeded, episode-session, and history-replay tracks are not overwritten
-- [ ] #5 Implicit skip uses the existing taste-neutral skip pipeline and bounded novelty pressure
-- [ ] #6 Tests, typecheck, production build, authenticated browser QA, and deployment pass
+- [x] #1 Pressing any next-track control on an undecided pending 4U track persists status skipped before advancing
+- [x] #2 Shift+Right next-track keyboard navigation has the same behavior
+- [x] #3 Natural track completion does not create an implicit skip
+- [x] #4 Explicitly decided, seeded, episode-session, and history-replay tracks are not overwritten
+- [x] #5 Implicit skip uses the existing taste-neutral skip pipeline and bounded novelty pressure
+- [x] #6 Tests, typecheck, production build, authenticated browser QA, and deployment pass
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -57,4 +57,5 @@ When a listener advances away from a pending 4U track without making any explici
 - Authenticated delayed-response browser QA on mobile and desktop returned HTTP 200 for both racing requests, emitted no false skip event/copy, did not double-advance, and allowed the next deliberate Next after the explicit decision. Temporary decisions and session were removed/revoked.
 - Migrations 041-044 serialize implicit skips with re-seeds, align the exact evidence timestamp, and retract only the neutral label created by a winning race. Migration 045 restores the original user/exposure cascade cleanup guards. A live rollback-only assertion passed implicit skip/evidence creation, re-seed restoration to pending with exact evidence retraction, and active-seed exclusion.
 - Manual Next now snapshots a playback-selection revision before persistence. Direct queue/history/replay selection increments that revision, so a delayed response cannot advance from a newly selected track. Final local gate after this fix: 196 tests, TypeScript, production build, dependency audit, and diff check passed.
+- Light-mode discovery-panel copy and contrast were simplified before release: technical tangent/branch/buffer language was replaced with plain queue language, and mint text now meets readable light-theme contrast. Focused tests, TypeScript, and the production build passed. Commit `ec5b9e8` deployed successfully through Vercel.
 <!-- SECTION:NOTES:END -->
