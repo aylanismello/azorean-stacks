@@ -185,7 +185,7 @@ export default function SegundoSolPage() {
         globalPlayer.seek(globalPlayer.progress + 30);
       } else if (action === "next-track") {
         event.preventDefault();
-        globalPlayer.next();
+        void globalPlayer.next();
       } else if (action === "previous-track") {
         event.preventDefault();
         if (globalPlayer.progress > 3) globalPlayer.seek(0);

@@ -78,7 +78,41 @@ describe("player control layout contract", () => {
     expect(tracklist).toContain('showHistory ? "Queue"');
     expect(tracklist).toContain("See recently passed tracks");
     expect(tracklist).toContain("globalPlayer.history.find");
+    expect(tracklist).toContain("queuedIndex < globalPlayer.currentIndex");
+    expect(tracklist).toContain("neutralSkipOnManualAdvance: false");
+    expect(globalPlayerProvider).toContain("play({ ...replayTrack, neutralSkipOnManualAdvance: false })");
     expect(tracklist).toContain("globalPlayer.clearHistory");
+  });
+
+  test("treats manual next on an undecided discovery track as a neutral skip", () => {
+    expect(globalPlayerProvider).toContain('persistImplicitSkip(leavingTrack)');
+    expect(globalPlayerProvider).toContain('updateTrackVote(implicitSkip.trackId, implicitSkip.status)');
+    expect(globalPlayerProvider).toContain("if (implicitSkip.applied)");
+    expect(globalPlayerProvider).toContain("implicitSkipTrackId(leavingTrack, reason)");
+    expect(globalPlayerProvider).toContain('void next("ended")');
+    expect(globalPlayerProvider).toContain("manualAdvancePendingRef.current = true");
+    expect(globalPlayerProvider).toContain("playbackSelectionRevisionRef.current += 1");
+    expect(globalPlayerProvider).toContain("advanceRequestOwnsNavigation(");
+    expect(globalPlayerProvider).toContain("if (reason === \"ended\" && manualAdvancePendingRef.current) return false");
+    expect(globalPlayerProvider).toContain("if (!manualAdvancePendingRef.current) setTrackEndedCount((c) => c + 1)");
+    expect(globalPlayerProvider).toContain("&& !manualAdvancePendingRef.current");
+    expect(fypPage).toContain("if (globalPlayer.manualAdvanceInFlight()) return");
+    expect(globalPlayerProvider).toContain("explicitDecisionOwnsAdvance(");
+    expect(globalPlayerProvider).toContain("currentTrackRef.current = patchSeedState(currentTrackRef.current)");
+    expect(fypPage).toContain("globalPlayer.beginTrackDecision(actionTrackId)");
+    expect(fypPage).toContain("globalPlayer.endTrackDecision(actionTrackId)");
+    expect(fypPage).toContain("globalPlayer.play({ ...sessionTrack, neutralSkipOnManualAdvance: false }");
+    expect(trackCard).toContain("globalPlayer.beginTrackDecision(actionTargets.trackId)");
+    expect(trackCard).toContain("globalPlayer.endTrackDecision(actionTargets.trackId)");
+    const trackCardVoteStart = trackCard.indexOf("const handleVote");
+    expect(trackCard.indexOf("globalPlayer.beginTrackDecision(actionTargets.trackId)", trackCardVoteStart)).toBeLessThan(
+      trackCard.indexOf("await new Promise((r) => setTimeout(r, 250))", trackCardVoteStart),
+    );
+    expect(tracklist).toContain("globalPlayer.beginTrackDecision(actionTrackId)");
+    expect(tracklist).toContain("globalPlayer.endTrackDecision(actionTrackId)");
+    expect(fypPage).toContain("toPlayerTrack(track, !episodeId)");
+    expect(fypPage).toContain("window.addEventListener(IMPLICIT_SKIP_EVENT");
+    expect(tracklist).toContain("neutralSkipOnManualAdvance: false");
   });
 
   test("uses the tangent tree button as an accessible open/close toggle", () => {

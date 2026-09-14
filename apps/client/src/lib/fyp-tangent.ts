@@ -21,20 +21,19 @@ export interface FypTangent {
 
 export function tangentHeadline(tangent: FypTangent): string {
   const count = tangent.tracks.length;
-  const verb = tangent.added_track_ids.length === count ? "added" : "brought forward";
-  return `${count} track${count === 1 ? "" : "s"} from ${tangent.seed_name} ${verb} to your upcoming queue`;
+  return `${count} track${count === 1 ? "" : "s"} inspired by ${tangent.seed_name} ${count === 1 ? "is" : "are"} now in your queue`;
 }
 
 export function tangentDetail(tangent: FypTangent): string {
-  const positions = tangent.start_rank
+  const placement = tangent.start_rank
     ? tangent.tracks.length > 1
-      ? `positions ${tangent.start_rank}–${tangent.start_rank + tangent.tracks.length - 1}`
-      : `position ${tangent.start_rank}`
-    : "the upcoming queue";
+      ? `Coming up in spots ${tangent.start_rank}–${tangent.start_rank + tangent.tracks.length - 1}`
+      : `Coming up in spot ${tangent.start_rank}`
+    : "Added to what’s next";
   const retired = tangent.removed_track_ids.length;
   return retired > 0
-    ? `Placed at ${positions}; ${retired} older track${retired === 1 ? "" : "s"} left the buffer. Your current track did not change.`
-    : `Placed at ${positions}. Your current track did not change.`;
+    ? `${placement}. ${retired} older track${retired === 1 ? " was" : "s were"} moved out. Your music kept playing.`
+    : `${placement}. Your music kept playing.`;
 }
 
 export function shouldRevealTangent(

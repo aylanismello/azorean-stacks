@@ -25,6 +25,7 @@ function isPendingPipelineMigration(error: { code?: string; message?: string }):
     || (error.code === "PGRST202" && (
       message.includes("enqueue_corrected_download_request")
       || message.includes("record_qualified_track_listen")
+      || message.includes("record_implicit_skip")
     ));
 }
 
@@ -33,7 +34,7 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
   const params = await props.params;
   const supabase = getServiceClient();
   const body = await req.json();
-  const { status, super_liked, source_url } = body;
+  const { status, super_liked, source_url, implicit_skip } = body;
 
   // Auth required for all votes
   const authClient = getAuthClient(req);
@@ -158,6 +159,41 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       { error: "Invalid status. Must be: approved, rejected, pending, skipped, listened, bad_source" },
       { status: 400 }
     );
+  }
+
+  // A manual next is taste-neutral, but it must never race over a real vote
+  // or a re-seed. The service RPC serializes both outcomes per user/track.
+  if (status === "skipped" && implicit_skip === true) {
+    const { data: implicitRows, error: implicitError } = await supabase.rpc("record_implicit_skip", {
+      p_user_id: user.id,
+      p_track_id: params.id,
+    });
+    if (implicitError) {
+      if (isPendingPipelineMigration(implicitError)) {
+        return NextResponse.json({
+          error: "Implicit skip persistence is temporarily unavailable while its database migration is applied",
+        }, { status: 503 });
+      }
+      return NextResponse.json({ error: implicitError.message }, { status: 500 });
+    }
+
+    const implicitResult = Array.isArray(implicitRows) ? implicitRows[0] : implicitRows;
+    if (!implicitResult?.status) {
+      return NextResponse.json({ error: "Implicit skip could not be persisted" }, { status: 409 });
+    }
+
+    const { data: track, error: trackError } = await supabase
+      .from("tracks")
+      .select("*")
+      .eq("id", params.id)
+      .single();
+    if (trackError) return NextResponse.json({ error: trackError.message }, { status: 500 });
+    return NextResponse.json({
+      ...track,
+      status: implicitResult.status,
+      voted_at: implicitResult.voted_at,
+      implicit_skip_applied: implicitResult.applied === true,
+    });
   }
 
   // 'listened' is a soft-skip: only set if no explicit vote exists yet

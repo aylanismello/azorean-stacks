@@ -106,6 +106,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeed
 
   const handleToggleSeed = useCallback(async () => {
     if (!actionTargets || seeding) return;
+    globalPlayer.beginTrackDecision(actionTargets.trackId);
     setSeeding(true);
     try {
       const res = await fetch("/api/seeds/toggle", {
@@ -122,6 +123,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeed
     } catch {
       // Keep the current state when the request fails.
     } finally {
+      globalPlayer.endTrackDecision(actionTargets.trackId);
       setSeeding(false);
     }
   }, [actionTargets, track.artist, track.title, seeding, globalPlayer, onSeedChange]);
@@ -227,43 +229,53 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeed
   const handleVote = useCallback(
     async (status: "approved" | "rejected" | "skipped" | "bad_source", advance: boolean = true) => {
       if (!actionTargets || votingRef.current) return;
-      // Reset all vote states (mutual exclusivity) before setting new one
-      setRejected(false);
-      setSkippedVote(false);
-      setBadSource(false);
-      if (status !== "approved") {
-        setKept(false);
-        setSuperLiked(false);
-      }
-      // Set the new vote state
-      if (status === "rejected") setRejected(true);
-      else if (status === "skipped") setSkippedVote(true);
-      else if (status === "bad_source") setBadSource(true);
-      else if (status === "approved") setKept(true);
-      if (!advance) {
-        if (superLiked) return; // already super-liked, don't double-approve
+      globalPlayer.beginTrackDecision(actionTargets.trackId);
+      try {
+        // Reset all vote states (mutual exclusivity) before setting new one
+        setRejected(false);
+        setSkippedVote(false);
+        setBadSource(false);
+        if (status !== "approved") {
+          setKept(false);
+          setSuperLiked(false);
+        }
+        // Set the new vote state
+        if (status === "rejected") setRejected(true);
+        else if (status === "skipped") setSkippedVote(true);
+        else if (status === "bad_source") setBadSource(true);
+        else if (status === "approved") setKept(true);
+        if (!advance) {
+          if (superLiked) return; // already super-liked, don't double-approve
+          reportEngagement();
+          await onVote(actionTargets.trackId, status, false);
+          return;
+        }
         reportEngagement();
-        await onVote(actionTargets.trackId, status, false);
-        return;
+        votingRef.current = true;
+        setVoting(true);
+        setExiting(status === "approved" ? "right" : status === "skipped" ? "right" : "left"); // rejected + bad_source exit left
+        await new Promise((r) => setTimeout(r, 250));
+        await onVote(actionTargets.trackId, status, true);
+      } finally {
+        globalPlayer.endTrackDecision(actionTargets.trackId);
       }
-      reportEngagement();
-      votingRef.current = true;
-      setVoting(true);
-      setExiting(status === "approved" ? "right" : status === "skipped" ? "right" : "left"); // rejected + bad_source exit left
-      await new Promise((r) => setTimeout(r, 250));
-      await onVote(actionTargets.trackId, status, true);
     },
-    [actionTargets, onVote, superLiked, reportEngagement]
+    [actionTargets, onVote, superLiked, reportEngagement, globalPlayer]
   );
 
   const handleAdvance = useCallback(async () => {
     if (!actionTargets || votingRef.current) return;
-    votingRef.current = true;
-    setVoting(true);
-    setExiting("right");
-    await new Promise((r) => setTimeout(r, 250));
-    await onVote(actionTargets.trackId, "approved", true);
-  }, [actionTargets, onVote]);
+    globalPlayer.beginTrackDecision(actionTargets.trackId);
+    try {
+      votingRef.current = true;
+      setVoting(true);
+      setExiting("right");
+      await new Promise((r) => setTimeout(r, 250));
+      await onVote(actionTargets.trackId, "approved", true);
+    } finally {
+      globalPlayer.endTrackDecision(actionTargets.trackId);
+    }
+  }, [actionTargets, onVote, globalPlayer]);
 
   // Touch swipe handlers
   const handleTouchStart = useCallback((e: React.TouchEvent) => {

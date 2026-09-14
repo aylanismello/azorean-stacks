@@ -34,6 +34,7 @@ import {
   type DiscoveryMutation,
   type DiscoveryTrackRef,
 } from "@/lib/discovery-mutation";
+import { IMPLICIT_SKIP_EVENT, type ImplicitSkipEventDetail } from "@/lib/implicit-skip";
 
 export default function StackPage() {
   return (
@@ -50,7 +51,7 @@ export default function StackPage() {
 }
 
 /** Convert an API Track to a PlayerTrack with all fields the UI needs */
-function toPlayerTrack(track: Track): PlayerTrack {
+function toPlayerTrack(track: Track, neutralSkipOnManualAdvance = false): PlayerTrack {
   return {
     id: track.id,
     artist: track.artist,
@@ -107,6 +108,7 @@ function toPlayerTrack(track: Track): PlayerTrack {
 
     // Voted timestamp
     voted_at: track.voted_at,
+    neutralSkipOnManualAdvance,
   };
 }
 
@@ -259,6 +261,19 @@ function StackPageContent() {
     showDiscoveryMutation(event);
   }, [showDiscoveryMutation]);
 
+  useEffect(() => {
+    const onImplicitSkip = (event: Event) => {
+      const detail = (event as CustomEvent<ImplicitSkipEventDetail>).detail;
+      if (!detail?.id) return;
+      userHasInteracted.current = true;
+      beginActionMutation("skip", detail);
+      setVoteCount((count) => count + 1);
+      setTotal((count) => Math.max(0, count - 1));
+    };
+    window.addEventListener(IMPLICIT_SKIP_EVENT, onImplicitSkip);
+    return () => window.removeEventListener(IMPLICIT_SKIP_EVENT, onImplicitSkip);
+  }, [beginActionMutation]);
+
   useEffect(() => () => {
     if (mutationTimerRef.current) clearTimeout(mutationTimerRef.current);
     if (queueMutationTimerRef.current) clearTimeout(queueMutationTimerRef.current);
@@ -340,7 +355,7 @@ function StackPageContent() {
       const data = await res.json();
       if (signal?.aborted) return;
       const apiTracks: Track[] = data.tracks || [];
-      const playerTracks = apiTracks.map(toPlayerTrack);
+      const playerTracks = apiTracks.map((track) => toPlayerTrack(track, !episodeId));
       const generation = data.generation as FypGeneration | undefined;
       const tangents = (data.tangents || []) as FypTangent[];
       const lastGeneration = lastFypGenerationRef.current;
@@ -557,6 +572,7 @@ function StackPageContent() {
     userHasInteracted.current = true;
     const actionTrackId = playerTrackActionId(id, currentTrack, globalPlayer.queue);
     if (!actionTrackId) return;
+    globalPlayer.beginTrackDecision(actionTrackId);
     try {
       const res = await fetch(`/api/tracks/${actionTrackId}`, {
         method: "PATCH",
@@ -583,12 +599,15 @@ function StackPageContent() {
     } catch (err) {
       console.error("Super like error:", err);
       setError("Failed to super like. Please try again.");
+    } finally {
+      globalPlayer.endTrackDecision(actionTrackId);
     }
   };
 
   const handleReseed = async (track: PlayerTrack) => {
     const actionTrackId = canonicalPlayerTrackId(track);
     if (!actionTrackId || tangentSeeding) return;
+    globalPlayer.beginTrackDecision(actionTrackId);
     setTangentSeeding(true);
     setTangentPanelOpen(true);
     setTangentMessage(null);
@@ -613,13 +632,14 @@ function StackPageContent() {
         title: track.title,
       }, data.seed_id || null);
       setTangentMessage(seeded
-        ? `Growing from ${track.artist} — ${track.title}. New branches will land in your upcoming feed.`
-        : `Stopped growing from ${track.artist} — ${track.title}.`);
+        ? `Finding more music like ${track.artist} — ${track.title}.`
+        : `Stopped using ${track.artist} — ${track.title} for recommendations.`);
     } catch (err) {
       console.error("Re-seed error:", err);
       setError("Failed to update re-seed. Please try again.");
-      setTangentMessage("Could not update this tangent. Try again.");
+      setTangentMessage("Could not update your recommendations. Try again.");
     } finally {
+      globalPlayer.endTrackDecision(actionTrackId);
       setTangentSeeding(false);
     }
   };
@@ -628,6 +648,7 @@ function StackPageContent() {
     userHasInteracted.current = true;
     const actionTrackId = playerTrackActionId(id, currentTrack, globalPlayer.queue);
     if (!actionTrackId) return;
+    globalPlayer.beginTrackDecision(actionTrackId);
     try {
       const res = await fetch(`/api/tracks/${actionTrackId}`, {
         method: "PATCH",
@@ -703,7 +724,7 @@ function StackPageContent() {
               if (!data) return;
               const newTracks = (data.tracks || []) as Track[];
               if (newTracks.length > 0) {
-                globalPlayer.appendToQueue(newTracks.map(toPlayerTrack));
+                globalPlayer.appendToQueue(newTracks.map((track) => toPlayerTrack(track, true)));
               }
               setTotal(data.total || 0);
             });
@@ -714,6 +735,8 @@ function StackPageContent() {
     } catch (err) {
       console.error("Vote error:", err);
       setError("Failed to vote. Please try again.");
+    } finally {
+      globalPlayer.endTrackDecision(actionTrackId);
     }
   };
 
@@ -751,7 +774,7 @@ function StackPageContent() {
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (!data?.tracks?.length) return;
-        const playerTracks = (data.tracks as Track[]).map(toPlayerTrack);
+        const playerTracks = (data.tracks as Track[]).map((track) => toPlayerTrack(track, false));
         setTotal(data.total || 0);
         setHasEpisodeTracks(true);
         const firstPlayable = playerTracks.findIndex((t) => t.status === "pending" && isPlayable(t, spotifyConnected));
@@ -769,7 +792,11 @@ function StackPageContent() {
     const idx = globalPlayer.queue.findIndex((t) => t.id === trackId);
     if (idx >= 0) {
       const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
-      globalPlayer.playFromQueue(idx, origin);
+      if (idx < globalPlayer.currentIndex) {
+        globalPlayer.play({ ...globalPlayer.queue[idx], neutralSkipOnManualAdvance: false }, origin);
+      } else {
+        globalPlayer.playFromQueue(idx, origin);
+      }
     }
   }, [globalPlayer]);
 
@@ -780,7 +807,7 @@ function StackPageContent() {
       candidate.id === track.id || canonicalPlayerTrackId(candidate) === track.id
     );
     if (sessionTrack) {
-      globalPlayer.play(sessionTrack, origin);
+      globalPlayer.play({ ...sessionTrack, neutralSkipOnManualAdvance: false }, origin);
       setTangentPanelOpen(false);
       return;
     }
@@ -803,7 +830,7 @@ function StackPageContent() {
       globalPlayer.play(replayTrack, origin);
       setTangentPanelOpen(false);
     } catch (replayError) {
-      setTangentMessage(replayError instanceof Error ? replayError.message : "Could not replay this branch");
+      setTangentMessage(replayError instanceof Error ? replayError.message : "Could not play this track");
     }
   }, [globalPlayer, spotifyConnected]);
 
@@ -855,6 +882,7 @@ function StackPageContent() {
   useEffect(() => {
     if (globalPlayer.trackEndedCount === lastEndedCount.current) return;
     lastEndedCount.current = globalPlayer.trackEndedCount;
+    if (globalPlayer.manualAdvanceInFlight()) return;
 
     const queue = globalPlayer.queue;
 
@@ -898,7 +926,7 @@ function StackPageContent() {
           if (!data) return;
           const newTracks = (data.tracks || []) as Track[];
           if (newTracks.length > 0) {
-            globalPlayer.appendToQueue(newTracks.map(toPlayerTrack));
+            globalPlayer.appendToQueue(newTracks.map((track) => toPlayerTrack(track, true)));
           }
           setTotal(data.total || 0);
         });
@@ -958,7 +986,7 @@ function StackPageContent() {
           globalPlayer.seek(globalPlayer.progress + 30);
           break;
         case "next-track":
-          globalPlayer.next();
+          void globalPlayer.next();
           break;
         case "previous-track":
           if (globalPlayer.progress > 3) globalPlayer.seek(0);
@@ -1185,12 +1213,12 @@ function StackPageContent() {
               }}
               className={`relative flex h-9 w-9 items-center justify-center rounded-full border transition-all duration-300 ${
                 tangentPanelOpen
-                  ? "border-emerald-300/60 bg-emerald-400/10 text-emerald-200 shadow-[0_0_22px_rgba(52,211,153,0.16)]"
+                  ? "tangent-accent-text border-emerald-300/60 bg-emerald-400/10 shadow-[0_0_22px_rgba(52,211,153,0.16)]"
                   : "border-transparent text-muted hover:border-white/10 hover:bg-white/5 hover:text-foreground"
               }`}
               aria-pressed={tangentPanelOpen}
-              aria-label={tangentPanelOpen ? "Close tangent feed" : "Open tangent feed"}
-              title={tangentPanelOpen ? "Close tangent feed" : "Open tangent feed"}
+              aria-label={tangentPanelOpen ? "Close related tracks" : "Open related tracks"}
+              title={tangentPanelOpen ? "Close related tracks" : "Open related tracks"}
             >
               <svg aria-hidden="true" className={tangentPanelOpen ? "tangent-nav-tree" : ""} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M5 19c5-2 6-7 6-14" />
@@ -1254,11 +1282,11 @@ function StackPageContent() {
         <aside
           role="dialog"
           aria-modal="false"
-          aria-label="Tangent feed"
+          aria-label="Related tracks"
           className="tangent-feed-panel absolute right-3 top-12 z-30 flex max-h-[calc(100%-4rem)] w-[min(25rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-3xl border border-emerald-300/20 bg-surface-1/95 shadow-[-18px_24px_80px_rgba(2,44,32,0.42)] backdrop-blur-xl md:right-6"
         >
           <header className="flex items-start gap-3 border-b border-white/10 p-4">
-            <div className="tangent-seed-node flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-emerald-300/40 bg-emerald-400/10 text-emerald-200">
+            <div className="tangent-seed-node tangent-accent-text flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-emerald-300/40 bg-emerald-400/10">
               <svg aria-hidden="true" width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M5 20c5-2 6-7 6-15" />
                 <path d="M10 12c4 0 6-2 8-5" />
@@ -1268,16 +1296,16 @@ function StackPageContent() {
               </svg>
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[9px] font-semibold uppercase tracking-[0.22em] text-emerald-300/80">Tangent feed</p>
-              <h2 className="mt-0.5 text-sm font-semibold text-foreground">Grow the feed sideways</h2>
-              <p className="mt-1 text-[10px] leading-relaxed text-muted">Branch from what is playing. Related tracks grow into your upcoming feed without interrupting this track.</p>
+              <p className="tangent-accent-secondary text-[10px] font-semibold uppercase tracking-[0.22em]">Discover</p>
+              <h2 className="mt-0.5 text-sm font-semibold text-foreground">More like this</h2>
+              <p className="mt-1 text-[11px] leading-relaxed text-foreground/70">Use the song playing now to add similar tracks to your queue. Music keeps playing.</p>
             </div>
             <button
               type="button"
               onClick={() => setTangentPanelOpen(false)}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-white/5 hover:text-foreground"
-              aria-label="Close tangent feed"
-              title="Close tangent feed"
+              aria-label="Close related tracks"
+              title="Close related tracks"
             >
               <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <path d="M6 6l12 12M18 6L6 18" />
@@ -1287,30 +1315,30 @@ function StackPageContent() {
 
           <div className="min-h-0 overflow-y-auto p-4">
             <section className="rounded-2xl border border-emerald-300/15 bg-emerald-400/[0.04] p-3">
-              <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-muted">Branch from current track</p>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-foreground/65">Playing now</p>
               <p className="mt-1 truncate text-xs font-medium text-foreground">{currentTrack.artist} — {currentTrack.title}</p>
               <button
                 type="button"
                 onClick={() => void handleReseed(currentTrack)}
                 disabled={tangentSeeding}
                 aria-pressed={currentTrackIsTangentSeed}
-                className={`mt-3 flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border px-3 text-xs font-semibold transition-all disabled:opacity-50 ${
+                className={`tangent-accent-text mt-3 flex min-h-10 w-full items-center justify-center gap-2 rounded-xl border px-3 text-xs font-semibold transition-all disabled:opacity-50 ${
                   currentTrackIsTangentSeed
-                    ? "border-emerald-300/40 bg-emerald-400/15 text-emerald-200 hover:bg-emerald-400/20"
-                    : "border-emerald-300/25 bg-emerald-400/10 text-emerald-200 hover:border-emerald-300/50 hover:bg-emerald-400/15"
+                    ? "border-emerald-300/40 bg-emerald-400/15 hover:bg-emerald-400/20"
+                    : "border-emerald-300/25 bg-emerald-400/10 hover:border-emerald-300/50 hover:bg-emerald-400/15"
                 }`}
               >
                 <svg aria-hidden="true" className={tangentSeeding ? "animate-pulse" : ""} width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M5 20c5-2 6-7 6-15" /><path d="M10 12c4 0 6-2 8-5" /><circle cx="18" cy="7" r="1.5" fill="currentColor" stroke="none" />
                 </svg>
                 {tangentSeeding
-                  ? "Planting tangent…"
+                  ? "Updating…"
                   : currentTrackIsTangentSeed
-                    ? "Remove this tangent seed"
-                    : "Grow a tangent from this track"}
+                    ? "Stop finding tracks from this song"
+                    : "Find similar tracks"}
               </button>
               {tangentMessage && (
-                <p role="status" aria-live="polite" className="mt-2 text-[10px] leading-relaxed text-emerald-200/80">{tangentMessage}</p>
+                <p role="status" aria-live="polite" className="tangent-accent-secondary mt-2 text-[11px] leading-relaxed">{tangentMessage}</p>
               )}
             </section>
 
@@ -1318,7 +1346,7 @@ function StackPageContent() {
               <section className="mt-4" aria-label={`Tangent from ${activeTangent.seed_name}`}>
                 <div className="mb-3">
                   <p className="text-xs font-semibold leading-snug text-foreground">{tangentHeadline(activeTangent)}</p>
-                  <p className="mt-1 text-[10px] leading-relaxed text-muted">{tangentDetail(activeTangent)}</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-foreground/70">{tangentDetail(activeTangent)}</p>
                 </div>
 
                 <div className="tangent-tree-list relative space-y-2">
@@ -1335,12 +1363,12 @@ function StackPageContent() {
                         className="group flex w-full items-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2.5 text-left transition-colors hover:border-emerald-300/25 hover:bg-emerald-400/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/40"
                         aria-label={`Play ${track.artist} — ${track.title}; branched from ${activeTangent.seed_name}`}
                       >
-                        <span className="font-mono text-[9px] text-emerald-300">{activeTangent.start_rank ? activeTangent.start_rank + index : "•"}</span>
+                        <span className="tangent-accent-secondary font-mono text-[10px]">{activeTangent.start_rank ? activeTangent.start_rank + index : "•"}</span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[11px] text-foreground">{track.artist} — {track.title}</span>
-                          <span className="mt-0.5 block truncate text-[8px] text-emerald-300/55">from {activeTangent.seed_name}</span>
+                          <span className="tangent-accent-secondary mt-0.5 block truncate text-[9px]">Inspired by {activeTangent.seed_name}</span>
                         </span>
-                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" className="shrink-0 text-emerald-200/45 transition-colors group-hover:text-emerald-200">
+                        <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" className="tangent-accent-secondary shrink-0 transition-opacity group-hover:opacity-80">
                           <path d="M8 5v14l11-7z" />
                         </svg>
                       </button>
@@ -1349,21 +1377,21 @@ function StackPageContent() {
                 </div>
 
                 {activeTangent.removed_tracks.length > 0 && (
-                  <div className="mt-3 rounded-xl border border-white/5 bg-black/10 px-3 py-2 text-[9px] leading-relaxed text-muted">
-                    Pruned from the buffer: {activeTangent.removed_tracks.map((track) => `${track.artist} — ${track.title}`).join(", ")}
+                  <div className="mt-3 rounded-xl border border-white/5 bg-black/10 px-3 py-2 text-[10px] leading-relaxed text-foreground/65">
+                    Moved out: {activeTangent.removed_tracks.map((track) => `${track.artist} — ${track.title}`).join(", ")}
                   </div>
                 )}
               </section>
             ) : (
               <div className="py-8 text-center">
-                <p className="text-xs font-medium text-foreground">No branches yet</p>
-                <p className="mx-auto mt-1 max-w-56 text-[10px] leading-relaxed text-muted">Choose “Grow a tangent” above. The evolving branch will appear here as it changes your upcoming feed.</p>
+                <p className="text-xs font-medium text-foreground">Nothing here yet</p>
+                <p className="mx-auto mt-1 max-w-56 text-[11px] leading-relaxed text-foreground/70">Choose “Find similar tracks” to add music inspired by what is playing.</p>
               </div>
             )}
 
             {recentTangents.length > 1 && (
               <section className="mt-4 border-t border-white/10 pt-3">
-                <p className="mb-2 text-[9px] font-semibold uppercase tracking-[0.18em] text-muted">Earlier branches</p>
+                <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-foreground/65">Recent searches</p>
                 <div className="flex gap-2 overflow-x-auto pb-1">
                   {recentTangents.slice(0, 10).map((tangent) => (
                     <button
@@ -1372,7 +1400,7 @@ function StackPageContent() {
                       onClick={() => setActiveTangent(tangent)}
                       className={`min-w-36 rounded-xl border px-3 py-2 text-left transition-colors ${
                         tangent.id === activeTangent?.id
-                          ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100"
+                          ? "tangent-accent-text border-emerald-300/30 bg-emerald-400/10"
                           : "border-white/10 text-muted hover:bg-white/5 hover:text-foreground"
                       }`}
                     >

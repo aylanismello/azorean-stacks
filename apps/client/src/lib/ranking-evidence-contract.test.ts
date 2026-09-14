@@ -7,6 +7,18 @@ const fypRoute = readFileSync(join(clientRoot, "app/api/fyp/route.ts"), "utf8");
 const exposureHelper = readFileSync(join(clientRoot, "lib/ranking-exposure.ts"), "utf8");
 const trackRoute = readFileSync(join(clientRoot, "app/api/tracks/[id]/route.ts"), "utf8");
 const page = readFileSync(join(clientRoot, "app/page.tsx"), "utf8");
+const outcomePrecedenceMigration = readFileSync(
+  join(clientRoot, "../supabase/migrations/039_explicit_ranking_outcome_precedence.sql"),
+  "utf8",
+);
+const outcomePromotionMigration = readFileSync(
+  join(clientRoot, "../supabase/migrations/040_allow_explicit_ranking_outcome_promotion.sql"),
+  "utf8",
+);
+const restoredCascadeGuardMigration = readFileSync(
+  join(clientRoot, "../supabase/migrations/045_restore_ranking_evidence_cascade_guards.sql"),
+  "utf8",
+);
 
 describe("empirical ranking evidence wiring", () => {
   test("logs each home generation once without making the queue depend on telemetry", () => {
@@ -33,5 +45,18 @@ describe("empirical ranking evidence wiring", () => {
     expect(trackRoute.match(/supabase\.rpc\("record_ranking_outcome"/g)?.length).toBe(3);
     expect(trackRoute).not.toContain('authClient.rpc("record_ranking_outcome"');
     expect(trackRoute).toContain('["approved", "rejected", "skipped"].includes(status)');
+  });
+
+  test("lets explicit outcomes supersede neutral evidence without the reverse", () => {
+    expect(outcomePrecedenceMigration).toContain("on conflict (exposure_id) do update");
+    expect(outcomePrecedenceMigration).toContain("ranking_outcomes.outcome in ('skipped', 'listened')");
+    expect(outcomePrecedenceMigration).toContain("excluded.outcome in ('approved', 'rejected')");
+    expect(outcomePromotionMigration).toContain("old.outcome in ('skipped', 'listened')");
+    expect(outcomePromotionMigration).toContain("new.outcome in ('approved', 'rejected')");
+    expect(outcomePromotionMigration).toContain("new.exposure_id = old.exposure_id");
+    expect(outcomePromotionMigration).toContain("new.outcome_at >= old.outcome_at");
+    expect(restoredCascadeGuardMigration).toContain("select 1 from auth.users");
+    expect(restoredCascadeGuardMigration).toContain("select 1 from public.ranking_exposures");
+    expect(restoredCascadeGuardMigration).not.toContain("ranking_exposure_cleanup_log");
   });
 });

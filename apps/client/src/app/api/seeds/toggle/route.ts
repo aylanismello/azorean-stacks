@@ -30,8 +30,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  if (!artist || !title) {
-    return NextResponse.json({ error: "artist and title required" }, { status: 400 });
+  if (!track_id || !artist || !title) {
+    return NextResponse.json({ error: "track_id, artist and title required" }, { status: 400 });
   }
   if (action !== "ensure" && action !== "toggle") {
     return NextResponse.json({ error: "action must be ensure or toggle" }, { status: 400 });
@@ -81,23 +81,13 @@ export async function POST(req: NextRequest) {
 
   // Create new re-seed
   const now = new Date();
-  const { data: newSeed, error } = await db
-    .from("seeds")
-    .insert({
-      artist: artist.trim(),
-      title: title.trim(),
-      track_id: track_id || null,
-      user_id: user.id,
-      source: "re-seed",
-      fyp_refresh_required_at: now.toISOString(),
-      pipeline_status: {
-        state: "queued",
-        started_at: now.toISOString(),
-        log: [{ t: now.toTimeString().slice(0, 8), msg: "re-seed queued for discovery" }],
-      },
-    })
-    .select("id")
-    .single();
+  const { data: newSeedId, error } = await db.rpc("create_reseed", {
+    p_user_id: user.id,
+    p_track_id: track_id,
+    p_artist: artist.trim(),
+    p_title: title.trim(),
+    p_now: now.toISOString(),
+  });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -105,7 +95,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(
     {
       action: "created",
-      seed_id: newSeed.id,
+      seed_id: newSeedId,
       queued: true,
     },
     { status: 201 }

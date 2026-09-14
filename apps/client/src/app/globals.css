@@ -17,6 +17,8 @@
   --accent-bright: 232 185 106;
   --muted: 102 102 102;
   --foreground: 255 255 255;
+  --tangent-accent-readable: 167 243 208;
+  --tangent-accent-secondary: 110 231 183;
   color-scheme: dark;
 }
 
@@ -31,6 +33,8 @@
   --accent-bright: 196 144 40;
   --muted: 130 124 118;
   --foreground: 28 25 23;
+  --tangent-accent-readable: 6 95 70;
+  --tangent-accent-secondary: 4 120 87;
   color-scheme: light;
 }
 
@@ -207,6 +211,12 @@ audio::-webkit-media-controls-panel {
 }
 .tangent-feed-panel {
   animation: tangent-feed-panel-in 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.tangent-accent-text {
+  color: rgb(var(--tangent-accent-readable));
+}
+.tangent-accent-secondary {
+  color: rgb(var(--tangent-accent-secondary));
 }
 .tangent-nav-tree path,
 .tangent-tree-branch path {

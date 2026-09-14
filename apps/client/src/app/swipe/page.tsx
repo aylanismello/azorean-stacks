@@ -16,6 +16,7 @@ function toPlayerTrack(track: Track): PlayerTrack {
     episodeId: track.episode_id,
     episodeTitle: track.episode?.title,
     youtubeUrl: track.youtube_url,
+    neutralSkipOnManualAdvance: true,
     vote_status: (track as any).vote_status || track.status || "pending",
     super_liked: track.super_liked || false,
     status: track.status,
@@ -369,6 +370,7 @@ function SwipePageContent() {
     votingRef.current = true;
 
     const currentTrack = tracks[0];
+    globalPlayer.beginTrackDecision(currentTrack.id);
     let status: string;
     let superLiked = false;
 
@@ -408,6 +410,7 @@ function SwipePageContent() {
     } catch (err) {
       console.error("Vote error:", err);
       // Don't remove the card if the vote failed — let the user retry
+      globalPlayer.endTrackDecision(currentTrack.id);
       votingRef.current = false;
       return;
     }
@@ -430,6 +433,7 @@ function SwipePageContent() {
       return next;
     });
 
+    globalPlayer.endTrackDecision(currentTrack.id);
     votingRef.current = false;
   }, [tracks, globalPlayer, spotifyConnected]);
 

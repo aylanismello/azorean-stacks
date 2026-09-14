@@ -334,7 +334,7 @@ export function GlobalPlayer() {
 
             {/* Next track */}
             <button
-              onClick={next}
+              onClick={() => { void next(); }}
               disabled={!canGoNext}
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-foreground/75 transition-all hover:bg-surface-3 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted sm:h-9 sm:w-9"
               title="Next track"

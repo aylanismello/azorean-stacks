@@ -276,14 +276,18 @@ export function EpisodeTracklist(props: TracklistProps) {
   const handlePlay = (t: TrackListItem) => {
     const audioUrl = t.audio_url || t.preview_url || null;
     const origin = typeof window !== "undefined" ? window.location.pathname + window.location.search : "/";
-    const queuedTrack = globalPlayer.queue.find((queued) => queued.id === t.id);
+    const queuedIndex = globalPlayer.queue.findIndex((queued) => queued.id === t.id);
+    const queuedTrack = queuedIndex >= 0 ? globalPlayer.queue[queuedIndex] : null;
     if (queuedTrack) {
-      globalPlayer.play(queuedTrack, origin);
+      const isReplay = showHistory || queuedIndex < globalPlayer.currentIndex;
+      globalPlayer.play(isReplay
+        ? { ...queuedTrack, neutralSkipOnManualAdvance: false }
+        : queuedTrack, origin);
       return;
     }
     const historyTrack = globalPlayer.history.find((candidate) => candidate.id === t.id);
     if (historyTrack) {
-      globalPlayer.play(historyTrack, origin);
+      globalPlayer.play({ ...historyTrack, neutralSkipOnManualAdvance: false }, origin);
       return;
     }
     const trackPayload = {
@@ -327,6 +331,8 @@ export function EpisodeTracklist(props: TracklistProps) {
 
   const handleContextAction = async (action: EpisodeTracklistAction) => {
     if (!contextMenu || contextAction) return;
+    const actionTrackId = contextMenu.canonicalId;
+    globalPlayer.beginTrackDecision(actionTrackId);
     setContextAction(action);
     setContextError(null);
     try {
@@ -371,6 +377,7 @@ export function EpisodeTracklist(props: TracklistProps) {
     } catch (actionError) {
       setContextError(actionError instanceof Error ? actionError.message : "Action failed");
     } finally {
+      globalPlayer.endTrackDecision(actionTrackId);
       setContextAction(null);
     }
   };

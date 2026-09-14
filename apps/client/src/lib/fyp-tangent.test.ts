@@ -20,11 +20,11 @@ const tangent: FypTangent = {
 };
 
 describe("FYP tangent presentation", () => {
-  test("states the seed, change and exact placement", () => {
-    expect(tangentHeadline(tangent)).toContain("3 tracks from Chancha Via Circuito — Jardines added");
-    expect(tangentDetail(tangent)).toContain("positions 6–8");
-    expect(tangentDetail(tangent)).toContain("1 older track left");
-    expect(tangentDetail(tangent)).toContain("current track did not change");
+  test("explains the result and placement in plain language", () => {
+    expect(tangentHeadline(tangent)).toContain("3 tracks inspired by Chancha Via Circuito — Jardines");
+    expect(tangentDetail(tangent)).toContain("spots 6–8");
+    expect(tangentDetail(tangent)).toContain("1 older track was moved out");
+    expect(tangentDetail(tangent)).toContain("music kept playing");
   });
 
   test("reveals only when a tangible seed track is added or actually reordered", () => {

@@ -9,6 +9,13 @@ import { validatedQueueIndex } from "@/lib/queue-navigation";
 import { buildQualifiedListenEvidence } from "@/lib/listen-evidence";
 import { nextPlaybackHistory } from "@/lib/playback-history";
 import {
+  advanceRequestOwnsNavigation,
+  explicitDecisionOwnsAdvance,
+  IMPLICIT_SKIP_EVENT,
+  implicitSkipTrackId,
+  persistImplicitSkip,
+} from "@/lib/implicit-skip";
+import {
   createPlaybackSessionId,
   isRepeatLoopTransition,
   nextPlaybackReport,
@@ -97,6 +104,8 @@ export interface PlayerTrack {
 
   // Voted timestamp
   voted_at?: string | null;
+  /** Manual next should persist an undecided track as a neutral skip. */
+  neutralSkipOnManualAdvance?: boolean;
 }
 
 export interface EpisodePlaybackSession {
@@ -177,11 +186,17 @@ interface GlobalPlayerContextType {
   /** Jump to a specific position in the queue and start playing */
   playFromQueue: (index: number, origin?: string) => void;
   /** Advance to the next track in the queue; returns false if at end */
-  next: () => boolean;
+  next: (reason?: "manual" | "ended") => Promise<boolean>;
+  /** Whether a manual next is waiting for its neutral decision to persist. */
+  manualAdvanceInFlight: () => boolean;
   /** Go back to the previous track in the queue; returns false if at start */
   prev: () => boolean;
   /** Update a track's vote status in the queue (no array rebuild, no index change) */
   updateTrackVote: (trackId: string, status: string, superLiked?: boolean) => void;
+  /** Mark an explicit decision request so manual-next cannot race it. */
+  beginTrackDecision: (trackId: string) => void;
+  /** Release an explicit decision request after it settles. */
+  endTrackDecision: (trackId: string) => void;
   /** Synchronize a track's user-owned re-seed state without interrupting playback. */
   setTrackSeeded: (trackId: string, seeded: boolean, seedId?: string | null) => void;
   /** Mark a discovered track as a user re-seed without interrupting playback. */
@@ -223,9 +238,12 @@ const GlobalPlayerContext = createContext<GlobalPlayerContextType>({
   setQueue: () => {},
   setEpisodeQueue: () => {},
   playFromQueue: () => {},
-  next: () => false,
+  next: async () => false,
+  manualAdvanceInFlight: () => false,
   prev: () => false,
   updateTrackVote: () => {},
+  beginTrackDecision: () => {},
+  endTrackDecision: () => {},
   setTrackSeeded: () => {},
   markTrackSeeded: () => {},
   appendToQueue: () => {},
@@ -263,6 +281,10 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   const [currentIndex, setCurrentIndex] = useState(0);
   const queueRef = useRef<PlayerTrack[]>([]);
   const currentIndexRef = useRef(0);
+  const manualAdvancePendingRef = useRef(false);
+  const playbackSelectionRevisionRef = useRef(0);
+  const trackDecisionRevisionRef = useRef(new Map<string, number>());
+  const pendingTrackDecisionRef = useRef(new Map<string, number>());
   const [episodeSession, setEpisodeSession] = useState<EpisodePlaybackSession | null>(null);
   const episodeSessionRef = useRef<EpisodePlaybackSession | null>(null);
   const lastScheduledEpisodePositionRef = useRef<number | null>(null);
@@ -492,7 +514,12 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
 
     const onPlay = () => { setPlaying(true); setLoading(false); setBuffering(false); };
     const onPause = () => { setPlaying(false); setNativePlaybackActive(false); };
-    const onEnded = () => { setPlaying(false); setNativePlaybackActive(false); setProgress(0); setTrackEndedCount((c) => c + 1); };
+    const onEnded = () => {
+      setPlaying(false);
+      setNativePlaybackActive(false);
+      setProgress(0);
+      if (!manualAdvancePendingRef.current) setTrackEndedCount((c) => c + 1);
+    };
     const onWaiting = () => { setNativePlaybackActive(false); setLoading(true); setBuffering(true); };
     const onStalled = () => { setNativePlaybackActive(false); setBuffering(true); };
     const onPlaying = () => { setNativePlaybackActive(true); setLoading(false); setBuffering(false); isRecoveringRef.current = false; };
@@ -674,7 +701,13 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     setDuration(dur);
 
     // Detect track ended: position resets to 0 and paused, after we were playing
-    if (spotify.playerState.paused && pos === 0 && prevSpotifyPositionRef.current > 0 && dur > 0) {
+    if (
+      spotify.playerState.paused
+      && pos === 0
+      && prevSpotifyPositionRef.current > 0
+      && dur > 0
+      && !manualAdvancePendingRef.current
+    ) {
       setTrackEndedCount((c) => c + 1);
     }
     prevSpotifyPositionRef.current = pos;
@@ -715,7 +748,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (!noSource || !currentTrack) return;
     // Small delay so the UI can briefly show "No audio source" before advancing
     const timer = setTimeout(() => {
-      setTrackEndedCount((c) => c + 1);
+      if (!manualAdvancePendingRef.current) setTrackEndedCount((c) => c + 1);
     }, 800);
     return () => clearTimeout(timer);
   }, [noSource, currentTrack]);
@@ -899,6 +932,23 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       .catch(() => {});
   }, [currentIndex, episodeSession]);
 
+  const beginTrackDecision = useCallback((trackId: string) => {
+    trackDecisionRevisionRef.current.set(
+      trackId,
+      (trackDecisionRevisionRef.current.get(trackId) ?? 0) + 1,
+    );
+    pendingTrackDecisionRef.current.set(
+      trackId,
+      (pendingTrackDecisionRef.current.get(trackId) ?? 0) + 1,
+    );
+  }, []);
+
+  const endTrackDecision = useCallback((trackId: string) => {
+    const remaining = (pendingTrackDecisionRef.current.get(trackId) ?? 1) - 1;
+    if (remaining > 0) pendingTrackDecisionRef.current.set(trackId, remaining);
+    else pendingTrackDecisionRef.current.delete(trackId);
+  }, []);
+
   const updateTrackVote = useCallback((trackId: string, status: string, superLiked?: boolean) => {
     const updater = (list: PlayerTrack[]) =>
       list.map((t) =>
@@ -914,8 +964,18 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       );
     queueRef.current = updater(queueRef.current);
     setQueueState(updater);
-    // Also update currentTrack if it matches
+    // Also update currentTrack if it matches. Keep the ref synchronous so a
+    // following navigation stores the decided row in playback history.
     if (currentTrackRef.current?.id === trackId || currentTrackRef.current?.catalogTrackId === trackId) {
+      currentTrackRef.current = currentTrackRef.current
+        ? {
+            ...currentTrackRef.current,
+            vote_status: status as PlayerTrack["vote_status"],
+            status,
+            super_liked: superLiked ?? (status === "approved" ? currentTrackRef.current.super_liked : false),
+            voted_at: new Date().toISOString(),
+          }
+        : currentTrackRef.current;
       setCurrentTrack((prev) =>
         prev
           ? {
@@ -941,6 +1001,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     queueRef.current = updater(queueRef.current);
     setQueueState(updater);
     if (currentTrackRef.current?.id === trackId || currentTrackRef.current?.catalogTrackId === trackId) {
+      if (currentTrackRef.current) currentTrackRef.current = patchSeedState(currentTrackRef.current);
       setCurrentTrack((track) => track ? patchSeedState(track) : track);
     }
   }, []);
@@ -1001,6 +1062,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, []);
 
   const loadTrack = useCallback((track: PlayerTrack, origin?: string) => {
+    playbackSelectionRevisionRef.current += 1;
     startPlaybackAccountingSession(track);
     clearRepeatForDifferentTrack(track);
     // Stop whatever is currently playing
@@ -1051,6 +1113,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
   }, [clearRepeatForDifferentTrack, spotify, startPlaybackAccountingSession, stopAudio, stopSpotify, rememberCurrentTrack]);
 
   const play = useCallback((track: PlayerTrack, origin?: string) => {
+    playbackSelectionRevisionRef.current += 1;
     startPlaybackAccountingSession(track);
     clearRepeatForDifferentTrack(track);
     // Serialize a Spotify-to-Spotify track change so a late pause request cannot
@@ -1156,8 +1219,69 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     play(track, origin);
   }, [play]);
 
-  const next = useCallback(() => {
-    const queueIndex = validatedQueueIndex(
+  const next = useCallback(async (reason: "manual" | "ended" = "manual") => {
+    if (reason === "ended" && manualAdvancePendingRef.current) return false;
+    let queueIndex = validatedQueueIndex(
+      queueRef.current,
+      currentIndexRef.current,
+      currentTrackRef.current?.id,
+    );
+    if (queueIndex + 1 >= queueRef.current.length) return false;
+
+    const leavingTrack = currentTrackRef.current;
+    const selectionRevision = playbackSelectionRevisionRef.current;
+    const implicitTrackId = implicitSkipTrackId(leavingTrack, reason);
+    if (leavingTrack && implicitTrackId) {
+      if (manualAdvancePendingRef.current) return false;
+      const decisionRevision = trackDecisionRevisionRef.current.get(implicitTrackId) ?? 0;
+      if (explicitDecisionOwnsAdvance(
+        pendingTrackDecisionRef.current.get(implicitTrackId) ?? 0,
+        decisionRevision,
+        decisionRevision,
+      )) return false;
+      manualAdvancePendingRef.current = true;
+      try {
+        const implicitSkip = await persistImplicitSkip(leavingTrack);
+        if (implicitSkip) {
+          // If a like/reject/super-like/seed action began while the neutral
+          // request was in flight, that explicit action owns both state and navigation.
+          if (explicitDecisionOwnsAdvance(
+            pendingTrackDecisionRef.current.get(implicitTrackId) ?? 0,
+            decisionRevision,
+            trackDecisionRevisionRef.current.get(implicitTrackId) ?? 0,
+          )) {
+            return false;
+          }
+          updateTrackVote(implicitSkip.trackId, implicitSkip.status);
+          if (implicitSkip.applied) {
+            window.dispatchEvent(new CustomEvent(IMPLICIT_SKIP_EVENT, {
+              detail: {
+                id: implicitSkip.trackId,
+                artist: leavingTrack.artist,
+                title: leavingTrack.title,
+              },
+            }));
+          }
+        }
+      } catch {
+        setToast({ message: "Couldn't save this neutral skip — still on this track", id: Date.now() });
+        return false;
+      } finally {
+        manualAdvancePendingRef.current = false;
+      }
+    }
+
+    // A direct queue/history selection may happen while persistence is pending.
+    // Keep the write for the originally skipped track, but never let that stale
+    // request advance from the listener's newly selected track.
+    if (!advanceRequestOwnsNavigation(
+      selectionRevision,
+      playbackSelectionRevisionRef.current,
+    )) return false;
+
+    // A successful skip can trigger a live queue refresh while the request is
+    // in flight, so resolve the next position against the latest queue.
+    queueIndex = validatedQueueIndex(
       queueRef.current,
       currentIndexRef.current,
       currentTrackRef.current?.id,
@@ -1166,7 +1290,12 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (nextIdx >= queueRef.current.length) return false;
     playFromQueue(nextIdx);
     return true;
-  }, [playFromQueue]);
+  }, [playFromQueue, updateTrackVote]);
+
+  const manualAdvanceInFlight = useCallback(
+    () => manualAdvancePendingRef.current,
+    [],
+  );
 
   const prev = useCallback(() => {
     const queueIndex = validatedQueueIndex(
@@ -1176,9 +1305,13 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     );
     const prevIdx = queueIndex - 1;
     if (prevIdx < 0) return false;
-    playFromQueue(prevIdx);
+    const replayTrack = queueRef.current[prevIdx];
+    if (!replayTrack) return false;
+    currentIndexRef.current = prevIdx;
+    setCurrentIndex(prevIdx);
+    play({ ...replayTrack, neutralSkipOnManualAdvance: false });
     return true;
-  }, [playFromQueue]);
+  }, [play]);
 
   // Ordinary queue pages retain their existing end handling. Dedicated episode
   // sessions advance here so playback survives navigation away from the mix page
@@ -1187,7 +1320,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
     if (!episodeSession) return;
     if (trackEndedCount === lastEpisodeEndedCountRef.current) return;
     lastEpisodeEndedCountRef.current = trackEndedCount;
-    next();
+    void next("ended");
   }, [episodeSession, next, trackEndedCount]);
 
   const togglePlayPause = useCallback(() => {
@@ -1374,7 +1507,7 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
       ["play", () => { if (!playingRef.current) togglePlayPause(); }],
       ["pause", () => { if (playingRef.current) togglePlayPause(); }],
       ["previoustrack", () => { prev(); }],
-      ["nexttrack", () => { next(); }],
+      ["nexttrack", () => { void next(); }],
       ["seekbackward", (details) => {
         const target = mediaSessionSeekTarget(
           "seekbackward",
@@ -1481,8 +1614,11 @@ export function GlobalPlayerProvider({ children }: { children: React.ReactNode }
         setEpisodeQueue,
         playFromQueue,
         next,
+        manualAdvanceInFlight,
         prev,
         updateTrackVote,
+        beginTrackDecision,
+        endTrackDecision,
         setTrackSeeded,
         markTrackSeeded,
         appendToQueue,
