@@ -1,0 +1,134 @@
+"use client";
+
+import { useEffect } from "react";
+import type { Item } from "./types";
+import { LOOK, labelFor, stamp } from "./look";
+
+/**
+ * A card, opened. Everything it is and the two things you can do to it.
+ *
+ * A dialog rather than an unfolding card: expanding in place pushes the rest of
+ * the column down, so on a list of seventeen the thing you just tapped walks off
+ * the screen. This holds still. Escape closes it, so does the backdrop, and on a
+ * phone it rises from the bottom where a thumb already is.
+ */
+export function CardModal({
+  item,
+  onClose,
+  onMove,
+  onNote,
+  onDelete,
+}: {
+  item: Item;
+  onClose: () => void;
+  onMove: () => void;
+  onNote: (notes: string) => void;
+  onDelete: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const done = item.status === "verified";
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 md:items-center md:p-6"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-[85dvh] w-full max-w-xl overflow-y-auto rounded-t-2xl p-4 shadow-2xl md:rounded-xl md:p-5"
+        style={{ background: LOOK.list, color: LOOK.ink }}
+      >
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center gap-1.5">
+              <span className="h-2 w-10 rounded" style={{ background: labelFor(item.area) }} />
+              <span className="font-mono text-[10px] uppercase tracking-wider" style={{ color: LOOK.soft }}>
+                {item.area}
+              </span>
+            </div>
+            <h2 className="text-base font-semibold leading-snug">{item.title}</h2>
+            {item.source ? (
+              <p className="mt-1 font-mono text-[11px]" style={{ color: LOOK.soft }}>
+                {item.source}
+              </p>
+            ) : null}
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="shrink-0 rounded px-2 py-1 text-lg leading-none hover:bg-black/5"
+            style={{ color: LOOK.soft }}
+          >
+            ×
+          </button>
+        </div>
+
+        {item.detail ? (
+          <section className="mb-4">
+            <h3 className="mb-1.5 font-mono text-[11px] uppercase tracking-wider" style={{ color: LOOK.soft }}>
+              How to check it
+            </h3>
+            <p
+              className="whitespace-pre-wrap rounded-lg p-3 text-sm leading-relaxed"
+              style={{ background: LOOK.card, boxShadow: "0 1px 1px rgba(9,30,66,0.2)" }}
+            >
+              {item.detail}
+            </p>
+          </section>
+        ) : null}
+
+        <section className="mb-4">
+          <h3 className="mb-1.5 font-mono text-[11px] uppercase tracking-wider" style={{ color: LOOK.soft }}>
+            What you found
+          </h3>
+          <textarea
+            key={item.id}
+            defaultValue={item.notes ?? ""}
+            onBlur={(e) => onNote(e.target.value)}
+            placeholder="worked · didn't · only on the iPad · …"
+            rows={3}
+            className="w-full resize-y rounded-lg p-3 text-sm outline-none placeholder:opacity-60"
+            style={{ background: LOOK.card, color: LOOK.ink, boxShadow: "0 1px 1px rgba(9,30,66,0.2)" }}
+          />
+        </section>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={onMove}
+            className="rounded px-3 py-2 text-sm font-medium"
+            style={
+              done
+                ? { background: LOOK.card, color: LOOK.ink, boxShadow: "0 1px 1px rgba(9,30,66,0.2)" }
+                : { background: LOOK.accent, color: "#fff" }
+            }
+          >
+            {done ? "← Back to Built" : "✓ I watched this work"}
+          </button>
+          <span className="font-mono text-[11px] leading-tight" style={{ color: LOOK.soft }}>
+            {item.verified_at ? (
+              <>
+                verified {stamp(item.verified_at)}
+                <br />
+              </>
+            ) : null}
+            added {stamp(item.created_at)}
+          </span>
+          <button
+            onClick={onDelete}
+            className="ml-auto rounded px-3 py-2 text-sm hover:bg-black/5"
+            style={{ color: LOOK.danger }}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
