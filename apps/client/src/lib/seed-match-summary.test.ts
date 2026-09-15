@@ -26,6 +26,7 @@ describe("seed match summary", () => {
       unverified_episode_matches: 1,
       matching_artist_tracks: 1,
       matching_artist_track_names: ["Mountains Pt. 1"],
+      artist_match_breakdown: [{ artist: "DjRUM", episodes: 2, tracks: 1 }],
       related_tracks: 3,
       related_artists: 3,
     });
@@ -45,11 +46,40 @@ describe("seed match summary", () => {
     expect(summary.related_tracks).toBe(1);
   });
 
+  test("recovers legacy multi-artist matches and reports each contributor", () => {
+    const summary = buildSeedMatchSummary(
+      "El Guincho, Frikstailers",
+      "Kalise - Frikstailers Remix",
+      "seed-track",
+      [
+        { id: "el-guincho-episode", match_type: "unknown" },
+        { id: "frik-a", match_type: "unknown" },
+        { id: "frik-b", match_type: "unknown" },
+        { id: "frik-c", match_type: "unknown" },
+      ],
+      [
+        { episode_id: "el-guincho-episode", track_id: "el-track", artist: "El Guincho", title: "Palmitos Park" },
+        { episode_id: "frik-a", track_id: "frik-1", artist: "Frikstailers", title: "Afrotrip" },
+        { episode_id: "frik-b", track_id: "frik-2", artist: "Frikstailers", title: "Kepler" },
+        { episode_id: "frik-c", track_id: "frik-3", artist: "Frikstailers", title: "Klajnak" },
+      ],
+    );
+
+    expect(summary.exact_episode_matches).toBe(0);
+    expect(summary.artist_episode_matches).toBe(4);
+    expect(summary.unverified_episode_matches).toBe(0);
+    expect(summary.artist_match_breakdown).toEqual([
+      { artist: "El Guincho", episodes: 1, tracks: 1 },
+      { artist: "Frikstailers", episodes: 3, tracks: 3 },
+    ]);
+  });
+
   test("renders a dedicated accessible match-details disclosure", () => {
     expect(seedsPage).toContain("How it matched");
     expect(seedsPage).toContain("aria-expanded={showMatchDetails}");
     expect(seedsPage).toContain("Exact song");
     expect(seedsPage).toContain("Same artist");
+    expect(seedsPage).toContain("Artist-only links");
     expect(seedsPage).toContain("other tracks from");
   });
 });

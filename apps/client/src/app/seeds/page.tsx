@@ -690,12 +690,24 @@ function SeedCard({
                 </div>
               </div>
               {seed.match_summary.artist_episode_matches > 0 && (
-                <p className="mt-2 leading-relaxed text-foreground/80">
-                  {seed.match_summary.matching_artist_tracks} other {decodeEntities(seed.artist)} track{seed.match_summary.matching_artist_tracks === 1 ? "" : "s"} created the artist-only matches
-                  {seed.match_summary.matching_artist_track_names.length > 0
-                    ? `: ${seed.match_summary.matching_artist_track_names.map(decodeEntities).join(", ")}.`
-                    : "."}
-                </p>
+                <div className="mt-3 rounded-md border border-surface-3 bg-surface-1 px-2.5 py-2">
+                  <p className="font-semibold">Artist-only links</p>
+                  <div className="mt-1.5 space-y-1">
+                    {seed.match_summary.artist_match_breakdown.map((entry) => (
+                      <div key={entry.artist} className="flex items-baseline justify-between gap-3">
+                        <span className="font-medium text-foreground">{decodeEntities(entry.artist)}</span>
+                        <span className="text-right text-foreground/70">
+                          {entry.episodes} ep{entry.episodes === 1 ? "" : "s"} · {entry.tracks} track{entry.tracks === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {seed.match_summary.matching_artist_track_names.length > 0 && (
+                    <p className="mt-2 leading-relaxed text-foreground/70">
+                      Matched tracks: {seed.match_summary.matching_artist_track_names.map(decodeEntities).join(", ")}.
+                    </p>
+                  )}
+                </div>
               )}
               <p className="mt-2 leading-relaxed text-foreground/80">
                 Those episodes connected {seed.match_summary.related_tracks} other tracks from {seed.match_summary.related_artists} artists.

@@ -136,6 +136,7 @@ export interface SeedMatchSummary {
   unverified_episode_matches: number;
   matching_artist_tracks: number;
   matching_artist_track_names: string[];
+  artist_match_breakdown: Array<{ artist: string; episodes: number; tracks: number }>;
   related_tracks: number;
   related_artists: number;
 }
