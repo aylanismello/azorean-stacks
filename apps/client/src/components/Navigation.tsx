@@ -17,6 +17,7 @@ const links = [
   { href: "/curators", label: "Curators", icon: "♫" },
   { href: "/stats", label: "Stats", icon: "▤" },
   { href: "/segundo-sol", label: "☀☀ Sessions", icon: "☀☀" },
+  { href: "/lol", label: "Lol", icon: "☑" },
 ];
 
 // Fewer tabs on mobile — Segundo Sol stays visible; Seeds, Episodes + Stats live in More
