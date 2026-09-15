@@ -106,3 +106,20 @@ export async function queueFilteredFeedPreparation(
   if (failure?.error) throw failure.error;
   return missing.length;
 }
+
+/** IDs still being prepared inside the ordinary 4U warm window. */
+export async function loadFypPreparationTrackIds(
+  db: any,
+  userId: string,
+  warmTarget = FILTERED_FEED_WARM_TARGET,
+): Promise<string[]> {
+  const result = await db.from("audio_preparation_queue")
+    .select("track_id")
+    .eq("user_id", userId)
+    .in("state", ["ranked", "preparing"])
+    .lte("rank", Math.max(0, warmTarget))
+    .gt("expires_at", new Date().toISOString())
+    .order("rank", { ascending: true });
+  if (result.error) throw result.error;
+  return Array.from(new Set((result.data || []).map((row: { track_id: string }) => row.track_id)));
+}

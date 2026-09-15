@@ -407,9 +407,6 @@ export function EpisodeTracklist(props: TracklistProps) {
     return null;
   };
 
-  // Header stats
-  const playable = playableTracks.length;
-
   const displayTitle = isDirectMode && showHistory ? "History" : (listTitle || episodeTitle || "Tracklist");
 
   const contextMenuPortal = contextMenu && typeof document !== "undefined"
@@ -489,8 +486,7 @@ export function EpisodeTracklist(props: TracklistProps) {
             </h3>
             {!loading && (
               <div className="flex items-center gap-3 mt-1 text-[10px] font-mono text-muted">
-                <span>{displayedTracks.length} tracks</span>
-                {playable > 0 && <span className="text-green-400/70">{playable} playable</span>}
+                <span>{tracks.length} tracks</span>
               </div>
             )}
           </div>

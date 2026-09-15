@@ -11,6 +11,24 @@ export interface FypMutationSummary {
   changedIds: string[];
 }
 
+export interface QueueFillNotice {
+  headline: string;
+  detail: string;
+}
+
+/** Visible, plain-language progress for any short queue with audio on the way. */
+export function queueFillNotice(
+  readyCount: number,
+  preparingCount: number,
+  target = 20,
+): QueueFillNotice | null {
+  if (preparingCount <= 0 || readyCount >= target) return null;
+  return {
+    headline: "Loading more music",
+    detail: `${readyCount} ready now · ${preparingCount} more on the way`,
+  };
+}
+
 export function shouldApplyFypGeneration(lastGeneration: number, nextGeneration: number): boolean {
   return Number.isFinite(nextGeneration) && nextGeneration > lastGeneration;
 }

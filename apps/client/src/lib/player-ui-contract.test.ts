@@ -84,6 +84,11 @@ describe("player control layout contract", () => {
     expect(tracklist).toContain("globalPlayer.clearHistory");
   });
 
+  test("tracklist count is the playable queue count, not a redundant second number", () => {
+    expect(tracklist).toContain("{tracks.length} tracks");
+    expect(tracklist).not.toContain("{playable} playable");
+  });
+
   test("treats manual next on an undecided discovery track as a neutral skip", () => {
     expect(globalPlayerProvider).toContain('persistImplicitSkip(leavingTrack)');
     expect(globalPlayerProvider).toContain('updateTrackVote(implicitSkip.trackId, implicitSkip.status)');

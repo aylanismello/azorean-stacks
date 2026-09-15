@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   describeFypMutation,
   fypGrowthLabel,
+  queueFillNotice,
   reconcileLiveFypQueue,
   shouldApplyFypGeneration,
 } from "./live-fyp";
@@ -40,6 +41,15 @@ describe("live 4U generations", () => {
       .toBe("4U bent 3 branches");
     expect(fypGrowthLabel({ added: 0, moved: 0, changedIds: [] }, "seed_refresh"))
       .toBe("4U followed the new direction");
+  });
+
+  test("shows plain queue-fill progress only while a short queue is being prepared", () => {
+    expect(queueFillNotice(4, 6)).toEqual({
+      headline: "Loading more music",
+      detail: "4 ready now · 6 more on the way",
+    });
+    expect(queueFillNotice(20, 2)).toBeNull();
+    expect(queueFillNotice(4, 0)).toBeNull();
   });
 
   test("preserves a currently playing row retired or reordered by a live refresh", () => {

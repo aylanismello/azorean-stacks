@@ -3,7 +3,11 @@ import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks, paceTracks } from "@/lib/diversify";
 import { loadPersonalizedFeed, loadPersonalizedFyp } from "@/lib/fyp-personalization";
-import { filteredFeedWarmCandidates, queueFilteredFeedPreparation } from "@/lib/filtered-feed-preparation";
+import {
+  filteredFeedWarmCandidates,
+  loadFypPreparationTrackIds,
+  queueFilteredFeedPreparation,
+} from "@/lib/filtered-feed-preparation";
 import {
   loadFypWithOptionalExploration,
   signOptionalExplorationAudio,
@@ -98,6 +102,13 @@ export async function GET(req: NextRequest) {
         ),
         shouldExplore,
       }));
+      try {
+        preparingTrackIds = await loadFypPreparationTrackIds(db, user.id);
+      } catch (preparationError) {
+        // Queue playback must stay available if this optional progress signal
+        // cannot be read. Realtime and visibility refreshes can recover it.
+        console.error("[fyp] preparation status failed:", preparationError);
+      }
     }
   } catch (error) {
     const status = error instanceof Error && "status" in error && error.status === 404 ? 404 : 500;

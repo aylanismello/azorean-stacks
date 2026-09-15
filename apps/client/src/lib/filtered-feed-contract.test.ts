@@ -12,6 +12,7 @@ const seedsRoute = readFileSync(new URL("../app/api/seeds/route.ts", import.meta
     expect(fypRoute).toContain("loadPersonalizedFeed(db, user.id");
     expect(fypRoute).toContain("queueFilteredFeedPreparation(db, user.id, feed.candidates)");
     expect(fypRoute).toContain("preparing_track_ids: preparingTrackIds");
+    expect(fypRoute).toContain("loadFypPreparationTrackIds(db, user.id)");
   });
 
   test("genre and seed cards count the same personalized candidates as playback", () => {
@@ -35,6 +36,8 @@ const seedsRoute = readFileSync(new URL("../app/api/seeds/route.ts", import.meta
     expect(fypPage).toContain("table: \"tracks\"");
     expect(fypPage).toContain("preparingTrackFilter");
     expect(fypPage).toContain('reconcile("readiness")');
+    expect(fypPage).toContain("queueFillNotice(queue.length, preparingTrackCount)");
+    expect(fypPage).toContain("queue-fill-chip");
     expect(fypPage).not.toContain("if (!isHomeFyp) return;\n    const supabase = createBrowserClient()");
   });
 

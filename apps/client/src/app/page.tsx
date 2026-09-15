@@ -20,6 +20,7 @@ import {
 } from "@/lib/fyp-tangent";
 import { createClient as createBrowserClient } from "@/lib/supabase-browser";
 import {
+  queueFillNotice,
   reconcileLiveFypQueue,
   shouldApplyFypGeneration,
   type FypGeneration,
@@ -1082,6 +1083,10 @@ function StackPageContent() {
 
   // ── Empty ──
   const queue = globalPlayer.queue;
+  const preparingTrackCount = preparingTrackFilter
+    ? preparingTrackFilter.split(",").filter(Boolean).length
+    : 0;
+  const queueFill = queueFillNotice(queue.length, preparingTrackCount);
   const hasTracksButNonePlayable = queue.length > 0 && !currentTrack;
   const isPreparingFilteredFeed = !episodeId && !isHomeFyp && total > 0;
 
@@ -1293,6 +1298,22 @@ function StackPageContent() {
           </button>
         </div>
       </div>
+
+      {!discoveryMutation && queueFill && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="queue-fill-chip discovery-mutation-chip pointer-events-none absolute left-1/2 top-12 z-20 flex w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-2xl border border-white/20 bg-zinc-950 px-3 py-2.5 text-white shadow-2xl"
+        >
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10" aria-hidden="true">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-white">{queueFill.headline}</span>
+            <span className="mt-0.5 block text-xs text-white/85">{queueFill.detail}</span>
+          </span>
+        </div>
+      )}
 
       {discoveryMutation && (
         <div

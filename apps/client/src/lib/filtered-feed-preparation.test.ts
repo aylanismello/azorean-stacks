@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import {
   filteredFeedWarmCandidates,
   genreFeedCounts,
+  loadFypPreparationTrackIds,
   queueFilteredFeedPreparation,
   seedFeedCount,
 } from "./filtered-feed-preparation";
@@ -43,6 +44,35 @@ describe("filtered feed preparation", () => {
       youtube_url: "https://youtube.com/watch?v=queue",
       status: "pending",
     }]);
+  });
+
+  test("reads only the listener's active warm 4U preparation rows", async () => {
+    const calls: Array<[string, ...unknown[]]> = [];
+    const query = {
+      select(value: string) { calls.push(["select", value]); return this; },
+      eq(column: string, value: unknown) { calls.push(["eq", column, value]); return this; },
+      in(column: string, value: unknown[]) { calls.push(["in", column, value]); return this; },
+      lte(column: string, value: unknown) { calls.push(["lte", column, value]); return this; },
+      gt(column: string, value: unknown) { calls.push(["gt", column, value]); return this; },
+      order(column: string, value: unknown) {
+        calls.push(["order", column, value]);
+        return Promise.resolve({
+          data: [{ track_id: "a" }, { track_id: "a" }, { track_id: "b" }],
+          error: null,
+        });
+      },
+    };
+    const db = {
+      from(table: string) {
+        calls.push(["from", table]);
+        return query;
+      },
+    };
+
+    expect(await loadFypPreparationTrackIds(db, "user-a")).toEqual(["a", "b"]);
+    expect(calls).toContainEqual(["eq", "user_id", "user-a"]);
+    expect(calls).toContainEqual(["in", "state", ["ranked", "preparing"]]);
+    expect(calls).toContainEqual(["lte", "rank", 20]);
   });
 });
 
