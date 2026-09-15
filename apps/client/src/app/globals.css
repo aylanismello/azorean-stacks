@@ -19,6 +19,14 @@
   --foreground: 255 255 255;
   --tangent-accent-readable: 167 243 208;
   --tangent-accent-secondary: 110 231 183;
+  /* Board elevation. The surface scale runs dark→light here and light→dark in
+     the light theme, so "surface-3" means *raised* in one and *pressed* in the
+     other — which is why a card on a list looked like a dent rather than a
+     card. These three always ascend toward the thing nearest the eye, in both
+     themes, so board < list < card is one idea and not two. */
+  --board: 22 27 34;
+  --list: 26 26 26;
+  --card: 40 40 40;
   color-scheme: dark;
 }
 
@@ -35,6 +43,9 @@
   --foreground: 28 25 23;
   --tangent-accent-readable: 6 95 70;
   --tangent-accent-secondary: 4 120 87;
+  --board: 205 218 233;
+  --list: 243 241 237;
+  --card: 255 255 255;
   color-scheme: light;
 }
 

@@ -42,6 +42,29 @@ const COLUMNS: { key: Status; label: string; empty: string }[] = [
   { key: "verified", label: "Verified", empty: "Nothing checked off yet." },
 ];
 
+/**
+ * **The area, as a colour.** Trello's label is a colour first and a word second,
+ * and that is the right way round: after a day on the board you stop reading the
+ * chip and start recognising the stripe. Keyed off the area's own letters rather
+ * than a stored column, so a new area gets a colour the moment somebody types it
+ * and keeps the same one for ever without anybody choosing.
+ */
+const LABELS = [
+  "bg-rose-400",
+  "bg-amber-400",
+  "bg-emerald-400",
+  "bg-sky-400",
+  "bg-violet-400",
+  "bg-orange-400",
+  "bg-teal-400",
+  "bg-fuchsia-400",
+];
+function labelFor(area: string) {
+  let h = 0;
+  for (let i = 0; i < area.length; i++) h = (h * 31 + area.charCodeAt(i)) >>> 0;
+  return LABELS[h % LABELS.length];
+}
+
 export default function LolPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,6 +74,9 @@ export default function LolPage() {
   const [draft, setDraft] = useState({ title: "", area: "", detail: "" });
   const [dragId, setDragId] = useState<string | null>(null);
   const [over, setOver] = useState<Status | null>(null);
+  // the card the gap opens above — a board that only highlights the column
+  // makes you guess where it will land, which is the whole feel of dragging
+  const [overCard, setOverCard] = useState<string | null>(null);
   // the last good board, so a refused move can be put back exactly as it was
   const rollback = useRef<Item[] | null>(null);
 
@@ -142,53 +168,69 @@ export default function LolPage() {
     }
   };
 
-  const grouped = useMemo(() => {
-    const out: Record<Status, [string, Item[]][]> = { built: [], verified: [] };
+  /**
+   * **One list per column, not a list of lists.** The area used to be a heading
+   * with its own cards underneath, which is a second hierarchy on a board whose
+   * whole argument is that there are only two places a thing can be. The colour
+   * on the card says the area now, so like sits next to like without anything
+   * being nested — and the order stays yours, because it is the order you
+   * dragged them into and nothing re-sorts it behind your back.
+   */
+  const columns = useMemo(() => {
+    const out: Record<Status, Item[]> = { built: [], verified: [] };
     for (const col of COLUMNS) {
-      const mine = items.filter((i) => i.status === col.key).sort((a, b) => a.sort - b.sort);
-      const byArea = new Map<string, Item[]>();
-      for (const i of mine) byArea.set(i.area, [...(byArea.get(i.area) ?? []), i]);
-      out[col.key] = [...byArea.entries()];
+      out[col.key] = items.filter((i) => i.status === col.key).sort((a, b) => a.sort - b.sort);
     }
     return out;
   }, [items]);
 
-  const total = (g: [string, Item[]][]) => g.reduce((n, [, xs]) => n + xs.length, 0);
-
   const card = (item: Item) => {
     const isOpen = open[item.id];
     const done = item.status === "verified";
+    const dropping = dragId && dragId !== item.id && overCard === item.id;
     return (
-      <div
-        key={item.id}
-        draggable
-        onDragStart={(e) => {
-          setDragId(item.id);
-          e.dataTransfer.effectAllowed = "move";
-        }}
-        onDragEnd={() => {
-          setDragId(null);
-          setOver(null);
-        }}
-        onDragOver={(e) => {
-          if (!dragId || dragId === item.id) return;
-          e.preventDefault();
-          e.stopPropagation();
-          setOver(item.status);
-        }}
-        onDrop={(e) => {
-          if (!dragId || dragId === item.id) return;
-          e.preventDefault();
-          e.stopPropagation();
-          const moving = items.find((x) => x.id === dragId);
-          if (moving) move(moving, item.status, item);
-          setDragId(null);
-          setOver(null);
-        }}
-        className={`cursor-grab rounded-lg bg-surface-3 p-2.5 shadow-sm ring-1 transition-all hover:ring-accent/40 active:cursor-grabbing ${
-          dragId === item.id ? "opacity-40 ring-accent/60" : "ring-surface-4/50"
-        }`}
-      >
+      <div key={item.id}>
+        {/* the gap, opened where the card will land */}
+        {dropping ? (
+          <div className="mb-2 h-9 rounded-lg border-2 border-dashed border-accent/50 bg-accent/5" />
+        ) : null}
+        <div
+          draggable
+          onDragStart={(e) => {
+            setDragId(item.id);
+            e.dataTransfer.effectAllowed = "move";
+          }}
+          onDragEnd={() => {
+            setDragId(null);
+            setOver(null);
+            setOverCard(null);
+          }}
+          onDragOver={(e) => {
+            if (!dragId || dragId === item.id) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setOver(item.status);
+            setOverCard(item.id);
+          }}
+          onDrop={(e) => {
+            if (!dragId || dragId === item.id) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const moving = items.find((x) => x.id === dragId);
+            if (moving) move(moving, item.status, item);
+            setDragId(null);
+            setOver(null);
+            setOverCard(null);
+          }}
+          className={`cursor-grab rounded-lg bg-card p-2.5 shadow-sm ring-1 transition-all hover:ring-accent/40 active:cursor-grabbing ${
+            dragId === item.id ? "rotate-2 opacity-40 ring-accent/60" : "ring-black/5"
+          }`}
+        >
+        {/* the label: a colour for the area, the way a Trello label reads */}
+        <div className="mb-2 flex items-center gap-1.5">
+          <span className={`h-1.5 w-8 rounded-full ${labelFor(item.area)}`} />
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted/80">{item.area}</span>
+        </div>
         <div className="flex items-start gap-2">
           <button
             onClick={() => move(item, done ? "built" : "verified")}
@@ -218,44 +260,45 @@ export default function LolPage() {
         </div>
 
         {isOpen ? (
-          <div className="mt-3 space-y-3 border-t border-surface-4/50 pt-3">
+          <div className="mt-3 space-y-3 border-t border-black/5 pt-3">
             {item.detail ? <p className="text-xs leading-relaxed text-foreground/70">{item.detail}</p> : null}
             <textarea
               defaultValue={item.notes ?? ""}
               onBlur={(e) => note(item, e.target.value)}
               placeholder="what you found…"
               rows={2}
-              className="w-full resize-y rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-xs text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
+              className="w-full resize-y rounded-lg border border-surface-4/40 bg-board/40 p-2 text-xs text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
             />
           </div>
         ) : null}
+        </div>
       </div>
     );
   };
 
   const adder = (status: Status) =>
     addingTo === status ? (
-      <div className="space-y-2 rounded-xl border border-surface-4/60 bg-surface-2 p-3">
+      <div className="space-y-2 rounded-lg bg-card p-2.5 shadow-sm ring-1 ring-black/5">
         <input
           autoFocus
           value={draft.title}
           onChange={(e) => setDraft({ ...draft, title: e.target.value })}
           onKeyDown={(e) => e.key === "Enter" && add(status)}
           placeholder="what needs checking"
-          className="w-full rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
+          className="w-full rounded-lg border border-surface-4/40 bg-board/40 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
         />
         <input
           value={draft.area}
           onChange={(e) => setDraft({ ...draft, area: e.target.value })}
           placeholder="area (Tape, Sync, Rekordbox…)"
-          className="w-full rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
+          className="w-full rounded-lg border border-surface-4/40 bg-board/40 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
         />
         <textarea
           value={draft.detail}
           onChange={(e) => setDraft({ ...draft, detail: e.target.value })}
           placeholder="how to check it"
           rows={2}
-          className="w-full resize-y rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
+          className="w-full resize-y rounded-lg border border-surface-4/40 bg-board/40 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
         />
         <div className="flex gap-2">
           <button
@@ -275,9 +318,9 @@ export default function LolPage() {
           setDraft({ title: "", area: "", detail: "" });
           setAddingTo(status);
         }}
-        className="w-full rounded-lg px-2 py-2 text-left text-sm text-muted transition-colors hover:bg-surface-3/70 hover:text-foreground"
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-muted transition-colors hover:bg-card hover:text-foreground"
       >
-        + Add a card
+        <span className="text-base leading-none">+</span> Add a card
       </button>
     );
 
@@ -301,9 +344,9 @@ export default function LolPage() {
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
         </div>
       ) : (
-        <div className="flex flex-col gap-3 rounded-2xl bg-surface-0/60 p-2 ring-1 ring-surface-4/30 md:flex-row md:items-start md:gap-3">
+        <div className="flex flex-col gap-3 rounded-2xl bg-board p-3 md:flex-row md:items-stretch md:gap-3">
           {COLUMNS.map((col) => {
-            const groups = grouped[col.key];
+            const cards = columns[col.key];
             return (
               <section
                 key={col.key}
@@ -312,7 +355,10 @@ export default function LolPage() {
                   e.preventDefault();
                   setOver(col.key);
                 }}
-                onDragLeave={() => setOver((o) => (o === col.key ? null : o))}
+                onDragLeave={() => {
+                  setOver((o) => (o === col.key ? null : o));
+                  setOverCard(null);
+                }}
                 onDrop={(e) => {
                   if (!dragId) return;
                   e.preventDefault();
@@ -320,32 +366,24 @@ export default function LolPage() {
                   if (moving) move(moving, col.key);
                   setDragId(null);
                   setOver(null);
+                  setOverCard(null);
                 }}
-                className={`min-w-0 flex-1 self-start rounded-xl bg-surface-1 p-2 ring-1 transition-colors ${
-                  over === col.key && dragId ? "bg-accent/5 ring-accent/40" : "ring-surface-4/40"
+                className={`flex min-h-[9rem] min-w-0 flex-1 flex-col rounded-xl bg-list p-2 ring-1 transition-colors ${
+                  over === col.key && dragId ? "ring-accent/50" : "ring-black/5"
                 }`}
               >
                 <div className="flex items-center justify-between px-2 pb-2 pt-1">
                   <h2 className="text-sm font-semibold text-foreground">{col.label}</h2>
-                  <span className="font-mono text-xs text-muted/70">{total(groups)}</span>
+                  <span className="rounded px-1.5 py-0.5 font-mono text-[11px] text-muted/80">{cards.length}</span>
                 </div>
 
-                {groups.length === 0 ? (
+                {cards.length === 0 ? (
                   <p className="mx-1 mb-1 rounded-lg px-2 py-6 text-center text-xs text-muted">{col.empty}</p>
                 ) : (
-                  <div className="mb-1 space-y-4">
-                    {groups.map(([area, xs]) => (
-                      <div key={area}>
-                        <h3 className="mb-1.5 px-2 font-mono text-[10px] uppercase tracking-wider text-accent/80">
-                          {area} <span className="text-muted/60">· {xs.length}</span>
-                        </h3>
-                        <div className="space-y-2">{xs.map(card)}</div>
-                      </div>
-                    ))}
-                  </div>
+                  <div className="mb-1 space-y-2">{cards.map(card)}</div>
                 )}
 
-                {adder(col.key)}
+                <div className="mt-auto pt-1">{adder(col.key)}</div>
               </section>
             );
           })}
