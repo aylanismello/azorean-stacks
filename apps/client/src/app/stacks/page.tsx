@@ -21,6 +21,7 @@ interface StackSeed {
   cover_art_url: string | null;
   has_exact_match: boolean;
   counts_loading?: boolean;
+  counts_unavailable?: boolean;
 }
 
 interface GenreEntry {
@@ -49,11 +50,22 @@ export default function StacksPage() {
   const [genres, setGenres] = useState<GenreEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hydrationError, setHydrationError] = useState<string | null>(null);
   const [hideLow, setHideLow] = useState(false);
   const requestRef = useRef(0);
 
   const fetchData = (nextHideLow = hideLow, fastFirst = false) => {
     const revision = ++requestRef.current;
+    let fullFailed = false;
+    setHydrationError(null);
+    if (!fastFirst) {
+      setGenres([]);
+      setStacks((prev) => prev.map((stack) => ({
+        ...stack,
+        counts_loading: true,
+        counts_unavailable: false,
+      })));
+    }
     const query = nextHideLow ? "?hide_low=true" : "";
     const json = (url: string, label: string) => fetch(url).then((response) => {
       if (!response.ok) throw new Error(`${label}: ${response.status}`);
@@ -66,7 +78,11 @@ export default function StacksPage() {
     firstRequest
       .then((stackData) => {
         if (requestRef.current !== revision) return;
-        setStacks(stackData.stacks || []);
+        setStacks((stackData.stacks || []).map((stack: StackSeed) => (
+          stackData.partial && fullFailed
+            ? { ...stack, counts_loading: false, counts_unavailable: true }
+            : stack
+        )));
         if (stackData.genres) setGenres(stackData.genres);
         setError(null);
         setLoading(false);
@@ -82,9 +98,17 @@ export default function StacksPage() {
         if (requestRef.current !== revision) return;
         setStacks(stackData.stacks || []);
         if (stackData.genres) setGenres(stackData.genres);
+        setHydrationError(null);
         setError(null);
       }).catch(() => {
-        // The fast response remains usable while exact counts recover next load.
+        if (requestRef.current !== revision) return;
+        fullFailed = true;
+        setStacks((prev) => prev.map((stack) => ({
+          ...stack,
+          counts_loading: false,
+          counts_unavailable: true,
+        })));
+        setHydrationError("Exact counts could not load.");
       });
     }
 
@@ -166,6 +190,15 @@ export default function StacksPage() {
         </button>
         <span className="text-xs text-foreground/50">Hide low-scored</span>
       </div>
+
+      {hydrationError && (
+        <div className="mb-5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-foreground">
+          {hydrationError}{" "}
+          <button type="button" onClick={() => fetchData(hideLow)} className="font-semibold underline">
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* ─── GENRES ──────────────────────────── */}
       {genres.length > 0 && <GenreSection genres={genres} router={router} />}
@@ -263,6 +296,10 @@ function StackTile({
         <div className="absolute top-2 right-2 bg-black/70 backdrop-blur-sm rounded-full px-2 py-0.5">
           <span className="text-[11px] font-semibold text-white">Loading counts…</span>
         </div>
+      ) : seed.counts_unavailable ? (
+        <div className="absolute top-2 right-2 bg-black/70 backdrop-blur-sm rounded-full px-2 py-0.5">
+          <span className="text-[11px] font-semibold text-white">Counts unavailable</span>
+        </div>
       ) : seed.eligible_queue_tracks > 0 && (
         <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-sm rounded-full px-2 py-0.5 flex items-center gap-1">
           <span className="text-[11px] font-mono font-semibold text-white">
@@ -294,6 +331,10 @@ function StackTile({
             <span>{seed.episodes.length} eps</span>
             <span className="text-white/40">·</span>
             <span>Loading counts…</span>
+          </p>
+        ) : seed.counts_unavailable ? (
+          <p className="text-[11px] font-mono mt-1 text-white/75">
+            {seed.episodes.length} eps · Counts unavailable
           </p>
         ) : (
           <p className="text-[11px] font-mono mt-1 flex flex-wrap gap-x-1.5 items-center text-white/75">

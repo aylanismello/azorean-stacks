@@ -70,6 +70,7 @@ export default function SeedsPage() {
   const fetchSeeds = useCallback(async (fastFirst = false) => {
     const revision = ++seedRequestRef.current;
     let fullApplied = false;
+    let fullFailed = false;
     try {
       const hideLow = typeof window !== "undefined" && sessionStorage.getItem("stacks-hide-low-scored") === "1";
       const baseRequest = fastFirst ? fetch("/api/seeds?view=base") : null;
@@ -79,7 +80,9 @@ export default function SeedsPage() {
           .then((response) => response.ok ? response.json() : Promise.reject(new Error("base seeds failed")))
           .then((baseSeeds) => {
             if (seedRequestRef.current !== revision || fullApplied) return;
-            setSeeds(baseSeeds || []);
+            setSeeds((baseSeeds || []).map((seed: Seed) => (
+              fullFailed ? { ...seed, details_loading: false } : seed
+            )));
             setLoading(false);
           })
           .catch(() => {
@@ -95,6 +98,10 @@ export default function SeedsPage() {
       setError(null);
     } catch (err) {
       if (seedRequestRef.current !== revision) return;
+      fullFailed = true;
+      setSeeds((prev) => prev.map((seed) => (
+        seed.details_loading ? { ...seed, details_loading: false } : seed
+      )));
       setError(err instanceof Error ? err.message : "Failed to load seeds");
     } finally {
       if (seedRequestRef.current === revision) setLoading(false);
@@ -224,6 +231,7 @@ export default function SeedsPage() {
         body: JSON.stringify({ active: !active }),
       });
       if (!res.ok) throw new Error("Failed to update seed");
+      seedRequestRef.current += 1;
       setSeeds((prev) =>
         prev.map((s) => (s.id === id ? { ...s, active: !active } : s))
       );
@@ -242,6 +250,7 @@ export default function SeedsPage() {
     try {
       const res = await fetch(`/api/seeds/${pendingDelete.id}`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to delete seed");
+      seedRequestRef.current += 1;
       setSeeds((prev) => prev.filter((s) => s.id !== pendingDelete.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete seed");
@@ -256,6 +265,7 @@ export default function SeedsPage() {
         method: "DELETE",
       });
       if (!res.ok) throw new Error("Failed to remove episode");
+      seedRequestRef.current += 1;
       setSeeds((prev) =>
         prev.map((s) =>
           s.id === seedId

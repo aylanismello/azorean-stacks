@@ -17,6 +17,8 @@ describe("discovery page progressive loading", () => {
     expect(seedsPage).toContain("fullApplied");
     expect(seedsPage).toContain("setLoading(false)");
     expect(seedsPage).toContain("Loading match details…");
+    expect(seedsPage).toContain("seedRequestRef.current += 1");
+    expect(seedsPage).toContain("details_loading: false");
   });
 
   test("stacks render their base grid without waiting for counts or genres", () => {
@@ -28,5 +30,8 @@ describe("discovery page progressive loading", () => {
     expect(stacksPage).not.toContain("Promise.all([");
     expect(stacksPage).not.toContain("/api/genres");
     expect(stacksRoute).toContain("genreFeedCounts(candidates)");
+    expect(stacksPage).toContain("counts_unavailable: true");
+    expect(stacksPage).toContain("Exact counts could not load.");
+    expect(stacksPage).toContain("setGenres([])");
   });
 });
