@@ -24,7 +24,7 @@
      other — which is why a card on a list looked like a dent rather than a
      card. These three always ascend toward the thing nearest the eye, in both
      themes, so board < list < card is one idea and not two. */
-  --board: 22 27 34;
+  --board: 15 15 15;
   --list: 26 26 26;
   --card: 40 40 40;
   color-scheme: dark;
@@ -43,7 +43,7 @@
   --foreground: 28 25 23;
   --tangent-accent-readable: 6 95 70;
   --tangent-accent-secondary: 4 120 87;
-  --board: 205 218 233;
+  --board: 221 216 209;
   --list: 243 241 237;
   --card: 255 255 255;
   color-scheme: light;

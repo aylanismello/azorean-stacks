@@ -388,10 +388,14 @@ export default function LolPage() {
     );
 
   return (
-    <div className="w-full px-3 pb-24 pt-4 md:px-6 md:pb-8 md:pt-6">
-      <header className="mb-4 px-1">
+    // The page is wider than the rest of the app because a board wants the room,
+    // but it is still *this* app: same header rhythm, same warm ground, same
+    // gold. Trello's shape, not Trello's paint — a blue board in a cream app
+    // reads as a different website somebody linked you to.
+    <div className="mx-auto w-full max-w-[1600px] px-4 pb-24 pt-4 md:px-6 md:pb-8 md:pt-8">
+      <header className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className="font-mono text-2xl text-foreground">/lol</h1>
-        <p className="mt-1 text-sm text-muted">
+        <p className="text-sm text-muted">
           Built is a claim. Verified is you having watched it work. Only you move a card.
         </p>
       </header>
@@ -408,7 +412,7 @@ export default function LolPage() {
         // On a phone the lists sit side by side and you swipe; at a desk they
         // share the width. Either way the board is as tall as the window has
         // room for and the lists scroll inside it, so the shape stays on screen.
-        <div className="flex h-[calc(100dvh-16rem)] min-h-[22rem] snap-x snap-mandatory gap-3 overflow-x-auto rounded-2xl bg-board p-3 [scrollbar-width:none] md:h-[calc(100dvh-13rem)] md:snap-none md:overflow-visible [&::-webkit-scrollbar]:hidden">
+        <div className="flex h-[calc(100dvh-16rem)] min-h-[22rem] snap-x snap-mandatory gap-3 overflow-x-auto rounded-2xl bg-board p-3 ring-1 ring-surface-4/30 [scrollbar-width:none] md:h-[calc(100dvh-13rem)] md:snap-none md:overflow-visible [&::-webkit-scrollbar]:hidden">
           {COLUMNS.map((col) => {
             const cards = columns[col.key];
             return (
