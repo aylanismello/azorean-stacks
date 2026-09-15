@@ -144,10 +144,6 @@ export function Board() {
         <p className="text-sm text-white/70">
           Built is a claim. Verified is you having watched it work. Only you move a card.
         </p>
-        {/* the one door back, because nothing else on this page leads anywhere */}
-        <a href="/" className="ml-auto font-mono text-xs text-white/60 transition-colors hover:text-white">
-          the stacks ↗
-        </a>
       </header>
 
       {error ? (
