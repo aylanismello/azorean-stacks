@@ -235,11 +235,15 @@ export default function LolPage() {
           <button
             onClick={() => move(item, done ? "built" : "verified")}
             aria-label={done ? "Send back to built" : "Mark verified"}
-            className={`mt-0.5 h-4 w-4 shrink-0 rounded border transition-colors ${
+            // a thumb needs more than sixteen points, and on a phone this button
+            // *is* the way a card moves — there is no drag on touch at all
+            className={`-m-1.5 mt-0 box-content shrink-0 rounded border p-1.5 transition-colors md:-m-1 md:p-1 ${
               done ? "border-accent bg-accent text-surface-0" : "border-surface-4 hover:border-accent/60"
             }`}
           >
-            {done ? <span className="block text-[10px] leading-4">✓</span> : null}
+            <span className="block h-4 w-4 text-center text-[11px] leading-4 md:h-3.5 md:w-3.5 md:leading-[0.875rem]">
+              {done ? "✓" : ""}
+            </span>
           </button>
           <button onClick={() => setOpen((o) => ({ ...o, [item.id]: !isOpen }))} className="min-w-0 flex-1 text-left">
             <p className={`text-sm leading-snug ${done ? "text-muted line-through" : "text-foreground"}`}>
@@ -344,7 +348,13 @@ export default function LolPage() {
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
         </div>
       ) : (
-        <div className="flex flex-col gap-3 rounded-2xl bg-board p-3 md:flex-row md:items-stretch md:gap-3">
+        // **On a phone the lists sit side by side and you swipe**, the way Trello
+        // does it — stacked, you would scroll past everything in Built to find
+        // out whether Verified had anything in it, and the whole value of two
+        // columns is seeing the gap between them. Each list takes most of the
+        // width with the next one peeking, so the swipe is discoverable without
+        // a control saying so. At a desk it is two columns again.
+        <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto rounded-2xl bg-board p-3 [scrollbar-width:none] md:snap-none md:items-stretch md:overflow-visible [&::-webkit-scrollbar]:hidden">
           {COLUMNS.map((col) => {
             const cards = columns[col.key];
             return (
@@ -368,7 +378,7 @@ export default function LolPage() {
                   setOver(null);
                   setOverCard(null);
                 }}
-                className={`flex min-h-[9rem] min-w-0 flex-1 flex-col rounded-xl bg-list p-2 ring-1 transition-colors ${
+                className={`flex min-h-[9rem] w-[84vw] shrink-0 snap-center flex-col rounded-xl bg-list p-2 ring-1 transition-colors md:w-auto md:min-w-0 md:flex-1 md:shrink ${
                   over === col.key && dragId ? "ring-accent/50" : "ring-black/5"
                 }`}
               >
