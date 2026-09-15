@@ -78,6 +78,11 @@ export async function PATCH(req: NextRequest) {
   if (!id) return NextResponse.json({ error: "Which card?" }, { status: 400 });
 
   const patch: Record<string, unknown> = {};
+  // Where the card sits in its column. Dropping one rewrites the order of the
+  // column it landed in, so this arrives on its own or alongside a status.
+  if (typeof body?.sort === "number" && Number.isFinite(body.sort)) {
+    patch.sort = Math.round(body.sort);
+  }
   if (typeof body?.status === "string") {
     if (!STATUSES.includes(body.status as Status)) {
       return NextResponse.json({ error: "A card is either built or verified" }, { status: 400 });

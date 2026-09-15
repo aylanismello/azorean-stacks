@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 
 /**
  * /lol — the board between "I built it" and "I saw it work".
@@ -8,11 +8,18 @@ import { useState, useEffect, useMemo, useCallback } from "react";
  * Two columns and nothing in between, because there is nothing in between: a
  * thing is either a claim somebody made or a thing you have watched happen on
  * your own device. The second column is the only one that counts, and the only
- * way a card reaches it is a person pressing the button — nothing here ever
- * moves a card on its own, which is the whole point of the tool.
+ * way a card reaches it is a person moving it — nothing here ever promotes
+ * itself, which is the whole point of the tool.
+ *
+ * **Two ways to move a card, because there are two ways this gets used.** At a
+ * desk it drags, the way a board is supposed to: pick a card up, drop it in the
+ * other column or further up its own. On a phone — which is where most of the
+ * checking actually happens, one hand, standing over a device — HTML5 drag does
+ * not exist, so the tick box on the left does the same job in one tap. Neither
+ * is the "real" one.
  *
  * Cards group themselves by area so the board reads as a few short lists rather
- * than one long one, and the group headings disappear when a column empties.
+ * than one long one, and the headings disappear as a column empties.
  */
 
 interface Item {
@@ -28,13 +35,24 @@ interface Item {
   verified_at: string | null;
 }
 
+type Status = Item["status"];
+
+const COLUMNS: { key: Status; label: string; empty: string }[] = [
+  { key: "built", label: "Built", empty: "Nothing waiting on you." },
+  { key: "verified", label: "Verified", empty: "Nothing checked off yet." },
+];
+
 export default function LolPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [adding, setAdding] = useState(false);
+  const [addingTo, setAddingTo] = useState<Status | null>(null);
   const [draft, setDraft] = useState({ title: "", area: "", detail: "" });
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [over, setOver] = useState<Status | null>(null);
+  // the last good board, so a refused move can be put back exactly as it was
+  const rollback = useRef<Item[] | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -53,37 +71,53 @@ export default function LolPage() {
     load();
   }, [load]);
 
-  // Moved on screen first, then on the server. A board you have to wait for is
-  // a board you stop using mid-test, and the failure case is a reload away.
-  const move = async (item: Item, status: Item["status"]) => {
-    const before = items;
-    setItems((xs) => xs.map((x) => (x.id === item.id ? { ...x, status } : x)));
+  const save = async (id: string, patch: Partial<Item>) => {
     try {
       const r = await fetch("/api/lol", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: item.id, status }),
+        body: JSON.stringify({ id, ...patch }),
       });
       if (!r.ok) throw new Error((await r.json()).error ?? "That didn't stick");
-      const { item: saved } = await r.json();
-      setItems((xs) => xs.map((x) => (x.id === saved.id ? saved : x)));
+      const { item } = await r.json();
+      setItems((xs) => xs.map((x) => (x.id === item.id ? item : x)));
       setError(null);
     } catch (e) {
-      setItems(before);
+      if (rollback.current) setItems(rollback.current);
       setError(e instanceof Error ? e.message : "That didn't stick");
+    } finally {
+      rollback.current = null;
     }
   };
 
-  const note = async (item: Item, notes: string) => {
-    setItems((xs) => xs.map((x) => (x.id === item.id ? { ...x, notes } : x)));
-    await fetch("/api/lol", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: item.id, notes: notes || " " }),
-    }).catch(() => {});
+  // Moved on screen first, then on the server. A board you have to wait for is
+  // a board you stop using mid-test, and the failure case is one refresh away.
+  const move = (item: Item, status: Status, before?: Item) => {
+    if (item.status === status && !before) return;
+    rollback.current = items;
+
+    const column = items
+      .filter((x) => x.status === status && x.id !== item.id)
+      .sort((a, b) => a.sort - b.sort);
+    const at = before ? column.findIndex((x) => x.id === before.id) : column.length;
+    const seat = at < 0 ? column.length : at;
+    // sit it between its new neighbours; a plain average keeps every other
+    // card's number untouched, so one drop is one row written
+    const prev = seat === 0 ? (column[0]?.sort ?? 100) - 100 : column[seat - 1].sort;
+    const next = seat >= column.length ? prev + 200 : column[seat].sort;
+    const sort = Math.round((prev + next) / 2);
+
+    setItems((xs) => xs.map((x) => (x.id === item.id ? { ...x, status, sort } : x)));
+    save(item.id, { status, sort });
   };
 
-  const add = async () => {
+  const note = (item: Item, notes: string) => {
+    if ((item.notes ?? "") === notes) return;
+    setItems((xs) => xs.map((x) => (x.id === item.id ? { ...x, notes } : x)));
+    save(item.id, { notes: notes || " " });
+  };
+
+  const add = async (status: Status) => {
     const title = draft.title.trim();
     if (!title) return;
     try {
@@ -99,51 +133,87 @@ export default function LolPage() {
       if (!r.ok) throw new Error((await r.json()).error ?? "Couldn't add that");
       const { item } = await r.json();
       setItems((xs) => [...xs, item]);
+      if (status === "verified") move(item, "verified");
       setDraft({ title: "", area: "", detail: "" });
-      setAdding(false);
+      setAddingTo(null);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't add that");
     }
   };
 
-  const columns = useMemo(() => {
-    const group = (status: Item["status"]) => {
-      const mine = items.filter((i) => i.status === status);
+  const grouped = useMemo(() => {
+    const out: Record<Status, [string, Item[]][]> = { built: [], verified: [] };
+    for (const col of COLUMNS) {
+      const mine = items.filter((i) => i.status === col.key).sort((a, b) => a.sort - b.sort);
       const byArea = new Map<string, Item[]>();
       for (const i of mine) byArea.set(i.area, [...(byArea.get(i.area) ?? []), i]);
-      return [...byArea.entries()].sort((a, b) => b[1].length - a[1].length);
-    };
-    return { built: group("built"), verified: group("verified") };
+      out[col.key] = [...byArea.entries()];
+    }
+    return out;
   }, [items]);
 
-  const count = (g: [string, Item[]][]) => g.reduce((n, [, xs]) => n + xs.length, 0);
+  const total = (g: [string, Item[]][]) => g.reduce((n, [, xs]) => n + xs.length, 0);
 
   const card = (item: Item) => {
     const isOpen = open[item.id];
-    const verified = item.status === "verified";
+    const done = item.status === "verified";
     return (
       <div
         key={item.id}
-        className="rounded-xl border border-surface-4/60 bg-surface-2 p-3 transition-colors hover:border-accent/30"
+        draggable
+        onDragStart={(e) => {
+          setDragId(item.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragEnd={() => {
+          setDragId(null);
+          setOver(null);
+        }}
+        onDragOver={(e) => {
+          if (!dragId || dragId === item.id) return;
+          e.preventDefault();
+          e.stopPropagation();
+          setOver(item.status);
+        }}
+        onDrop={(e) => {
+          if (!dragId || dragId === item.id) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const moving = items.find((x) => x.id === dragId);
+          if (moving) move(moving, item.status, item);
+          setDragId(null);
+          setOver(null);
+        }}
+        className={`cursor-grab rounded-lg bg-surface-3 p-2.5 shadow-sm ring-1 transition-all hover:ring-accent/40 active:cursor-grabbing ${
+          dragId === item.id ? "opacity-40 ring-accent/60" : "ring-surface-4/50"
+        }`}
       >
         <div className="flex items-start gap-2">
           <button
-            onClick={() => move(item, verified ? "built" : "verified")}
-            aria-label={verified ? "Send back to built" : "Mark verified"}
-            className={`mt-0.5 h-5 w-5 shrink-0 rounded-md border transition-colors ${
-              verified
-                ? "border-accent bg-accent text-surface-0"
-                : "border-surface-4 hover:border-accent/60"
+            onClick={() => move(item, done ? "built" : "verified")}
+            aria-label={done ? "Send back to built" : "Mark verified"}
+            className={`mt-0.5 h-4 w-4 shrink-0 rounded border transition-colors ${
+              done ? "border-accent bg-accent text-surface-0" : "border-surface-4 hover:border-accent/60"
             }`}
           >
-            {verified ? <span className="block text-xs leading-5">✓</span> : null}
+            {done ? <span className="block text-[10px] leading-4">✓</span> : null}
           </button>
           <button onClick={() => setOpen((o) => ({ ...o, [item.id]: !isOpen }))} className="min-w-0 flex-1 text-left">
-            <p className={`text-sm leading-snug ${verified ? "text-muted line-through" : "text-foreground"}`}>
+            <p className={`text-sm leading-snug ${done ? "text-muted line-through" : "text-foreground"}`}>
               {item.title}
             </p>
-            {item.source ? <p className="mt-1 font-mono text-[10px] text-muted/70">{item.source}</p> : null}
+            {/* the badge row: what this card is carrying, without opening it */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[10px] text-muted/70">
+              {item.detail ? <span title="has steps to check">☰</span> : null}
+              {item.notes?.trim() ? <span title="you left a note">✎</span> : null}
+              {item.verified_at ? (
+                <span title="when you verified it">
+                  ✓ {new Date(item.verified_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                </span>
+              ) : null}
+              {item.source ? <span className="truncate">{item.source}</span> : null}
+            </div>
           </button>
         </div>
 
@@ -157,43 +227,65 @@ export default function LolPage() {
               rows={2}
               className="w-full resize-y rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-xs text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
             />
-            {item.verified_at ? (
-              <p className="font-mono text-[10px] text-muted/70">
-                verified {new Date(item.verified_at).toLocaleString()}
-              </p>
-            ) : null}
           </div>
         ) : null}
       </div>
     );
   };
 
-  const column = (title: string, groups: [string, Item[]][], empty: string) => (
-    <section className="min-w-0 flex-1">
-      <div className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted">{title}</h2>
-        <span className="font-mono text-xs text-muted/70">{count(groups)}</span>
-      </div>
-      {groups.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-surface-4/60 p-6 text-center text-xs text-muted">{empty}</p>
-      ) : (
-        <div className="space-y-5">
-          {groups.map(([area, xs]) => (
-            <div key={area}>
-              <h3 className="mb-2 font-mono text-[11px] uppercase tracking-wider text-accent/80">
-                {area} <span className="text-muted/60">· {xs.length}</span>
-              </h3>
-              <div className="space-y-2">{xs.map(card)}</div>
-            </div>
-          ))}
+  const adder = (status: Status) =>
+    addingTo === status ? (
+      <div className="space-y-2 rounded-xl border border-surface-4/60 bg-surface-2 p-3">
+        <input
+          autoFocus
+          value={draft.title}
+          onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+          onKeyDown={(e) => e.key === "Enter" && add(status)}
+          placeholder="what needs checking"
+          className="w-full rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
+        />
+        <input
+          value={draft.area}
+          onChange={(e) => setDraft({ ...draft, area: e.target.value })}
+          placeholder="area (Tape, Sync, Rekordbox…)"
+          className="w-full rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
+        />
+        <textarea
+          value={draft.detail}
+          onChange={(e) => setDraft({ ...draft, detail: e.target.value })}
+          placeholder="how to check it"
+          rows={2}
+          className="w-full resize-y rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
+        />
+        <div className="flex gap-2">
+          <button
+            onClick={() => add(status)}
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-surface-0 hover:bg-accent-bright"
+          >
+            Add
+          </button>
+          <button onClick={() => setAddingTo(null)} className="px-3 py-1.5 text-sm text-muted hover:text-foreground">
+            Cancel
+          </button>
         </div>
-      )}
-    </section>
-  );
+      </div>
+    ) : (
+      <button
+        onClick={() => {
+          setDraft({ title: "", area: "", detail: "" });
+          setAddingTo(status);
+        }}
+        className="w-full rounded-lg px-2 py-2 text-left text-sm text-muted transition-colors hover:bg-surface-3/70 hover:text-foreground"
+      >
+        + Add a card
+      </button>
+    );
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pb-24 pt-4 md:px-6 md:pt-8">
-      <header className="mb-6">
+    // The board is a surface of its own, the way a Trello board is — the lists
+    // sit *on* something rather than floating in the page.
+    <div className="mx-auto max-w-5xl px-3 pb-24 pt-4 md:px-6 md:pt-8">
+      <header className="mb-4 px-1">
         <h1 className="font-mono text-2xl text-foreground">/lol</h1>
         <p className="mt-1 text-sm text-muted">
           Built is a claim. Verified is you having watched it work. Only you move a card.
@@ -209,58 +301,55 @@ export default function LolPage() {
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
         </div>
       ) : (
-        <>
-          <div className="flex flex-col gap-8 md:flex-row md:gap-6">
-            {column("Built", columns.built, "Nothing waiting on you.")}
-            {column("Verified", columns.verified, "Nothing checked off yet.")}
-          </div>
-
-          <div className="mt-10">
-            {adding ? (
-              <div className="space-y-2 rounded-xl border border-surface-4/60 bg-surface-2 p-3">
-                <input
-                  autoFocus
-                  value={draft.title}
-                  onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                  onKeyDown={(e) => e.key === "Enter" && add()}
-                  placeholder="what needs checking"
-                  className="w-full rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
-                />
-                <input
-                  value={draft.area}
-                  onChange={(e) => setDraft({ ...draft, area: e.target.value })}
-                  placeholder="area (Tape, Sync, Rekordbox…)"
-                  className="w-full rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
-                />
-                <textarea
-                  value={draft.detail}
-                  onChange={(e) => setDraft({ ...draft, detail: e.target.value })}
-                  placeholder="how to check it"
-                  rows={2}
-                  className="w-full resize-y rounded-lg border border-surface-4/60 bg-surface-1 p-2 text-sm text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
-                />
-                <div className="flex gap-2">
-                  <button
-                    onClick={add}
-                    className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-surface-0 hover:bg-accent-bright"
-                  >
-                    Add
-                  </button>
-                  <button onClick={() => setAdding(false)} className="px-3 py-1.5 text-sm text-muted hover:text-foreground">
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={() => setAdding(true)}
-                className="w-full rounded-xl border border-dashed border-surface-4/60 py-3 text-sm text-muted transition-colors hover:border-accent/40 hover:text-foreground"
+        <div className="flex flex-col gap-3 rounded-2xl bg-surface-0/60 p-2 ring-1 ring-surface-4/30 md:flex-row md:items-start md:gap-3">
+          {COLUMNS.map((col) => {
+            const groups = grouped[col.key];
+            return (
+              <section
+                key={col.key}
+                onDragOver={(e) => {
+                  if (!dragId) return;
+                  e.preventDefault();
+                  setOver(col.key);
+                }}
+                onDragLeave={() => setOver((o) => (o === col.key ? null : o))}
+                onDrop={(e) => {
+                  if (!dragId) return;
+                  e.preventDefault();
+                  const moving = items.find((x) => x.id === dragId);
+                  if (moving) move(moving, col.key);
+                  setDragId(null);
+                  setOver(null);
+                }}
+                className={`min-w-0 flex-1 self-start rounded-xl bg-surface-1 p-2 ring-1 transition-colors ${
+                  over === col.key && dragId ? "bg-accent/5 ring-accent/40" : "ring-surface-4/40"
+                }`}
               >
-                + something to check
-              </button>
-            )}
-          </div>
-        </>
+                <div className="flex items-center justify-between px-2 pb-2 pt-1">
+                  <h2 className="text-sm font-semibold text-foreground">{col.label}</h2>
+                  <span className="font-mono text-xs text-muted/70">{total(groups)}</span>
+                </div>
+
+                {groups.length === 0 ? (
+                  <p className="mx-1 mb-1 rounded-lg px-2 py-6 text-center text-xs text-muted">{col.empty}</p>
+                ) : (
+                  <div className="mb-1 space-y-4">
+                    {groups.map(([area, xs]) => (
+                      <div key={area}>
+                        <h3 className="mb-1.5 px-2 font-mono text-[10px] uppercase tracking-wider text-accent/80">
+                          {area} <span className="text-muted/60">· {xs.length}</span>
+                        </h3>
+                        <div className="space-y-2">{xs.map(card)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {adder(col.key)}
+              </section>
+            );
+          })}
+        </div>
       )}
     </div>
   );
