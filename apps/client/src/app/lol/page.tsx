@@ -388,16 +388,24 @@ export default function LolPage() {
     );
 
   return (
-    // The page is wider than the rest of the app because a board wants the room,
-    // but it is still *this* app: same header rhythm, same warm ground, same
-    // gold. Trello's shape, not Trello's paint — a blue board in a cream app
-    // reads as a different website somebody linked you to.
-    <div className="mx-auto w-full max-w-[1600px] px-4 pb-24 pt-4 md:px-6 md:pb-8 md:pt-8">
-      <header className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    // **Its own application, so it takes the whole window.** No nav above it and
+    // no player below (see `Chrome`), which means the height is simply the
+    // window's and the board can have everything left after the heading —
+    // measured by flex rather than by subtracting a guess at the chrome's size,
+    // because that guess is wrong on the next phone.
+    <div className="flex h-dvh flex-col px-4 pb-4 pt-4 md:px-6 md:pb-6 md:pt-6">
+      <header className="mb-3 flex shrink-0 flex-wrap items-baseline gap-x-3 gap-y-1">
         <h1 className="font-mono text-2xl text-foreground">/lol</h1>
         <p className="text-sm text-muted">
           Built is a claim. Verified is you having watched it work. Only you move a card.
         </p>
+        {/* the one door back, because nothing else on this page leads anywhere */}
+        <a
+          href="/"
+          className="ml-auto font-mono text-xs text-muted/70 transition-colors hover:text-foreground"
+        >
+          the stacks ↗
+        </a>
       </header>
 
       {error ? (
@@ -405,14 +413,14 @@ export default function LolPage() {
       ) : null}
 
       {loading ? (
-        <div className="flex justify-center py-16">
+        <div className="flex flex-1 items-center justify-center">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
         </div>
       ) : (
         // On a phone the lists sit side by side and you swipe; at a desk they
         // share the width. Either way the board is as tall as the window has
         // room for and the lists scroll inside it, so the shape stays on screen.
-        <div className="flex h-[calc(100dvh-16rem)] min-h-[22rem] snap-x snap-mandatory gap-3 overflow-x-auto rounded-2xl bg-board p-3 ring-1 ring-surface-4/30 [scrollbar-width:none] md:h-[calc(100dvh-13rem)] md:snap-none md:overflow-visible [&::-webkit-scrollbar]:hidden">
+        <div className="flex min-h-0 flex-1 snap-x snap-mandatory gap-3 overflow-x-auto rounded-2xl bg-board p-3 ring-1 ring-surface-4/30 [scrollbar-width:none] md:snap-none md:overflow-visible [&::-webkit-scrollbar]:hidden">
           {COLUMNS.map((col) => {
             const cards = columns[col.key];
             return (

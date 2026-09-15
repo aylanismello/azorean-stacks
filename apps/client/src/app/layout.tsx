@@ -1,11 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Navigation } from "@/components/Navigation";
 import { AuthProvider } from "@/components/AuthProvider";
 import { SpotifyProvider } from "@/components/SpotifyProvider";
 import { GlobalPlayerProvider } from "@/components/GlobalPlayerProvider";
-import { GlobalPlayer } from "@/components/GlobalPlayer";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { Chrome } from "@/components/Chrome";
 
 export const metadata: Metadata = {
   title: "The Stacks",
@@ -38,10 +37,10 @@ export default function RootLayout({
         <ThemeProvider>
           <AuthProvider>
             <SpotifyProvider>
+              {/* The nav and the player belong to the Stacks; `/lol` is its own
+                  small application and goes without them. See `Chrome`. */}
               <GlobalPlayerProvider>
-                <Navigation />
-                <main className="pb-0 md:pb-20">{children}</main>
-                <GlobalPlayer />
+                <Chrome>{children}</Chrome>
               </GlobalPlayerProvider>
             </SpotifyProvider>
           </AuthProvider>
