@@ -1,4 +1,4 @@
-import type { Item, Status } from "./types";
+import type { Item } from "./types";
 
 /**
  * **Every call the board makes, in one place.** The components never touch
@@ -34,7 +34,7 @@ export async function createItem(input: {
   title: string;
   area?: string;
   detail?: string;
-  status?: Status;
+  status?: string;
 }): Promise<Item> {
   const r = await fetch(BASE, {
     method: "POST",

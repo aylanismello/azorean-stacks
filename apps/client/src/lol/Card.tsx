@@ -1,6 +1,6 @@
 "use client";
 
-import type { Item, Status } from "./types";
+import { VERIFIED, type Item } from "./types";
 import { LOOK, labelFor, stamp } from "./look";
 
 /**
@@ -25,13 +25,13 @@ export function Card({
   dragging: boolean;
   showGapAbove: boolean;
   onOpen: () => void;
-  onToggle: (to: Status) => void;
+  onToggle: () => void;
   onDragStart: () => void;
   onDragEnd: () => void;
   onDragOverCard: () => void;
   onDropOnCard: () => void;
 }) {
-  const done = item.status === "verified";
+  const done = item.status === VERIFIED;
 
   return (
     <div>
@@ -75,7 +75,7 @@ export function Card({
 
         <div className="flex items-start gap-2">
           <button
-            onClick={() => onToggle(done ? "built" : "verified")}
+            onClick={onToggle}
             aria-label={done ? "Send back to built" : "Mark verified"}
             className="-m-1.5 mt-0 box-content shrink-0 rounded border p-1.5 transition-colors md:-m-1 md:p-1"
             style={{

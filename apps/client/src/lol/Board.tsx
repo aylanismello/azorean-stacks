@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { COLUMNS, type Item, type Status } from "./types";
+import { lanesOf, VERIFIED, BUILT, type Item } from "./types";
 import { LOOK, LIST_WIDTH } from "./look";
 import { listItems, patchItem, createItem, deleteItem } from "./api";
 import { Card } from "./Card";
@@ -32,7 +32,7 @@ export function Board() {
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
-  const [over, setOver] = useState<Status | null>(null);
+  const [over, setOver] = useState<string | null>(null);
   // the card the gap opens above — a board that only highlights the column
   // makes you guess where it will land, which is the whole feel of dragging
   const [overCard, setOverCard] = useState<string | null>(null);
@@ -69,7 +69,7 @@ export function Board() {
 
   // Moved on screen first, then on the server. A board you have to wait for is
   // a board you stop using mid-test, and the failure case is one refresh away.
-  const move = (item: Item, status: Status, before?: Item) => {
+  const move = (item: Item, status: string, before?: Item) => {
     if (item.status === status && !before) return;
     rollback.current = items;
 
@@ -106,7 +106,7 @@ export function Board() {
     }
   };
 
-  const add = async (status: Status, draft: { title: string; area: string; detail: string }) => {
+  const add = async (status: string, draft: { title: string; area: string; detail: string }) => {
     try {
       const item = await createItem({
         title: draft.title,
@@ -114,7 +114,7 @@ export function Board() {
         detail: draft.detail.trim() || undefined,
       });
       setItems((xs) => [...xs, item]);
-      if (status === "verified") move(item, "verified");
+      if (status !== BUILT) move(item, status);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't add that");
@@ -127,13 +127,14 @@ export function Board() {
    * argument is that there are only two places a thing can be. The colour on the
    * card says the area now, and the order stays the one you dragged.
    */
-  const columns = useMemo(() => {
-    const out: Record<Status, Item[]> = { built: [], verified: [] };
-    for (const col of COLUMNS) {
-      out[col.key] = items.filter((i) => i.status === col.key).sort((a, b) => a.sort - b.sort);
+  const lanes = useMemo(() => lanesOf(items), [items]);
+  const byLane = useMemo(() => {
+    const out: Record<string, Item[]> = {};
+    for (const l of lanes) {
+      out[l.key] = items.filter((i) => i.status === l.key).sort((a, b) => a.sort - b.sort);
     }
     return out;
-  }, [items]);
+  }, [items, lanes]);
 
   const opened = openId ? items.find((x) => x.id === openId) ?? null : null;
 
@@ -158,8 +159,8 @@ export function Board() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto px-4 pb-4">
-          {COLUMNS.map((col) => {
-            const cards = columns[col.key];
+          {lanes.map((col) => {
+            const cards = byLane[col.key] ?? [];
             return (
               <section
                 key={col.key}
@@ -211,7 +212,7 @@ export function Board() {
                         dragging={dragId === item.id}
                         showGapAbove={!!dragId && dragId !== item.id && overCard === item.id}
                         onOpen={() => setOpenId(item.id)}
-                        onToggle={(to) => move(item, to)}
+                        onToggle={() => move(item, item.status === VERIFIED ? BUILT : VERIFIED)}
                         onDragStart={() => setDragId(item.id)}
                         onDragEnd={() => {
                           setDragId(null);
@@ -248,7 +249,7 @@ export function Board() {
           item={opened}
           onClose={() => setOpenId(null)}
           onMove={() => {
-            move(opened, opened.status === "verified" ? "built" : "verified");
+            move(opened, opened.status === VERIFIED ? BUILT : VERIFIED);
             setOpenId(null);
           }}
           onNote={(notes) => note(opened, notes)}

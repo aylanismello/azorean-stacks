@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import type { Item } from "./types";
+import { VERIFIED, type Item } from "./types";
 import { LOOK, labelFor, stamp } from "./look";
 
 /**
@@ -31,7 +31,7 @@ export function CardModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const done = item.status === "verified";
+  const done = item.status === VERIFIED;
 
   return (
     <div
