@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 interface StackSeed {
@@ -20,6 +20,7 @@ interface StackSeed {
   ready_queue_tracks: number;
   cover_art_url: string | null;
   has_exact_match: boolean;
+  counts_loading?: boolean;
 }
 
 interface GenreEntry {
@@ -49,32 +50,50 @@ export default function StacksPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hideLow, setHideLow] = useState(false);
+  const requestRef = useRef(0);
 
-  const fetchData = (nextHideLow = hideLow) => {
+  const fetchData = (nextHideLow = hideLow, fastFirst = false) => {
+    const revision = ++requestRef.current;
     const query = nextHideLow ? "?hide_low=true" : "";
-    Promise.all([
-      fetch(`/api/stacks${query}`).then((r) => {
-        if (!r.ok) throw new Error(`Stacks: ${r.status}`);
-        return r.json();
-      }),
-      fetch(`/api/genres${query}`).then((r) => {
-        if (!r.ok) throw new Error(`Genres: ${r.status}`);
-        return r.json();
-      }),
-    ])
-      .then(([stackData, genreData]) => {
+    const json = (url: string, label: string) => fetch(url).then((response) => {
+      if (!response.ok) throw new Error(`${label}: ${response.status}`);
+      return response.json();
+    });
+    const baseRequest = fastFirst ? json("/api/stacks?view=base", "Stacks") : null;
+    const fullRequest = json(`/api/stacks${query}`, "Stacks");
+    const firstRequest = baseRequest ? Promise.any([baseRequest, fullRequest]) : fullRequest;
+
+    firstRequest
+      .then((stackData) => {
+        if (requestRef.current !== revision) return;
         setStacks(stackData.stacks || []);
-        setGenres(genreData.genres || []);
+        if (stackData.genres) setGenres(stackData.genres);
         setError(null);
+        setLoading(false);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load"))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (requestRef.current !== revision) return;
+        setError(err instanceof Error ? err.message : "Failed to load");
+        setLoading(false);
+      });
+
+    if (fastFirst) {
+      void fullRequest.then((stackData) => {
+        if (requestRef.current !== revision) return;
+        setStacks(stackData.stacks || []);
+        if (stackData.genres) setGenres(stackData.genres);
+        setError(null);
+      }).catch(() => {
+        // The fast response remains usable while exact counts recover next load.
+      });
+    }
+
   };
 
   useEffect(() => {
     const storedHideLow = sessionStorage.getItem("stacks-hide-low-scored") === "1";
     setHideLow(storedHideLow);
-    fetchData(storedHideLow);
+    fetchData(storedHideLow, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -240,7 +259,11 @@ function StackTile({
 
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
 
-      {seed.eligible_queue_tracks > 0 && (
+      {seed.counts_loading ? (
+        <div className="absolute top-2 right-2 bg-black/70 backdrop-blur-sm rounded-full px-2 py-0.5">
+          <span className="text-[11px] font-semibold text-white">Loading counts…</span>
+        </div>
+      ) : seed.eligible_queue_tracks > 0 && (
         <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-sm rounded-full px-2 py-0.5 flex items-center gap-1">
           <span className="text-[11px] font-mono font-semibold text-white">
             {seed.ready_queue_tracks} ready / {seed.eligible_queue_tracks}
@@ -266,13 +289,21 @@ function StackTile({
         <p className="text-[10px] text-white/50 truncate mt-0.5 drop-shadow">
           {decodeEntities(seed.title)}
         </p>
-        <p className="text-[11px] font-mono mt-1 flex flex-wrap gap-x-1.5 items-center text-white/75">
-          <span>{seed.eligible_queue_tracks} for you</span>
-          <span className="text-white/40">·</span>
-          <span>{seed.total} catalog</span>
-          <span className="text-white/40">·</span>
-          <span>{seed.episodes.length} eps</span>
-        </p>
+        {seed.counts_loading ? (
+          <p className="text-[11px] font-mono mt-1 flex flex-wrap gap-x-1.5 items-center text-white/75">
+            <span>{seed.episodes.length} eps</span>
+            <span className="text-white/40">·</span>
+            <span>Loading counts…</span>
+          </p>
+        ) : (
+          <p className="text-[11px] font-mono mt-1 flex flex-wrap gap-x-1.5 items-center text-white/75">
+            <span>{seed.eligible_queue_tracks} for you</span>
+            <span className="text-white/40">·</span>
+            <span>{seed.total} catalog</span>
+            <span className="text-white/40">·</span>
+            <span>{seed.episodes.length} eps</span>
+          </p>
+        )}
         <div className="flex items-center gap-2 mt-0.5">
           <span
             role="button"

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
-import { getPersonalizedCandidateTracks } from "@/lib/fyp-personalization";
+import { getPersonalizedCandidateTrackSummaries } from "@/lib/fyp-personalization";
 import { genreFeedCounts } from "@/lib/filtered-feed-preparation";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const hideLow = req.nextUrl.searchParams.get("hide_low") === "true";
-    const candidates = await getPersonalizedCandidateTracks(getServiceClient(), user.id, hideLow);
+    const candidates = await getPersonalizedCandidateTrackSummaries(getServiceClient(), user.id, hideLow);
     const genres = [...genreFeedCounts(candidates).entries()]
       .filter(([, count]) => count.eligible > 0)
       .sort((a, b) => b[1].eligible - a[1].eligible || a[0].localeCompare(b[0]))

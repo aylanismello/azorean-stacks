@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
-import { getPersonalizedCandidateTracks } from "@/lib/fyp-personalization";
-import { seedFeedCount, type FeedAppearance } from "@/lib/filtered-feed-preparation";
+import { getPersonalizedCandidateTrackSummaries } from "@/lib/fyp-personalization";
+import { genreFeedCounts, seedFeedCount, type FeedAppearance } from "@/lib/filtered-feed-preparation";
 
 export const dynamic = "force-dynamic";
 
@@ -77,11 +77,32 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  if (allEpisodeIds.size === 0) {
-    return NextResponse.json({
-      stacks: (seeds || []).map((s) => ({ ...s, episodes: [], total_pending: 0, total_approved: 0, total_rejected: 0, total: 0, total_playable: 0, total_processing: 0, total_unavailable: 0, eligible_queue_tracks: 0, ready_queue_tracks: 0 })),
-      total_pending: 0,
-    });
+  // Render the stack grid after only the seed and episode-link reads. The
+  // heavier personalized/catalog counts replace this response in the client.
+  if (req.nextUrl.searchParams.get("view") === "base") {
+    const stacks = (seeds || []).map((seed) => {
+      const episodes = (episodesBySeed[seed.id] || []).filter((episode) => !episode.skipped);
+      return {
+        id: seed.id,
+        artist: seed.artist,
+        title: seed.title,
+        active: seed.active,
+        episodes,
+        cover_art_url: seed.cover_art_url || null,
+        has_exact_match: episodes.some((episode) => episode.match_type === "full"),
+        counts_loading: true,
+        total_pending: 0,
+        total_approved: 0,
+        total_rejected: 0,
+        total: 0,
+        total_playable: 0,
+        total_processing: 0,
+        total_unavailable: 0,
+        eligible_queue_tracks: 0,
+        ready_queue_tracks: 0,
+      };
+    }).filter((stack) => stack.episodes.length > 0);
+    return NextResponse.json({ stacks, total_pending: 0, partial: true });
   }
 
   // Use the same personalized eligibility and episode appearance membership as
@@ -90,9 +111,26 @@ export async function GET(req: NextRequest) {
   const hideLow = req.nextUrl.searchParams.get("hide_low") === "true";
   let candidates: any[];
   try {
-    candidates = await getPersonalizedCandidateTracks(supabase, user.id, hideLow);
+    candidates = await getPersonalizedCandidateTrackSummaries(supabase, user.id, hideLow);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to load stack candidates" }, { status: 500 });
+  }
+  const genres = [...genreFeedCounts(candidates).entries()]
+    .filter(([, count]) => count.eligible > 0)
+    .sort((a, b) => b[1].eligible - a[1].eligible || a[0].localeCompare(b[0]))
+    .map(([genre, count]) => ({
+      genre,
+      pending: count.eligible,
+      eligible: count.eligible,
+      ready: count.ready,
+    }));
+
+  if (allEpisodeIds.size === 0) {
+    return NextResponse.json({
+      stacks: (seeds || []).map((s) => ({ ...s, episodes: [], total_pending: 0, total_approved: 0, total_rejected: 0, total: 0, total_playable: 0, total_processing: 0, total_unavailable: 0, eligible_queue_tracks: 0, ready_queue_tracks: 0 })),
+      genres,
+      total_pending: 0,
+    });
   }
   const appearances: FeedAppearance[] = [];
   for (let appearancePage = 0; ; appearancePage++) {
@@ -269,5 +307,5 @@ export async function GET(req: NextRequest) {
     .filter((s) => s.episodes.length > 0); // Only seeds with episodes
     // Seeds are already sorted by created_at desc from the DB query (newest first)
 
-  return NextResponse.json({ stacks, total_pending: globalPending });
+  return NextResponse.json({ stacks, genres, total_pending: globalPending });
 }

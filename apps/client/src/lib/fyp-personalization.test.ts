@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { loadPersonalizedFeed, loadPersonalizedFyp } from "./fyp-personalization";
+import {
+  getPersonalizedCandidateTrackSummaries,
+  loadPersonalizedFeed,
+  loadPersonalizedFyp,
+} from "./fyp-personalization";
 
 type Fixture = {
   pending?: Array<{ track_id: string; status: string }>;
@@ -57,6 +61,24 @@ const readyTrack = {
 };
 
 describe("loadPersonalizedFyp", () => {
+  test("loads the minimal truthful payload used by discovery-card counts", async () => {
+    const fixture = fixtureDb({
+      pending: [{ track_id: "track-1", status: "pending" }],
+      rankedScores: [{ track_id: "track-1", score: 0.91, track: readyTrack }],
+    });
+
+    const rows = await getPersonalizedCandidateTrackSummaries(fixture.db, "user-a");
+
+    expect(rows).toEqual([{
+      id: "track-1",
+      storage_path: "audio/track-1.mp3",
+      metadata: { genres: ["House"] },
+    }]);
+    const scoreCall = fixture.calls.find((call) => call.table === "user_track_scores")!;
+    expect(scoreCall.select).toContain("tracks!inner(id,storage_path,metadata)");
+    expect(scoreCall.select).not.toContain("tracks!inner(*)");
+  });
+
   test("filtered feeds count ranked candidates before audio readiness", async () => {
     const unreadyTrack = {
       ...readyTrack,

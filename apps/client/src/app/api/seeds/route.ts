@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
-import { getPersonalizedCandidateTracks } from "@/lib/fyp-personalization";
+import { getPersonalizedCandidateTrackSummaries } from "@/lib/fyp-personalization";
 import { seedFeedCount } from "@/lib/filtered-feed-preparation";
 import { buildSeedMatchSummary } from "@/lib/seed-match-summary";
 
@@ -42,12 +42,38 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Get episodes linked to each seed via episode_seeds
+  const seedIds = (data || []).map((s) => s.id);
+  let episodesBySeed: Record<string, Array<{ id: string; title: string | null; url: string; source: string; aired_date: string | null; match_type: string }>> = {};
+
+  if (seedIds.length > 0) {
+    const { data: episodeLinks } = await supabase
+      .from("episode_seeds")
+      .select("seed_id, match_type, episodes(id, title, url, source, aired_date)")
+      .in("seed_id", seedIds);
+
+    (episodeLinks || []).forEach((link: any) => {
+      if (!link.episodes) return;
+      if (!episodesBySeed[link.seed_id]) episodesBySeed[link.seed_id] = [];
+      episodesBySeed[link.seed_id].push({ ...link.episodes, match_type: link.match_type || "unknown" });
+    });
+  }
+
+  // The page requests this lightweight shape first so cards appear after only
+  // two database reads. Exact counts and match diagnostics hydrate separately.
+  if (req.nextUrl.searchParams.get("view") === "base") {
+    return NextResponse.json((data || []).map((seed) => ({
+      ...seed,
+      episodes: episodesBySeed[seed.id] || [],
+      details_loading: true,
+    })));
+  }
+
   // Get discovery counts — batch query all tracks with seed_track_ids in one go
   const seedTrackIds = (data || [])
     .map((s) => s.track_id)
     .filter(Boolean);
-
-  let trackCounts: Record<string, number> = {};
+  const trackCounts: Record<string, number> = {};
 
   if (seedTrackIds.length > 0) {
     const allSeedTracks: { seed_track_id: string | null }[] = [];
@@ -65,26 +91,7 @@ export async function GET(req: NextRequest) {
     }
 
     allSeedTracks.forEach((t) => {
-      if (t.seed_track_id) {
-        trackCounts[t.seed_track_id] = (trackCounts[t.seed_track_id] || 0) + 1;
-      }
-    });
-  }
-
-  // Get episodes linked to each seed via episode_seeds
-  const seedIds = (data || []).map((s) => s.id);
-  let episodesBySeed: Record<string, Array<{ id: string; title: string | null; url: string; source: string; aired_date: string | null; match_type: string }>> = {};
-
-  if (seedIds.length > 0) {
-    const { data: episodeLinks } = await supabase
-      .from("episode_seeds")
-      .select("seed_id, match_type, episodes(id, title, url, source, aired_date)")
-      .in("seed_id", seedIds);
-
-    (episodeLinks || []).forEach((link: any) => {
-      if (!link.episodes) return;
-      if (!episodesBySeed[link.seed_id]) episodesBySeed[link.seed_id] = [];
-      episodesBySeed[link.seed_id].push({ ...link.episodes, match_type: link.match_type || "unknown" });
+      if (t.seed_track_id) trackCounts[t.seed_track_id] = (trackCounts[t.seed_track_id] || 0) + 1;
     });
   }
 
@@ -216,7 +223,7 @@ export async function GET(req: NextRequest) {
   let feedCandidates: any[];
   try {
     const hideLow = req.nextUrl.searchParams.get("hide_low") === "true";
-    feedCandidates = await getPersonalizedCandidateTracks(supabase, user.id, hideLow);
+    feedCandidates = await getPersonalizedCandidateTrackSummaries(supabase, user.id, hideLow);
   } catch (candidateError) {
     return NextResponse.json({
       error: candidateError instanceof Error ? candidateError.message : "Failed to load seed candidates",

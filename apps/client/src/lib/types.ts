@@ -157,6 +157,7 @@ export interface Seed {
   pipeline_status?: PipelineStatus | null;
   stats?: SeedStats;
   match_summary?: SeedMatchSummary;
+  details_loading?: boolean;
 }
 
 export interface Curator {

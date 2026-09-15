@@ -65,24 +65,44 @@ export default function SeedsPage() {
   const [radarCurators, setRadarCurators] = useState<RadarCurator[]>([]);
   const [radarLoading, setRadarLoading] = useState(false);
   const { user } = useAuth();
+  const seedRequestRef = useRef(0);
 
-  const fetchSeeds = useCallback(async () => {
+  const fetchSeeds = useCallback(async (fastFirst = false) => {
+    const revision = ++seedRequestRef.current;
+    let fullApplied = false;
     try {
       const hideLow = typeof window !== "undefined" && sessionStorage.getItem("stacks-hide-low-scored") === "1";
-      const res = await fetch(`/api/seeds${hideLow ? "?hide_low=true" : ""}`);
+      const baseRequest = fastFirst ? fetch("/api/seeds?view=base") : null;
+      const fullRequest = fetch(`/api/seeds${hideLow ? "?hide_low=true" : ""}`);
+      if (baseRequest) {
+        void baseRequest
+          .then((response) => response.ok ? response.json() : Promise.reject(new Error("base seeds failed")))
+          .then((baseSeeds) => {
+            if (seedRequestRef.current !== revision || fullApplied) return;
+            setSeeds(baseSeeds || []);
+            setLoading(false);
+          })
+          .catch(() => {
+            // The complete request below remains authoritative.
+          });
+      }
+      const res = await fullRequest;
       if (!res.ok) throw new Error(`Failed to load seeds (${res.status})`);
       const data = await res.json();
+      if (seedRequestRef.current !== revision) return;
+      fullApplied = true;
       setSeeds(data || []);
       setError(null);
     } catch (err) {
+      if (seedRequestRef.current !== revision) return;
       setError(err instanceof Error ? err.message : "Failed to load seeds");
     } finally {
-      setLoading(false);
+      if (seedRequestRef.current === revision) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchSeeds();
+    fetchSeeds(true);
   }, [fetchSeeds]);
 
   // Adaptive polling: fast (3s) when any seed has an active pipeline, slow (30s) otherwise
@@ -647,7 +667,11 @@ function SeedCard({
       )}
 
       {/* Aggregate stats footer */}
-      {seed.stats && (seed.stats.tracks > 0 || seed.stats.episodes > 0) && (
+      {seed.details_loading ? (
+        <div className="border-t border-surface-3/50 px-4 py-2.5">
+          <span className="text-xs font-semibold text-foreground/70">Loading match details…</span>
+        </div>
+      ) : seed.stats && (seed.stats.tracks > 0 || seed.stats.episodes > 0) && (
         <div className="border-t border-surface-3/50 px-4 py-2.5 flex items-center gap-2 flex-wrap">
           <span className="text-xs text-blue-400/80 font-medium">
             {seed.stats.episodes} ep{seed.stats.episodes !== 1 ? "s" : ""}

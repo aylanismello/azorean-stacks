@@ -16,7 +16,9 @@ const seedsRoute = readFileSync(new URL("../app/api/seeds/route.ts", import.meta
   });
 
   test("genre and seed cards count the same personalized candidates as playback", () => {
-    expect(genresRoute).toContain("getPersonalizedCandidateTracks");
+    expect(genresRoute).toContain("getPersonalizedCandidateTrackSummaries");
+    expect(stacksRoute).toContain("getPersonalizedCandidateTrackSummaries");
+    expect(seedsRoute).toContain("getPersonalizedCandidateTrackSummaries");
     expect(genresRoute).toContain("eligible: count.eligible");
     expect(stacksRoute).toContain("eligible_queue_tracks: feedCount.eligible");
     expect(stacksRoute).toContain('.eq("user_id", user.id)');

@@ -21,46 +21,43 @@ function joinedTrack(row: any) {
 }
 
 async function getPendingTrackIds(db: any, userId: string) {
-  const pending = new Set<string>();
-  const excluded = new Set<string>();
-  for (let page = 0; ; page++) {
-    const { data, error } = await db.from("user_tracks")
+  const loadPages = async (buildQuery: (page: number) => any) => {
+    const rows: any[] = [];
+    for (let page = 0; ; page++) {
+      const { data, error } = await buildQuery(page);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < QUERY_PAGE_SIZE) break;
+    }
+    return rows;
+  };
+  const [opinions, playedTracks, activeSeeds] = await Promise.all([
+    loadPages((page) => db.from("user_tracks")
       .select("track_id,status")
       .eq("user_id", userId)
-      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
-    if (error) throw error;
-    for (const opinion of data || []) {
-      if (opinion.status === "pending") pending.add(opinion.track_id);
-      else excluded.add(opinion.track_id);
-    }
-    if (!data || data.length < QUERY_PAGE_SIZE) break;
-  }
-  for (let page = 0; ; page++) {
-    const { data, error } = await db.from("user_track_play_totals")
+      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1)),
+    loadPages((page) => db.from("user_track_play_totals")
       .select("track_id")
       .eq("user_id", userId)
       .gt("play_count", 0)
-      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
-    if (error) throw error;
-    for (const played of data || []) {
-      pending.delete(played.track_id);
-      excluded.add(played.track_id);
-    }
-    if (!data || data.length < QUERY_PAGE_SIZE) break;
-  }
-  for (let page = 0; ; page++) {
-    const { data, error } = await db.from("seeds")
+      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1)),
+    loadPages((page) => db.from("seeds")
       .select("track_id")
       .eq("user_id", userId)
       .eq("active", true)
       .not("track_id", "is", null)
-      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
-    if (error) throw error;
-    for (const seed of data || []) {
-      pending.delete(seed.track_id);
-      excluded.add(seed.track_id);
-    }
-    if (!data || data.length < QUERY_PAGE_SIZE) break;
+      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1)),
+  ]);
+
+  const pending = new Set<string>();
+  const excluded = new Set<string>();
+  for (const opinion of opinions) {
+    if (opinion.status === "pending") pending.add(opinion.track_id);
+    else excluded.add(opinion.track_id);
+  }
+  for (const row of [...playedTracks, ...activeSeeds]) {
+    pending.delete(row.track_id);
+    excluded.add(row.track_id);
   }
   return { pending, excluded };
 }
@@ -227,6 +224,43 @@ export async function getPersonalizedCandidateTracks(
   }
 
   return ranked;
+}
+
+/** Minimal candidate payload for discovery-card counts. This preserves the
+ * same eligibility contract without loading every catalog/audio field. */
+export async function getPersonalizedCandidateTrackSummaries(
+  db: any,
+  userId: string,
+  hideLow = false,
+) {
+  const { pending } = await getPendingTrackIds(db, userId);
+  const rows: Array<{ id: string; storage_path: string | null; metadata: Record<string, unknown> }> = [];
+  const seen = new Set<string>();
+
+  for (let page = 0; ; page++) {
+    let query = db.from("user_track_scores")
+      .select("track_id,score,track:tracks!inner(id,storage_path,metadata)")
+      .eq("user_id", userId)
+      .order("score", { ascending: false })
+      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
+    if (hideLow) query = query.gt("score", -0.3);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    for (const scoreRow of data || []) {
+      const track = joinedTrack(scoreRow);
+      if (!track || !pending.has(track.id) || seen.has(track.id)) continue;
+      seen.add(track.id);
+      rows.push({
+        id: track.id,
+        storage_path: track.storage_path || null,
+        metadata: track.metadata || {},
+      });
+    }
+    if (!data || data.length < QUERY_PAGE_SIZE) break;
+  }
+
+  return rows;
 }
 
 export async function loadPersonalizedFeed(
