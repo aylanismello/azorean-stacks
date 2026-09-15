@@ -686,7 +686,7 @@ export function EpisodeTracklist(props: TracklistProps) {
                         t.vote_status === "rejected" ? "line-through text-muted/30" : "text-muted"
                       }`}>{t.artist}</p>
                       {t._tangent_seed_name && (
-                        <span className="shrink-0 truncate rounded-full bg-emerald-400/10 px-1.5 py-0.5 text-[8px] text-emerald-300/75" title={`Branched from ${t._tangent_seed_name}`}>
+                        <span className="tangent-badge-readable shrink-0 truncate rounded-full px-1.5 py-0.5 text-[10px] font-semibold" title={`Branched from ${t._tangent_seed_name}`}>
                           via {t._tangent_seed_name}
                         </span>
                       )}

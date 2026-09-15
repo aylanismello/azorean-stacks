@@ -921,7 +921,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeed
             </span>
             {(track as any)._tangent_seed_name && (
               <span
-                className="max-w-[14rem] truncate rounded bg-emerald-400/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-200 backdrop-blur-sm"
+                className="tangent-badge-readable max-w-[14rem] truncate rounded px-1.5 py-0.5 text-[10px] font-semibold"
                 title={`Tangent from ${(track as any)._tangent_seed_name}`}
               >
                 tangent from {(track as any)._tangent_seed_name}
@@ -1232,7 +1232,7 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeed
             </span>
           )}
           {(track as any)._tangent_seed_name && (
-            <span className="max-w-[22rem] truncate rounded-lg bg-emerald-500/15 px-2 py-1 text-xs font-medium text-emerald-300" title={`Tangent from ${(track as any)._tangent_seed_name}`}>
+            <span className="tangent-badge-readable max-w-[22rem] truncate rounded-lg px-2 py-1 text-xs font-semibold" title={`Tangent from ${(track as any)._tangent_seed_name}`}>
               tangent from {(track as any)._tangent_seed_name}
             </span>
           )}

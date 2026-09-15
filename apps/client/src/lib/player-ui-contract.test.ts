@@ -167,6 +167,15 @@ describe("player control layout contract", () => {
     expect(globals).toContain("prefers-reduced-motion: reduce");
   });
 
+  test("keeps tangent labels readable in light and dark themes", () => {
+    expect(tracklist).toContain("tangent-badge-readable");
+    expect(tracklist).toContain("text-[10px] font-semibold");
+    expect(tracklist).not.toContain("text-emerald-300/75");
+    expect(trackCard.match(/tangent-badge-readable/g)?.length).toBe(2);
+    expect(globals).toContain("color: rgb(var(--tangent-accent-readable));");
+    expect(globals).toContain("background: rgb(var(--tangent-accent-readable) / 0.12);");
+  });
+
   test("hides healthy connectivity and shows actionable problems at every width", () => {
     const timeBlock = globalPlayer.slice(
       globalPlayer.indexOf("Time stays on larger screens"),

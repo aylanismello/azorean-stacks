@@ -218,6 +218,11 @@ audio::-webkit-media-controls-panel {
 .tangent-accent-secondary {
   color: rgb(var(--tangent-accent-secondary));
 }
+.tangent-badge-readable {
+  color: rgb(var(--tangent-accent-readable));
+  background: rgb(var(--tangent-accent-readable) / 0.12);
+  border: 1px solid rgb(var(--tangent-accent-readable) / 0.28);
+}
 .tangent-nav-tree path,
 .tangent-tree-branch path {
   stroke-dasharray: 44;
