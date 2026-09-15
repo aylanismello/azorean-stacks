@@ -288,7 +288,10 @@ export async function loadPersonalizedFeed(
       error.status = 404;
       throw error;
     }
-    const episodeLinks = await db.from("episode_seeds").select("episode_id").eq("seed_id", seedId);
+    const episodeLinks = await db.from("episode_seeds")
+      .select("episode_id")
+      .eq("seed_id", seedId)
+      .in("match_type", ["full", "artist"]);
     if (episodeLinks.error) throw episodeLinks.error;
     const episodeIds = (episodeLinks.data || []).map((link: any) => link.episode_id);
     allowedBySeed = new Set<string>();

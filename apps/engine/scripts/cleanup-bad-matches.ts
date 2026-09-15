@@ -13,6 +13,7 @@
 import { parseArgs } from "util";
 import { getSupabase } from "../lib/supabase";
 import { ntsSource } from "../lib/sources/nts";
+import { classifySeedTracklist } from "../lib/seed-match";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -32,50 +33,6 @@ const LOG_ICONS = { ok: "✓", fail: "✗", skip: "→", warn: "⚠", wait: "…
 function log(icon: keyof typeof LOG_ICONS, msg: string) {
   const ts = new Date().toISOString().slice(11, 19);
   console.log(`  ${ts} ${LOG_ICONS[icon]} ${msg}`);
-}
-
-// ─── MATCHING HELPERS ───────────────────────────────────────
-
-function getPrimaryArtist(artist: string): string {
-  return artist
-    .split(/,\s*/)[0]
-    .split(/\s*[&+x×]\s*/i)[0]
-    .trim()
-    .toLowerCase();
-}
-
-function checkTracklist(
-  tracklist: Array<{ artist: string; title: string }>,
-  seedArtist: string,
-  seedTitle: string,
-): { hasFullMatch: boolean; hasArtistMatch: boolean } {
-  const seedArtistLower = seedArtist.toLowerCase().trim();
-  const seedTitleLower = seedTitle.toLowerCase().trim();
-  const seedPrimaryArtist = getPrimaryArtist(seedArtist);
-
-  let hasFullMatch = false;
-  let hasArtistMatch = false;
-
-  for (const t of tracklist) {
-    const tArtist = (t.artist || "").toLowerCase().trim();
-    const tTitle = (t.title || "").toLowerCase().trim();
-
-    // Full match: same artist AND same title
-    if (tArtist === seedArtistLower && tTitle === seedTitleLower) {
-      hasFullMatch = true;
-      break;
-    }
-
-    // Artist match: same primary artist (or exact artist)
-    if (!hasArtistMatch) {
-      const tPrimaryArtist = getPrimaryArtist(t.artist || "");
-      if (tArtist === seedArtistLower || tPrimaryArtist === seedPrimaryArtist) {
-        hasArtistMatch = true;
-      }
-    }
-  }
-
-  return { hasFullMatch, hasArtistMatch };
 }
 
 // ─── MAIN ───────────────────────────────────────────────────
@@ -162,11 +119,21 @@ async function main() {
     }
 
     // ── Check if seed matches ──
-    const { hasFullMatch, hasArtistMatch } = checkTracklist(tracklist, seed.artist, seed.title);
+    const verifiedMatch = classifySeedTracklist(tracklist, { artist: seed.artist, title: seed.title });
 
-    if (hasFullMatch || hasArtistMatch) {
+    if (verifiedMatch) {
       // Valid match — keep it
-      const matchKind = hasFullMatch ? "full" : "artist";
+      const matchKind = verifiedMatch.matchType;
+      if (!DRY_RUN && row.match_type !== matchKind) {
+        const { error: updateError } = await db.from("episode_seeds")
+          .update({ match_type: matchKind })
+          .eq("episode_id", row.episode_id)
+          .eq("seed_id", row.seed_id);
+        if (updateError) {
+          log("fail", `Failed to correct match type for ${label}: ${updateError.message}`);
+          continue;
+        }
+      }
       log("ok", `VALID (${matchKind}): ${label}`);
       continue;
     }

@@ -16,8 +16,19 @@ describe("track explanation", () => {
       episodeLabel: "NTS Show",
       scoreComponents: { curator: 0.9 },
     });
-    expect(result.headline).toBe("Found in a DJ set that also played A — Seed.");
+    expect(result.headline).toBe("Exact-song match: A — Seed.");
     expect(result.evidence).toContain("NTS Show");
+  });
+
+  test("names the actual source track behind an artist-only match", () => {
+    const result = explainTrackSelection({
+      seedName: "Ludwig Göransson — Ithaca",
+      matchType: "artist",
+      matchedTrackName: "Ludwig Göransson, Busiswa — We Know What You Whisper",
+      episodeLabel: "NKISI w/ HIBOTEP",
+    });
+    expect(result.headline).toBe("Artist match through Ludwig Göransson, Busiswa — We Know What You Whisper.");
+    expect(result.evidence).toContain("does not contain the exact seed song");
   });
 
   test("explains CLAP similarity as bounded supporting evidence", () => {

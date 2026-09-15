@@ -48,6 +48,12 @@ export interface Track {
   is_seed?: boolean;
   // Set when this track was discovered via a re-seed chain
   is_re_seed?: boolean;
+  _match_type?: "full" | "artist" | null;
+  _seed_name?: string;
+  _seed_artist?: string;
+  _seed_title?: string;
+  _match_track_artist?: string;
+  _match_track_title?: string;
 }
 
 export interface Episode {

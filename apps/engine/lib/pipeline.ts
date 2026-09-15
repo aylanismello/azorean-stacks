@@ -4,6 +4,7 @@
  */
 import { getSupabase } from "./supabase";
 import { ytDlpAudioArgs } from "./yt-dlp";
+import { isSameSeedTrack } from "./seed-match";
 
 const db = getSupabase();
 const YT_DLP_BIN =
@@ -120,8 +121,7 @@ export function isGarbageTrack(artist: string, title: string): boolean {
 // ─── TRACK HELPERS ──────────────────────────────────────────
 
 export function isSameTrack(a: { artist: string; title: string }, b: { artist: string; title: string }): boolean {
-  return a.artist.toLowerCase().trim() === b.artist.toLowerCase().trim() &&
-    a.title.toLowerCase().trim() === b.title.toLowerCase().trim();
+  return isSameSeedTrack(a, b);
 }
 
 // ─── SPOTIFY ────────────────────────────────────────────────

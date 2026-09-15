@@ -15,6 +15,7 @@ import {
 import { parsePagination } from "@/lib/pagination";
 import { buildRankingExposureRows } from "@/lib/ranking-exposure";
 import { injectSeriesExploration, loadSeriesExploration } from "@/lib/series-exploration";
+import { seedMatchEvidence } from "@/lib/seed-match-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -154,6 +155,7 @@ export async function GET(req: NextRequest) {
           .select("episode_id, seed_id, match_type")
           .in("episode_id", episodeIds)
           .in("seed_id", userSeedIds)
+          .in("match_type", ["full", "artist"])
       : { data: [], error: null },
   ]);
 
@@ -197,6 +199,40 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // A seed-stack explanation needs the source track that verified the episode,
+  // not just the seed label. Resolve it from canonical episode appearances.
+  const matchEvidenceByEpisode = new Map<string, ReturnType<typeof seedMatchEvidence>>();
+  const requestedSeed = seedId ? userSeedMap.get(seedId) : null;
+  const requestedEpisodeIds = seedId
+    ? Array.from(new Set((esRes.data || [])
+      .filter((link: any) => link.seed_id === seedId)
+      .map((link: any) => link.episode_id)))
+    : [];
+  if (requestedSeed && requestedEpisodeIds.length > 0) {
+    const evidenceResult = await db.from("episode_tracks")
+      .select("episode_id,track:tracks!inner(artist,title)")
+      .in("episode_id", requestedEpisodeIds);
+    if (evidenceResult.error) {
+      return NextResponse.json({ error: evidenceResult.error.message }, { status: 500 });
+    }
+    const evidenceTracks = new Map<string, Array<{ artist: string | null; title: string | null }>>();
+    for (const appearance of evidenceResult.data || []) {
+      const joined = Array.isArray((appearance as any).track)
+        ? (appearance as any).track[0]
+        : (appearance as any).track;
+      if (!joined) continue;
+      const rows = evidenceTracks.get((appearance as any).episode_id) || [];
+      rows.push({ artist: joined.artist, title: joined.title });
+      evidenceTracks.set((appearance as any).episode_id, rows);
+    }
+    for (const episodeId of requestedEpisodeIds) {
+      matchEvidenceByEpisode.set(
+        episodeId,
+        seedMatchEvidence(requestedSeed.artist, requestedSeed.title, evidenceTracks.get(episodeId) || []),
+      );
+    }
+  }
+
   const signPromises: Promise<void>[] = [];
   for (const track of rows) {
     const candidateEpisodeIds = Array.from(new Set([
@@ -207,6 +243,7 @@ export async function GET(req: NextRequest) {
       || candidateEpisodeIds.find((episodeId) => lineageMap.get(episodeId)?.matchType === "full")
       || candidateEpisodeIds.find((episodeId) => lineageMap.has(episodeId));
     const lineage = lineageEpisodeId ? lineageMap.get(lineageEpisodeId) : undefined;
+    const matchEvidence = lineageEpisodeId ? matchEvidenceByEpisode.get(lineageEpisodeId) : null;
     track.seed_track = seedTrackMap.get(track.seed_track_id) || null;
     const contextEpisodeId = lineageEpisodeId || track.episode_id || candidateEpisodeIds[0];
     track.episode = episodeMap.get(contextEpisodeId) || null;
@@ -215,10 +252,12 @@ export async function GET(req: NextRequest) {
       const context = episodeContextKey(episodeMap.get(episodeId));
       return context ? [context] : [];
     })));
-    track._match_type = lineage?.matchType || null;
+    track._match_type = matchEvidence?.matchType || lineage?.matchType || null;
     track._seed_name = lineage ? `${lineage.seed.artist} — ${lineage.seed.title}` : undefined;
     track._seed_artist = lineage?.seed.artist;
     track._seed_title = lineage?.seed.title;
+    track._match_track_artist = matchEvidence?.matchedTrack.artist;
+    track._match_track_title = matchEvidence?.matchedTrack.title;
     const directSeed = directSeedByTrack.get(track.id);
     track.is_seed = Boolean(directSeed && directSeed.source !== "re-seed");
     track.is_re_seed = directSeed?.source === "re-seed";

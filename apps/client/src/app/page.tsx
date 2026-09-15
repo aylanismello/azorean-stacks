@@ -102,6 +102,8 @@ function toPlayerTrack(track: Track, neutralSkipOnManualAdvance = false): Player
     _seed_name: (track as any)._seed_name,
     _seed_artist: (track as any)._seed_artist,
     _seed_title: (track as any)._seed_title,
+    _match_track_artist: (track as any)._match_track_artist,
+    _match_track_title: (track as any)._match_track_title,
     _tangent_id: (track as any)._tangent_id,
     _tangent_seed_name: (track as any)._tangent_seed_name,
     _tangent_start_rank: (track as any)._tangent_start_rank,
@@ -153,6 +155,8 @@ function toTrackLike(pt: PlayerTrack): Track {
     _seed_name: pt._seed_name,
     _seed_artist: pt._seed_artist,
     _seed_title: pt._seed_title,
+    _match_track_artist: pt._match_track_artist,
+    _match_track_title: pt._match_track_title,
     _tangent_id: (pt as any)._tangent_id,
     _tangent_seed_name: (pt as any)._tangent_seed_name,
     _tangent_start_rank: (pt as any)._tangent_start_rank,
@@ -1611,6 +1615,11 @@ function TrackContextModal({
   const curatorSlug = meta.curator_slug as string | undefined;
   const matchType = (track as any)._match_type as string | undefined;
   const rankedSeedName = (track as any)._seed_name as string | undefined;
+  const matchedTrackArtist = (track as any)._match_track_artist as string | undefined;
+  const matchedTrackTitle = (track as any)._match_track_title as string | undefined;
+  const matchedTrackName = matchedTrackArtist && matchedTrackTitle
+    ? `${matchedTrackArtist} — ${matchedTrackTitle}`
+    : null;
   const rankedScore = (track as any)._ranked_score as number | undefined;
   const scoreComponents = (track as any)._score_components as Record<string, number> | undefined;
   const displayedScoreComponents = rankingContributions(scoreComponents);
@@ -1626,6 +1635,7 @@ function TrackContextModal({
     tangentSeedName: (track as any)._tangent_seed_name || null,
     sonicSeedName: (track as any)._sonic_seed_name || (meta._sonic_seed_name as string | undefined) || null,
     matchType,
+    matchedTrackName,
     episodeLabel,
     sourceName,
     curatorName: curatorSlug,

@@ -168,6 +168,15 @@ describe("player control layout contract", () => {
     expect(fypPage).toContain("`Seed stack: ${seedName}`");
   });
 
+  test("shows verified seed-match evidence and keeps discovery on one worker path", () => {
+    expect(fypRoute).toContain("track._match_track_artist = matchEvidence?.matchedTrack.artist");
+    expect(fypRoute).toContain("track._match_track_title = matchEvidence?.matchedTrack.title");
+    expect(fypRoute).toContain('.in("match_type", ["full", "artist"])');
+    expect(trackCard).toContain('matchType === "full" ? "Exact song match"');
+    expect(trackCard).toContain('matchType === "artist" ? "Artist match"');
+    expect(fypPage).toContain("matchedTrackName");
+  });
+
   test("keeps tangent labels readable in light and dark themes", () => {
     expect(tracklist).toContain("tangent-badge-readable");
     expect(tracklist).toContain("text-[10px] font-semibold");

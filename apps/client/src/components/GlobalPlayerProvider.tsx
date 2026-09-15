@@ -97,6 +97,8 @@ export interface PlayerTrack {
   _seed_name?: string;
   _seed_artist?: string;
   _seed_title?: string;
+  _match_track_artist?: string;
+  _match_track_title?: string;
   _tangent_id?: string;
   _tangent_seed_name?: string;
   _tangent_start_rank?: number;

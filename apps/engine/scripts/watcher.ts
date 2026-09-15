@@ -48,6 +48,7 @@ import {
   latestStatelessUserSeeds,
   recoverSeedFypRefreshes,
 } from "../lib/seed-refresh";
+import { classifySeedTracklist, seedMatchStrength, type SeedMatchType } from "../lib/seed-match";
 
 const db = getSupabase();
 const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json`;
@@ -287,8 +288,6 @@ async function processSeed(seedId: string) {
       // Lot Radio: tracklist matching ONLY — find episodes where a DJ played the seed track
       // Paginated to avoid Supabase's default 1000-row cap
       try {
-        const seedArtistLower = seed.artist.toLowerCase().trim();
-        const seedTitleLower = seed.title.toLowerCase().trim();
         const PAGE_SIZE = 1000;
         let from = 0;
 
@@ -305,11 +304,7 @@ async function processSeed(seedId: string) {
           for (const ep of dbEpisodes as any[]) {
             const tracklist: Array<{ artist: string; title: string }> = ep.metadata?.tracklist || [];
             if (tracklist.length === 0) continue;
-            const hasMatch = tracklist.some((t) =>
-              t.artist?.toLowerCase().trim() === seedArtistLower &&
-              t.title?.toLowerCase().trim() === seedTitleLower
-            );
-            if (hasMatch) {
+            if (classifySeedTracklist(tracklist, { artist: seed.artist, title: seed.title })) {
               sourceEpisodes.push({ url: ep.url, title: ep.title || ep.url, date: ep.aired_date || null });
             }
           }
@@ -380,15 +375,12 @@ async function processSeed(seedId: string) {
       // search can return false-positive episodes (matching tags/descriptions) whose
       // tracklists have no relation to the seed — producing tracks with no meaningful
       // artist/title connection to the seed.
-      const hasFullMatch = rawTracks.some((t) => isSameTrack(t, { artist: seed.artist, title: seed.title }));
-      const hasArtistMatch = !hasFullMatch && rawTracks.some(
-        (t) => t.artist.toLowerCase().trim() === seed.artist.toLowerCase().trim()
-      );
-      const matchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : null;
-      if (!matchType) {
+      const verifiedMatch = classifySeedTracklist(rawTracks, { artist: seed.artist, title: seed.title });
+      if (!verifiedMatch) {
         log("skip", `No match for seed "${seed.artist} - ${seed.title}" in ${context} — skipping`);
         continue;
       }
+      const matchType = verifiedMatch.matchType;
 
       await db.from("episode_seeds").upsert(
         { episode_id: episodeId, seed_id: seedId, match_type: matchType },
@@ -1188,6 +1180,8 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     existingEpisodeId: string | null;
     trackCount: number;
     rawTracklist: Array<{ artist: string; title: string }>;
+    matchType: SeedMatchType;
+    matchedTracks: Array<{ artist: string; title: string }>;
   };
 
   const candidates: Candidate[] = [];
@@ -1196,9 +1190,6 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     let sourceEpisodes: Array<{ url: string; title: string; date: string | null }> = [];
 
     if (source.name === "lotradio") {
-      const seedArtistLower = seed.artist.toLowerCase().trim();
-      const seedTitleLower = seed.title.toLowerCase().trim();
-
       // Paginated scan of all lotradio episodes in DB
       let page = 0;
       const pageSize = 1000;
@@ -1214,11 +1205,7 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
         for (const ep of dbEpisodes as any[]) {
           const tracklist: Array<{ artist: string; title: string }> = ep.metadata?.tracklist || [];
           if (tracklist.length === 0) continue;
-          const hasMatch = tracklist.some((t) =>
-            t.artist?.toLowerCase().trim() === seedArtistLower &&
-            t.title?.toLowerCase().trim() === seedTitleLower
-          );
-          if (hasMatch) {
+          if (classifySeedTracklist(tracklist, { artist: seed.artist, title: seed.title })) {
             sourceEpisodes.push({ url: ep.url, title: ep.title || ep.url, date: ep.aired_date || null });
           }
         }
@@ -1239,42 +1226,47 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
       await updatePipelineStatus(fence, {}, `${source.name}: ${sourceEpisodes.length} episodes found`);
     }
 
-    // Score episodes by track count
+    // Search results are only candidates. Fetch and verify each actual tracklist
+    // before it can become lineage or user eligibility.
     for (const ep of sourceEpisodes.slice(0, CONCURRENCY.ntsMaxEpisodes)) {
       const { data: existingEp } = await db.from("episodes")
         .select("id").eq("url", ep.url).limit(1).maybeSingle();
 
-      let trackCount = 0;
       let rawTracklist: Array<{ artist: string; title: string }> = [];
       const existingEpisodeId = existingEp?.id || null;
-
-      if (existingEp) {
-        const { count } = await db.from("tracks")
-          .select("*", { count: "exact", head: true })
+      try {
+        rawTracklist = await source.getTracklist(ep.url);
+      } catch {
+        // Fall through to existing canonical appearances below.
+      }
+      // Existing canonical appearances are a safe fallback when a source is
+      // temporarily unavailable, but search-result metadata alone is not.
+      if (rawTracklist.length === 0 && existingEp) {
+        const { data: links } = await db.from("episode_tracks")
+          .select("tracks!inner(artist,title)")
           .eq("episode_id", existingEp.id);
-        trackCount = count || 0;
-      }
-
-      if (trackCount === 0) {
-        try {
-          rawTracklist = await source.getTracklist(ep.url);
-          trackCount = rawTracklist.length;
-        } catch {
-          continue;
-        }
-      }
-
-      if (trackCount > 0) {
-        candidates.push({
-          url: ep.url,
-          title: ep.title,
-          date: ep.date,
-          sourceName: source.name,
-          existingEpisodeId,
-          trackCount,
-          rawTracklist,
+        rawTracklist = (links || []).flatMap((link: any) => {
+          const track = Array.isArray(link.tracks) ? link.tracks[0] : link.tracks;
+          return track ? [{ artist: track.artist, title: track.title }] : [];
         });
       }
+
+      const verifiedMatch = classifySeedTracklist(rawTracklist, { artist: seed.artist, title: seed.title });
+      if (!verifiedMatch) {
+        log("skip", `Priority: rejected unverified candidate ${ep.title}`);
+        continue;
+      }
+      candidates.push({
+        url: ep.url,
+        title: ep.title,
+        date: ep.date,
+        sourceName: source.name,
+        existingEpisodeId,
+        trackCount: rawTracklist.length,
+        rawTracklist,
+        matchType: verifiedMatch.matchType,
+        matchedTracks: verifiedMatch.matchedTracks,
+      });
     }
   }
 
@@ -1288,9 +1280,20 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     return;
   }
 
-  // Pick best: most tracks
-  const best = candidates.sort((a, b) => b.trackCount - a.trackCount)[0];
-  await updatePipelineStatus(fence, { episode_title: best.title }, `best episode: "${best.title}" (${best.trackCount} tracks)`);
+  // Exact-song evidence outranks artist-only evidence; track depth only breaks
+  // ties within the same verified class.
+  const best = candidates.sort((a, b) =>
+    seedMatchStrength(b.matchType) - seedMatchStrength(a.matchType)
+      || b.trackCount - a.trackCount
+  )[0];
+  const matchedLabel = best.matchedTracks
+    .map((track) => `${track.artist} – ${track.title}`)
+    .join(", ");
+  await updatePipelineStatus(
+    fence,
+    { episode_title: best.title },
+    `best episode: "${best.title}" (${best.matchType} match via ${matchedLabel}; ${best.trackCount} tracks)`,
+  );
 
   const sourceObj = SOURCES.find((s) => s.name === best.sourceName)!;
   let episodeId = best.existingEpisodeId;
@@ -1317,18 +1320,8 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     episodeId = newEp.id;
   }
 
-  // Determine match type: full if seed track appears in the tracklist, artist if only artist matches
-  let priorityMatchType: "full" | "artist" | "unknown" = "unknown";
-  if (best.rawTracklist.length > 0) {
-    const hasFullMatch = best.rawTracklist.some((t) => isSameTrack(t, { artist: seed.artist, title: seed.title }));
-    const hasArtistMatch = !hasFullMatch && best.rawTracklist.some(
-      (t) => t.artist.toLowerCase().trim() === seed.artist.toLowerCase().trim()
-    );
-    priorityMatchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : "unknown";
-  }
-
   await db.from("episode_seeds").upsert(
-    { episode_id: episodeId, seed_id: seedId, match_type: priorityMatchType },
+    { episode_id: episodeId, seed_id: seedId, match_type: best.matchType },
     { onConflict: "episode_id,seed_id" },
   );
 

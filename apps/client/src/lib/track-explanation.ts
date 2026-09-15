@@ -4,6 +4,7 @@ export interface TrackExplanationInput {
   tangentSeedName?: string | null;
   sonicSeedName?: string | null;
   matchType?: string | null;
+  matchedTrackName?: string | null;
   episodeLabel?: string | null;
   sourceName?: string | null;
   curatorName?: string | null;
@@ -47,9 +48,9 @@ export function explainTrackSelection(input: TrackExplanationInput): TrackExplan
 
   if (input.matchType === "full" && seedName) {
     return {
-      headline: `Found in a DJ set that also played ${seedName}.`,
+      headline: `Exact-song match: ${input.matchedTrackName || seedName}.`,
       evidence: input.episodeLabel
-        ? `The direct connection came through ${input.episodeLabel}.`
+        ? `${input.episodeLabel} contains the seed song itself.`
         : "The seed itself appeared in the same source set, which is stronger evidence than an artist-only match.",
     };
   }
@@ -63,9 +64,11 @@ export function explainTrackSelection(input: TrackExplanationInput): TrackExplan
 
   if (input.matchType === "artist" && seedName) {
     return {
-      headline: `Discovered through an artist connection to ${seedName}.`,
+      headline: input.matchedTrackName
+        ? `Artist match through ${input.matchedTrackName}.`
+        : `Artist match through ${seedName}.`,
       evidence: input.episodeLabel
-        ? `That connection appeared in ${input.episodeLabel}; it is treated as weaker than the exact seed sharing a set.`
+        ? `${input.episodeLabel} contains another track credited to the seed artist; it does not contain the exact seed song.`
         : "This is an artist-level connection, so it receives less weight than a direct seed match.",
     };
   }

@@ -533,16 +533,21 @@ export function TrackCard({ track, canonicalTrackId, onVote, onSuperLike, onSeed
 
   const seedArtist = seedContext?.artist || track.seed_track?.artist || meta.seed_artist;
   const seedTitle = seedContext?.title || track.seed_track?.title || meta.seed_title;
+  const matchType = (track as any)._match_type as string | undefined;
+  const matchedTrackArtist = (track as any)._match_track_artist as string | undefined;
+  const matchedTrackTitle = (track as any)._match_track_title as string | undefined;
+  const matchedTrackName = matchedTrackArtist && matchedTrackTitle
+    ? `${matchedTrackArtist} — ${matchedTrackTitle}`
+    : null;
   const discoveryContext = seedArtist && (
     <p className="text-xs text-foreground/50 leading-relaxed truncate">
-      via{" "}
-      <span className="text-foreground/70">{seedArtist}</span>
-      {seedTitle && (
-        <>
-          {" — "}
-          <span className="text-foreground/60">{seedTitle}</span>
-        </>
-      )}
+      <span className="font-medium text-foreground/70">
+        {matchType === "full" ? "Exact song match" : matchType === "artist" ? "Artist match" : "Seed connection"}
+      </span>
+      {": "}
+      <span className="text-foreground/70">
+        {matchedTrackName || `${seedArtist}${seedTitle ? ` — ${seedTitle}` : ""}`}
+      </span>
       {meta.co_occurrence > 1 && ` · ${meta.co_occurrence} sets`}
     </p>
   );

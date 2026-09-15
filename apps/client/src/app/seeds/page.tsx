@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Seed, EpisodeTrack, PipelineStatus } from "@/lib/types";
 import { SeedForm } from "@/components/SeedForm";
-import { useAuth } from "@/components/AuthProvider";
 import { isReseed } from "@/lib/seeds";
 import { openYouTube } from "@/lib/youtube";
 import { openSpotify } from "@/lib/spotify-link";
@@ -64,7 +63,6 @@ export default function SeedsPage() {
   const [pendingDelete, setPendingDelete] = useState<{ id: string; artist: string; title: string } | null>(null);
   const [radarCurators, setRadarCurators] = useState<RadarCurator[]>([]);
   const [radarLoading, setRadarLoading] = useState(false);
-  const { user } = useAuth();
   const seedRequestRef = useRef(0);
 
   const fetchSeeds = useCallback(async (fastFirst = false) => {
@@ -192,32 +190,9 @@ export default function SeedsPage() {
         const data = await res.json().catch(() => null);
         throw new Error(data?.error || "Failed to add seed");
       }
-      const seed = await res.json();
+      await res.json();
       fetchSeeds();
-
-      // Trigger fast NTS track discovery, then engine enriches in background
-      if (user?.id && seed?.id) {
-        setEnriching(true);
-        setEnrichingLabel(null);
-        setDiscoverResult(null);
-        try {
-          const discoverRes = await fetch("/api/discover", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ seed_id: seed.id, user_id: user.id }),
-          });
-          if (discoverRes.ok) {
-            const result = await discoverRes.json();
-            setDiscoverResult({ tracks_found: result.tracks_found });
-            fetchSeeds();
-          }
-        } catch {
-          // Discovery failure is non-blocking — the engine will pick it up
-        } finally {
-          setEnriching(false);
-          setEnrichingLabel(null);
-        }
-      }
+      setDiscoverResult({ tracks_found: 0, message: "Seed queued for discovery" });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add seed");
     }

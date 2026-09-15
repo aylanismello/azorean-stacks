@@ -113,6 +113,10 @@ describe("durable fresh-seed FYP refresh", () => {
       "../../client/src/app/api/seeds/playlist/route.ts",
       "../../client/src/app/api/seeds/toggle/route.ts",
     ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
+    const reseedMigration = readFileSync(
+      new URL("../../client/supabase/migrations/041_serialize_implicit_skip_and_reseed.sql", import.meta.url),
+      "utf8",
+    ).toLowerCase();
     const claimMigration = readFileSync(
       new URL("../../client/supabase/migrations/031_claim_seed_fyp_refresh.sql", import.meta.url),
       "utf8",
@@ -147,7 +151,9 @@ describe("durable fresh-seed FYP refresh", () => {
     expect(watcher).toContain("type SeedPipelineFence");
     expect(watcher).toContain('.eq("fyp_refresh_required_at", fence.fyp_refresh_required_at)');
     expect(watcher).toContain("fence.fyp_refresh_required_at");
-    for (const route of routes) expect(route).toContain("fyp_refresh_required_at");
+    for (const route of routes.slice(0, 2)) expect(route).toContain("fyp_refresh_required_at");
+    expect(routes[2]).toContain('rpc("create_reseed"');
+    expect(reseedMigration).toContain("fyp_refresh_required_at");
   });
 
   test("checkpoints only after refresh succeeds and retries failures later", async () => {

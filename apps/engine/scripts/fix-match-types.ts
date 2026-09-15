@@ -10,6 +10,7 @@
  * Usage: bun run scripts/fix-match-types.ts
  */
 import { getSupabase } from "../lib/supabase";
+import { classifySeedTracklist } from "../lib/seed-match";
 
 const db = getSupabase();
 
@@ -52,9 +53,6 @@ async function main() {
       continue;
     }
 
-    const seedArtistLower = seed.artist.toLowerCase().trim();
-    const seedTitleLower = seed.title.toLowerCase().trim();
-
     // Fetch the episode's tracklist via episode_tracks → tracks
     const { data: episodeTracks, error: tracksErr } = await db
       .from("episode_tracks")
@@ -71,30 +69,24 @@ async function main() {
       .map((et: any) => (Array.isArray(et.tracks) ? et.tracks[0] : et.tracks))
       .filter(Boolean) as Array<{ artist: string; title: string }>;
 
-    const hasFullMatch = tracklist.some(
-      (t) =>
-        t.artist.toLowerCase().trim() === seedArtistLower &&
-        t.title.toLowerCase().trim() === seedTitleLower,
-    );
+    const verifiedMatch = classifySeedTracklist(tracklist, {
+      artist: seed.artist,
+      title: seed.title,
+    });
 
-    const hasArtistMatch = tracklist.some(
-      (t) => t.artist.toLowerCase().trim() === seedArtistLower,
-    );
-
-    let newMatchType: string;
-
-    if (hasFullMatch) {
-      newMatchType = "full";
-      full++;
-    } else if (hasArtistMatch) {
-      newMatchType = "artist";
-      artist++;
-    } else {
+    if (!verifiedMatch) {
       console.warn(
         `  [suspicious] No match for seed "${seed.artist} – ${seed.title}" in episode ${row.episode_id} — skipping`,
       );
       suspicious++;
       continue;
+    }
+
+    const newMatchType = verifiedMatch.matchType;
+    if (newMatchType === "full") {
+      full++;
+    } else {
+      artist++;
     }
 
     const { error: updateErr } = await db

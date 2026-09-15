@@ -17,8 +17,9 @@
  * Usage: bun run backfill-episode-seeds-match-type
  */
 import { getSupabase } from "../lib/supabase";
-import { log, isSameTrack } from "../lib/pipeline";
+import { log } from "../lib/pipeline";
 import { SOURCES } from "../lib/sources/index";
+import { classifySeedTracklist } from "../lib/seed-match";
 
 const db = getSupabase();
 
@@ -83,11 +84,8 @@ async function main() {
       log("skip", `Empty tracklist for ${context} — treating as no-match`);
     }
 
-    const hasFullMatch = rawTracks.some((t) => isSameTrack(t, { artist: seedArtist, title: seedTitle }));
-    const hasArtistMatch = !hasFullMatch && rawTracks.some(
-      (t) => t.artist.toLowerCase().trim() === seedArtist.toLowerCase().trim()
-    );
-    const matchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : null;
+    const match = classifySeedTracklist(rawTracks, { artist: seedArtist, title: seedTitle });
+    const matchType = match?.matchType || null;
 
     if (matchType) {
       // Update to verified match_type
@@ -105,20 +103,9 @@ async function main() {
         fixed++;
       }
     } else {
-      // No valid match — delete the episode_seeds row and any orphaned tracks
+      // No valid match — unlink it. Catalog tracks and source appearances are
+      // shared evidence and must survive a bad user-owned lineage link.
       log("info", `No match for seed "${seedArtist} - ${seedTitle}" in ${context} — deleting`);
-
-      // Delete tracks that were ingested from this invalid episode_seeds association
-      // (tracks whose seed_track_id points to this seed and episode_id matches)
-      const { error: tracksErr } = await db
-        .from("tracks")
-        .delete()
-        .eq("episode_id", row.episode_id)
-        .eq("seed_track_id", seed.track_id || "00000000-0000-0000-0000-000000000000");
-
-      if (tracksErr) {
-        log("fail", `Track delete failed for ${context}: ${tracksErr.message}`);
-      }
 
       // Delete the episode_seeds row
       const { error: deleteErr } = await db

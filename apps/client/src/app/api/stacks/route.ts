@@ -51,7 +51,8 @@ export async function GET(req: NextRequest) {
   const { data: episodeLinks } = await supabase
     .from("episode_seeds")
     .select("seed_id, match_type, episodes(id, title, url, source, aired_date, skipped)")
-    .in("seed_id", seedIds);
+    .in("seed_id", seedIds)
+    .in("match_type", ["full", "artist"]);
 
   // Build seed → episodes map
   const episodesBySeed: Record<string, Array<{

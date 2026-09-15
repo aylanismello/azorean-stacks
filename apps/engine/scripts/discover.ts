@@ -14,6 +14,7 @@ import { parseArgs } from "util";
 import { getSupabase } from "../lib/supabase";
 import { SOURCES } from "../lib/sources/index";
 import { isGarbageTrack } from "../lib/pipeline";
+import { classifySeedTracklist, isSameSeedTrack } from "../lib/seed-match";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -171,8 +172,7 @@ function maybeSwapArtistTitle(artist: string, title: string): { artist: string; 
 // ─── TRACK DEDUP HELPER ──────────────────────────────────────
 
 function isSameTrack(a: { artist: string; title: string }, b: { artist: string; title: string }): boolean {
-  return a.artist.toLowerCase().trim() === b.artist.toLowerCase().trim() &&
-    a.title.toLowerCase().trim() === b.title.toLowerCase().trim();
+  return isSameSeedTrack(a, b);
 }
 
 function canonicalTrackKey(track: { artist: string; title: string }): string {
@@ -210,8 +210,6 @@ async function discoverFromSource(
     // Lot Radio: tracklist matching ONLY — find episodes where a DJ played the seed track
     // No artist-as-host search — that's not the thesis
     try {
-      const seedArtistLower = seedArtist.toLowerCase().trim();
-      const seedTitleLower = seedTitle.toLowerCase().trim();
       const allDbEpisodes: any[] = [];
       const PAGE_SIZE = 1000;
       let from = 0;
@@ -233,12 +231,7 @@ async function discoverFromSource(
         for (const ep of dbEpisodes as any[]) {
           const tracklist: Array<{ artist: string; title: string }> = ep.metadata?.tracklist || [];
           if (tracklist.length === 0) continue;
-          // Match: same artist AND same title (the seed track was played in this episode)
-          const hasMatch = tracklist.some((t) =>
-            t.artist?.toLowerCase().trim() === seedArtistLower &&
-            t.title?.toLowerCase().trim() === seedTitleLower
-          );
-          if (hasMatch) {
+          if (classifySeedTracklist(tracklist, { artist: seedArtist, title: seedTitle })) {
             sourceEpisodes.push({ url: ep.url, title: ep.title || ep.url, date: ep.aired_date || null });
           }
         }
@@ -286,15 +279,13 @@ async function discoverFromSource(
 
       if (epTrackList.length > 0) {
         // Verify match type against the actual tracklist in the DB
-        const seedArtistLower = seedArtist.toLowerCase().trim();
-        const seedTitleLower = seedTitle.toLowerCase().trim();
-        const hasFullMatch = epTrackList.some(
-          (t) => t.artist?.toLowerCase().trim() === seedArtistLower && t.title?.toLowerCase().trim() === seedTitleLower
-        );
-        const hasArtistMatch = !hasFullMatch && epTrackList.some(
-          (t) => t.artist?.toLowerCase().trim() === seedArtistLower
-        );
-        const verifiedMatchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : "unknown";
+        const verifiedMatch = classifySeedTracklist(epTrackList, { artist: seedArtist, title: seedTitle });
+        if (!verifiedMatch) {
+          log("skip", `Already crawled but unrelated to seed: ${context}`);
+          stats.skipped++;
+          continue;
+        }
+        const verifiedMatchType = verifiedMatch.matchType;
         await db.from("episode_seeds").upsert(
           { episode_id: episodeId, seed_id: seedId, match_type: verifiedMatchType },
           { onConflict: "episode_id,seed_id" }
@@ -334,15 +325,12 @@ async function discoverFromSource(
       continue;
     }
 
-    const hasFullMatch = rawTracks.some((t) => isSameTrack(t, { artist: seedArtist, title: seedTitle }));
-    const hasArtistMatch = !hasFullMatch && rawTracks.some(
-      (t) => t.artist.toLowerCase().trim() === seedArtist.toLowerCase().trim()
-    );
-    const matchType = hasFullMatch ? "full" : hasArtistMatch ? "artist" : null;
-    if (!matchType) {
+    const verifiedMatch = classifySeedTracklist(rawTracks, { artist: seedArtist, title: seedTitle });
+    if (!verifiedMatch) {
       log("skip", `No match found for seed "${seedArtist} - ${seedTitle}" in ${context} — skipping`);
       continue;
     }
+    const matchType = verifiedMatch.matchType;
 
     await db.from("episode_seeds").upsert(
       { episode_id: episodeId, seed_id: seedId, match_type: matchType },
