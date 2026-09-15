@@ -510,6 +510,7 @@ function SeedCard({
   onRefresh: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [showMatchDetails, setShowMatchDetails] = useState(false);
   const episodes = seed.episodes || [];
   const lastRun = seed.last_run;
   const totalFound = (seed.discovery_count || 0) + episodes.length;
@@ -657,6 +658,55 @@ function SeedCard({
           </span>
           <span className="text-surface-4">·</span>
           <span className="text-xs text-foreground/50">{seed.stats.tracks} catalog</span>
+          {seed.match_summary && seed.stats.episodes > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowMatchDetails((value) => !value)}
+              aria-expanded={showMatchDetails}
+              aria-controls={`seed-match-details-${seed.id}`}
+              className="ml-auto min-h-11 rounded-lg border border-surface-4 bg-surface-2 px-3 text-xs font-semibold text-foreground transition-colors hover:bg-surface-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              How it matched {showMatchDetails ? "▾" : "▸"}
+            </button>
+          )}
+          {showMatchDetails && seed.match_summary && (
+            <div
+              id={`seed-match-details-${seed.id}`}
+              className="basis-full w-full rounded-lg border border-surface-3 bg-surface-0 px-3 py-3 text-xs text-foreground"
+            >
+              <p className="font-semibold mb-2">How this seed found those episodes</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md bg-surface-2 px-2.5 py-2">
+                  <p className="text-foreground/70">Exact song</p>
+                  <p className="mt-0.5 font-semibold">
+                    {seed.match_summary.exact_episode_matches} episode{seed.match_summary.exact_episode_matches === 1 ? "" : "s"}
+                  </p>
+                </div>
+                <div className="rounded-md bg-surface-2 px-2.5 py-2">
+                  <p className="text-foreground/70">Same artist</p>
+                  <p className="mt-0.5 font-semibold">
+                    {seed.match_summary.artist_episode_matches} episode{seed.match_summary.artist_episode_matches === 1 ? "" : "s"}
+                  </p>
+                </div>
+              </div>
+              {seed.match_summary.artist_episode_matches > 0 && (
+                <p className="mt-2 leading-relaxed text-foreground/80">
+                  {seed.match_summary.matching_artist_tracks} other {decodeEntities(seed.artist)} track{seed.match_summary.matching_artist_tracks === 1 ? "" : "s"} created the artist-only matches
+                  {seed.match_summary.matching_artist_track_names.length > 0
+                    ? `: ${seed.match_summary.matching_artist_track_names.map(decodeEntities).join(", ")}.`
+                    : "."}
+                </p>
+              )}
+              <p className="mt-2 leading-relaxed text-foreground/80">
+                Those episodes connected {seed.match_summary.related_tracks} other tracks from {seed.match_summary.related_artists} artists.
+              </p>
+              {seed.match_summary.unverified_episode_matches > 0 && (
+                <p className="mt-2 font-medium text-amber-600 dark:text-amber-300">
+                  {seed.match_summary.unverified_episode_matches} older match{seed.match_summary.unverified_episode_matches === 1 ? " is" : "es are"} not verified yet.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

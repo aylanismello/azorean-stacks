@@ -130,6 +130,16 @@ export interface SeedStats {
   ready_for_you?: number;
 }
 
+export interface SeedMatchSummary {
+  exact_episode_matches: number;
+  artist_episode_matches: number;
+  unverified_episode_matches: number;
+  matching_artist_tracks: number;
+  matching_artist_track_names: string[];
+  related_tracks: number;
+  related_artists: number;
+}
+
 export interface Seed {
   id: string;
   user_id: string | null;
@@ -145,6 +155,7 @@ export interface Seed {
   last_run?: { tracks_found: number; tracks_added: number; started_at: string } | null;
   pipeline_status?: PipelineStatus | null;
   stats?: SeedStats;
+  match_summary?: SeedMatchSummary;
 }
 
 export interface Curator {

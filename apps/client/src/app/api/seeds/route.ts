@@ -3,6 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { getPersonalizedCandidateTracks } from "@/lib/fyp-personalization";
 import { seedFeedCount } from "@/lib/filtered-feed-preparation";
+import { buildSeedMatchSummary } from "@/lib/seed-match-summary";
 
 export const dynamic = "force-dynamic";
 
@@ -95,7 +96,7 @@ export async function GET(req: NextRequest) {
   const artistTracksByEpisode: Record<string, { artist: string; title: string }[]> = {};
 
   const episodeTrackStats: Record<string, { total: number; with_audio: number; enriched: number }> = {};
-  const allStatsRows: { episode_id: string; track_id: string; storage_path: string | null; spotify_url: string | null; youtube_url: string | null }[] = [];
+  const allStatsRows: { episode_id: string; track_id: string; artist: string | null; title: string | null; storage_path: string | null; spotify_url: string | null; youtube_url: string | null }[] = [];
 
   if (allEpisodeIds.length > 0) {
     // Paginated stats query — get track_id + pipeline data for counting
@@ -103,7 +104,7 @@ export async function GET(req: NextRequest) {
     while (true) {
       const { data: batch } = await supabase
         .from("episode_tracks")
-        .select("episode_id, track_id, tracks(storage_path, spotify_url, youtube_url)")
+        .select("episode_id, track_id, tracks(artist, title, storage_path, spotify_url, youtube_url)")
         .in("episode_id", allEpisodeIds)
         .range(statsPage * 1000, (statsPage + 1) * 1000 - 1);
       if (!batch || batch.length === 0) break;
@@ -111,6 +112,8 @@ export async function GET(req: NextRequest) {
         allStatsRows.push({
           episode_id: row.episode_id,
           track_id: row.track_id,
+          artist: row.tracks?.artist ?? null,
+          title: row.tracks?.title ?? null,
           storage_path: row.tracks?.storage_path ?? null,
           spotify_url: row.tracks?.spotify_url ?? null,
           youtube_url: row.tracks?.youtube_url ?? null,
@@ -281,6 +284,7 @@ export async function GET(req: NextRequest) {
         eligible_for_you: feedCount.eligible,
         ready_for_you: feedCount.ready,
       },
+      match_summary: buildSeedMatchSummary(seed.artist || "", seed.title || "", seed.track_id, episodes, allStatsRows),
     };
   });
 
