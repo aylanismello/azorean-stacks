@@ -291,6 +291,14 @@ function MobileAccountButton() {
             <div className="px-4 pb-6 space-y-2">
               {/* Extra pages — only in mobile More sheet */}
               <Link
+                href="/lol"
+                onClick={() => setOpen(false)}
+                className="w-full flex items-center gap-3 px-4 py-3 bg-surface-2 rounded-xl text-sm text-foreground/80 hover:bg-surface-3 transition-colors"
+              >
+                <span className="text-base">☑</span>
+                Lol
+              </Link>
+              <Link
                 href="/mixes"
                 onClick={() => setOpen(false)}
                 className="w-full flex items-center gap-3 px-4 py-3 bg-surface-2 rounded-xl text-sm text-foreground/80 hover:bg-surface-3 transition-colors"

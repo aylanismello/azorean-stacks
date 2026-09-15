@@ -15,11 +15,14 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
  * desk it drags, the way a board is supposed to: pick a card up, drop it in the
  * other column or further up its own. On a phone — which is where most of the
  * checking actually happens, one hand, standing over a device — HTML5 drag does
- * not exist, so the tick box on the left does the same job in one tap. Neither
- * is the "real" one.
+ * not exist at all, so the tick box does the same job in one tap. Neither is the
+ * "real" one.
  *
- * Cards group themselves by area so the board reads as a few short lists rather
- * than one long one, and the headings disappear as a column empties.
+ * **The board fills the window and the lists scroll inside it**, rather than the
+ * page growing until both columns are a mile long. Seventeen things to check is
+ * a scroll either way; the difference is whether the *shape* — two columns, one
+ * of them empty — stays on screen while you do it, and that shape is the whole
+ * argument the board is making.
  */
 
 interface Item {
@@ -43,13 +46,17 @@ const COLUMNS: { key: Status; label: string; empty: string }[] = [
 ];
 
 /**
- * **The area, as a colour.** Trello's label is a colour first and a word second,
- * and that is the right way round: after a day on the board you stop reading the
- * chip and start recognising the stripe. Keyed off the area's own letters rather
- * than a stored column, so a new area gets a colour the moment somebody types it
- * and keeps the same one for ever without anybody choosing.
+ * **The area, as a colour.** A Trello label is a colour first and a word second,
+ * which is the right way round: after a day on the board you stop reading the
+ * chip and start recognising the stripe.
+ *
+ * The areas we actually use are *named* rather than hashed. Hashing them read
+ * well in the abstract and came out with four of the five real areas on the same
+ * green — eight colours and nine areas collide, and the collisions land wherever
+ * the hash feels like putting them. A hash is the fallback for an area nobody
+ * has thought about yet; the ones on the board every day get chosen.
  */
-const LABELS = [
+const PALETTE = [
   "bg-rose-400",
   "bg-amber-400",
   "bg-emerald-400",
@@ -59,17 +66,62 @@ const LABELS = [
   "bg-teal-400",
   "bg-fuchsia-400",
 ];
+const KNOWN: Record<string, string> = {
+  tape: "bg-sky-400",
+  library: "bg-violet-400",
+  records: "bg-amber-400",
+  rekordbox: "bg-rose-400",
+  sync: "bg-orange-400",
+  build: "bg-teal-400",
+  tools: "bg-emerald-400",
+  decisions: "bg-fuchsia-400",
+};
 function labelFor(area: string) {
-  let h = 0;
-  for (let i = 0; i < area.length; i++) h = (h * 31 + area.charCodeAt(i)) >>> 0;
-  return LABELS[h % LABELS.length];
+  const known = KNOWN[area.trim().toLowerCase()];
+  if (known) return known;
+  let h = 2166136261;
+  for (const ch of area.toLowerCase()) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return PALETTE[(h >>> 7) % PALETTE.length];
+}
+
+/**
+ * **Always Pacific, wherever the browser thinks it is.** A board read on a phone
+ * in one timezone and a Mac in another would otherwise stamp the same moment two
+ * different ways, and the entire use of these timestamps is answering "was that
+ * before or after I rebuilt it" — a question that falls apart the moment the
+ * clock moves under you. `9:35PM 10/10/26`, his format, no seconds: the minute
+ * is the resolution a person actually checks things at.
+ */
+const PACIFIC = "America/Los_Angeles";
+const AT = new Intl.DateTimeFormat("en-US", {
+  timeZone: PACIFIC,
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+});
+const ON = new Intl.DateTimeFormat("en-US", {
+  timeZone: PACIFIC,
+  month: "2-digit",
+  day: "2-digit",
+  year: "2-digit",
+});
+function stamp(iso: string | null) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  // Intl puts a space — often a narrow no-break one — before AM/PM; he writes it closed up
+  const time = AT.format(d).replace(/[\s  ]+/g, "");
+  return `${time} ${ON.format(d)}`;
 }
 
 export default function LolPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [openId, setOpenId] = useState<string | null>(null);
   const [addingTo, setAddingTo] = useState<Status | null>(null);
   const [draft, setDraft] = useState({ title: "", area: "", detail: "" });
   const [dragId, setDragId] = useState<string | null>(null);
@@ -96,6 +148,14 @@ export default function LolPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Escape closes the card, the way it closes everything else
+  useEffect(() => {
+    if (!openId) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpenId(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openId]);
 
   const save = async (id: string, patch: Partial<Item>) => {
     try {
@@ -143,6 +203,18 @@ export default function LolPage() {
     save(item.id, { notes: notes || " " });
   };
 
+  const remove = async (item: Item) => {
+    rollback.current = items;
+    setItems((xs) => xs.filter((x) => x.id !== item.id));
+    setOpenId(null);
+    const r = await fetch(`/api/lol?id=${item.id}`, { method: "DELETE" }).catch(() => null);
+    if (!r?.ok) {
+      if (rollback.current) setItems(rollback.current);
+      setError("Couldn't delete that");
+    }
+    rollback.current = null;
+  };
+
   const add = async (status: Status) => {
     const title = draft.title.trim();
     if (!title) return;
@@ -184,13 +256,13 @@ export default function LolPage() {
     return out;
   }, [items]);
 
+  const opened = openId ? items.find((x) => x.id === openId) ?? null : null;
+
   const card = (item: Item) => {
-    const isOpen = open[item.id];
     const done = item.status === "verified";
     const dropping = dragId && dragId !== item.id && overCard === item.id;
     return (
       <div key={item.id}>
-        {/* the gap, opened where the card will land */}
         {dropping ? (
           <div className="mb-2 h-9 rounded-lg border-2 border-dashed border-accent/50 bg-accent/5" />
         ) : null}
@@ -226,55 +298,42 @@ export default function LolPage() {
             dragId === item.id ? "rotate-2 opacity-40 ring-accent/60" : "ring-black/5"
           }`}
         >
-        {/* the label: a colour for the area, the way a Trello label reads */}
-        <div className="mb-2 flex items-center gap-1.5">
-          <span className={`h-1.5 w-8 rounded-full ${labelFor(item.area)}`} />
-          <span className="font-mono text-[10px] uppercase tracking-wider text-muted/80">{item.area}</span>
-        </div>
-        <div className="flex items-start gap-2">
-          <button
-            onClick={() => move(item, done ? "built" : "verified")}
-            aria-label={done ? "Send back to built" : "Mark verified"}
-            // a thumb needs more than sixteen points, and on a phone this button
-            // *is* the way a card moves — there is no drag on touch at all
-            className={`-m-1.5 mt-0 box-content shrink-0 rounded border p-1.5 transition-colors md:-m-1 md:p-1 ${
-              done ? "border-accent bg-accent text-surface-0" : "border-surface-4 hover:border-accent/60"
-            }`}
-          >
-            <span className="block h-4 w-4 text-center text-[11px] leading-4 md:h-3.5 md:w-3.5 md:leading-[0.875rem]">
-              {done ? "✓" : ""}
-            </span>
-          </button>
-          <button onClick={() => setOpen((o) => ({ ...o, [item.id]: !isOpen }))} className="min-w-0 flex-1 text-left">
-            <p className={`text-sm leading-snug ${done ? "text-muted line-through" : "text-foreground"}`}>
-              {item.title}
-            </p>
-            {/* the badge row: what this card is carrying, without opening it */}
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[10px] text-muted/70">
-              {item.detail ? <span title="has steps to check">☰</span> : null}
-              {item.notes?.trim() ? <span title="you left a note">✎</span> : null}
-              {item.verified_at ? (
-                <span title="when you verified it">
-                  ✓ {new Date(item.verified_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                </span>
-              ) : null}
-              {item.source ? <span className="truncate">{item.source}</span> : null}
-            </div>
-          </button>
-        </div>
-
-        {isOpen ? (
-          <div className="mt-3 space-y-3 border-t border-black/5 pt-3">
-            {item.detail ? <p className="text-xs leading-relaxed text-foreground/70">{item.detail}</p> : null}
-            <textarea
-              defaultValue={item.notes ?? ""}
-              onBlur={(e) => note(item, e.target.value)}
-              placeholder="what you found…"
-              rows={2}
-              className="w-full resize-y rounded-lg border border-surface-4/40 bg-board/40 p-2 text-xs text-foreground placeholder:text-muted/60 focus:border-accent/50 focus:outline-none"
-            />
+          <div className="mb-2 flex items-center gap-1.5">
+            <span className={`h-1.5 w-8 rounded-full ${labelFor(item.area)}`} />
+            <span className="font-mono text-[10px] uppercase tracking-wider text-muted/80">{item.area}</span>
           </div>
-        ) : null}
+          <div className="flex items-start gap-2">
+            <button
+              onClick={() => move(item, done ? "built" : "verified")}
+              aria-label={done ? "Send back to built" : "Mark verified"}
+              // a thumb needs more than sixteen points, and on a phone this button
+              // *is* the way a card moves — there is no drag on touch at all
+              className={`-m-1.5 mt-0 box-content shrink-0 rounded border p-1.5 transition-colors md:-m-1 md:p-1 ${
+                done ? "border-accent bg-accent text-surface-0" : "border-surface-4 hover:border-accent/60"
+              }`}
+            >
+              <span className="block h-4 w-4 text-center text-[11px] leading-4 md:h-3.5 md:w-3.5 md:leading-[0.875rem]">
+                {done ? "✓" : ""}
+              </span>
+            </button>
+            <button onClick={() => setOpenId(item.id)} className="min-w-0 flex-1 text-left">
+              <p className={`text-sm leading-snug ${done ? "text-muted line-through" : "text-foreground"}`}>
+                {item.title}
+              </p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[10px] text-muted/70">
+                {item.detail ? <span title="has steps to check">☰</span> : null}
+                {item.notes?.trim() ? <span title="you left a note">✎</span> : null}
+                {/* the moment that matters: when you signed it off, or failing
+                    that when it landed on the board waiting for you */}
+                {item.verified_at ? (
+                  <span title="when you verified it" className="text-accent/80">✓ {stamp(item.verified_at)}</span>
+                ) : (
+                  <span title="when it landed on the board">{stamp(item.created_at)}</span>
+                )}
+                {item.source ? <span className="truncate">{item.source}</span> : null}
+              </div>
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -329,9 +388,7 @@ export default function LolPage() {
     );
 
   return (
-    // The board is a surface of its own, the way a Trello board is — the lists
-    // sit *on* something rather than floating in the page.
-    <div className="mx-auto max-w-5xl px-3 pb-24 pt-4 md:px-6 md:pt-8">
+    <div className="w-full px-3 pb-24 pt-4 md:px-6 md:pb-8 md:pt-6">
       <header className="mb-4 px-1">
         <h1 className="font-mono text-2xl text-foreground">/lol</h1>
         <p className="mt-1 text-sm text-muted">
@@ -348,13 +405,10 @@ export default function LolPage() {
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
         </div>
       ) : (
-        // **On a phone the lists sit side by side and you swipe**, the way Trello
-        // does it — stacked, you would scroll past everything in Built to find
-        // out whether Verified had anything in it, and the whole value of two
-        // columns is seeing the gap between them. Each list takes most of the
-        // width with the next one peeking, so the swipe is discoverable without
-        // a control saying so. At a desk it is two columns again.
-        <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto rounded-2xl bg-board p-3 [scrollbar-width:none] md:snap-none md:items-stretch md:overflow-visible [&::-webkit-scrollbar]:hidden">
+        // On a phone the lists sit side by side and you swipe; at a desk they
+        // share the width. Either way the board is as tall as the window has
+        // room for and the lists scroll inside it, so the shape stays on screen.
+        <div className="flex h-[calc(100dvh-16rem)] min-h-[22rem] snap-x snap-mandatory gap-3 overflow-x-auto rounded-2xl bg-board p-3 [scrollbar-width:none] md:h-[calc(100dvh-13rem)] md:snap-none md:overflow-visible [&::-webkit-scrollbar]:hidden">
           {COLUMNS.map((col) => {
             const cards = columns[col.key];
             return (
@@ -378,27 +432,117 @@ export default function LolPage() {
                   setOver(null);
                   setOverCard(null);
                 }}
-                className={`flex min-h-[9rem] w-[84vw] shrink-0 snap-center flex-col rounded-xl bg-list p-2 ring-1 transition-colors md:w-auto md:min-w-0 md:flex-1 md:shrink ${
+                className={`flex w-[84vw] shrink-0 snap-center flex-col rounded-xl bg-list p-2 ring-1 transition-colors md:w-auto md:min-w-0 md:flex-1 md:shrink ${
                   over === col.key && dragId ? "ring-accent/50" : "ring-black/5"
                 }`}
               >
-                <div className="flex items-center justify-between px-2 pb-2 pt-1">
+                <div className="flex shrink-0 items-center justify-between px-2 pb-2 pt-1">
                   <h2 className="text-sm font-semibold text-foreground">{col.label}</h2>
                   <span className="rounded px-1.5 py-0.5 font-mono text-[11px] text-muted/80">{cards.length}</span>
                 </div>
 
-                {cards.length === 0 ? (
-                  <p className="mx-1 mb-1 rounded-lg px-2 py-6 text-center text-xs text-muted">{col.empty}</p>
-                ) : (
-                  <div className="mb-1 space-y-2">{cards.map(card)}</div>
-                )}
+                {/* the cards scroll, the list header and its footer do not */}
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5">
+                  {cards.length === 0 ? (
+                    <p className="mx-1 rounded-lg px-2 py-6 text-center text-xs text-muted">{col.empty}</p>
+                  ) : (
+                    cards.map(card)
+                  )}
+                </div>
 
-                <div className="mt-auto pt-1">{adder(col.key)}</div>
+                <div className="shrink-0 pt-1">{adder(col.key)}</div>
               </section>
             );
           })}
         </div>
       )}
+
+      {/* The card, opened. Everything it is and the two things you can do to it. */}
+      {opened ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setOpenId(null)}
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-sm md:items-center md:p-6"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85dvh] w-full max-w-xl overflow-y-auto rounded-t-2xl bg-list p-4 shadow-xl md:rounded-2xl md:p-5"
+          >
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="mb-2 flex items-center gap-1.5">
+                  <span className={`h-1.5 w-8 rounded-full ${labelFor(opened.area)}`} />
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-muted/80">{opened.area}</span>
+                </div>
+                <h2 className="text-base font-semibold leading-snug text-foreground">{opened.title}</h2>
+                {opened.source ? (
+                  <p className="mt-1 font-mono text-[11px] text-muted/70">{opened.source}</p>
+                ) : null}
+              </div>
+              <button
+                onClick={() => setOpenId(null)}
+                aria-label="Close"
+                className="shrink-0 rounded-lg px-2 py-1 text-lg leading-none text-muted hover:bg-card hover:text-foreground"
+              >
+                ×
+              </button>
+            </div>
+
+            {opened.detail ? (
+              <section className="mb-4">
+                <h3 className="mb-1.5 font-mono text-[11px] uppercase tracking-wider text-muted">How to check it</h3>
+                <p className="whitespace-pre-wrap rounded-lg bg-card p-3 text-sm leading-relaxed text-foreground/80 shadow-sm ring-1 ring-black/5">
+                  {opened.detail}
+                </p>
+              </section>
+            ) : null}
+
+            <section className="mb-4">
+              <h3 className="mb-1.5 font-mono text-[11px] uppercase tracking-wider text-muted">What you found</h3>
+              <textarea
+                key={opened.id}
+                defaultValue={opened.notes ?? ""}
+                onBlur={(e) => note(opened, e.target.value)}
+                placeholder="worked · didn't · only on the iPad · …"
+                rows={3}
+                className="w-full resize-y rounded-lg bg-card p-3 text-sm text-foreground shadow-sm ring-1 ring-black/5 placeholder:text-muted/60 focus:outline-none focus:ring-accent/50"
+              />
+            </section>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => {
+                  move(opened, opened.status === "verified" ? "built" : "verified");
+                  setOpenId(null);
+                }}
+                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  opened.status === "verified"
+                    ? "bg-card text-foreground ring-1 ring-black/5 hover:ring-accent/40"
+                    : "bg-accent text-surface-0 hover:bg-accent-bright"
+                }`}
+              >
+                {opened.status === "verified" ? "← Back to Built" : "✓ I watched this work"}
+              </button>
+              <span className="font-mono text-[11px] leading-tight text-muted/70">
+                {opened.verified_at ? (
+                  <>
+                    verified {stamp(opened.verified_at)}
+                    <br />
+                  </>
+                ) : null}
+                added {stamp(opened.created_at)}
+              </span>
+              <button
+                onClick={() => remove(opened)}
+                className="ml-auto rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:text-red-400"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
