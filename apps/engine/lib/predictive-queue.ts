@@ -914,13 +914,32 @@ export function mergeSoulectionPreparationSlice(
 }
 
 export async function listQueueUsers(db: Db = getSupabase()): Promise<string[]> {
-  const [opinionsResult, seedsResult] = await Promise.all([
-    db.from("user_tracks").select("user_id").not("user_id", "is", null),
-    db.from("seeds").select("user_id").not("user_id", "is", null).eq("active", true),
-  ]);
-  const opinions = requireOk(opinionsResult, "queue user_tracks scan");
-  const seeds = requireOk(seedsResult, "queue seeds scan");
-  return Array.from(new Set([...opinions, ...seeds].map((row: any) => row.user_id).filter(Boolean)));
+  const pageSize = 1000;
+  const userIds = new Set<string>();
+  for (let from = 0; ; from += pageSize) {
+    const result = await db.from("user_tracks")
+      .select("user_id,track_id")
+      .not("user_id", "is", null)
+      .order("user_id", { ascending: true })
+      .order("track_id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    const rows = requireOk(result, "queue user_tracks scan");
+    for (const row of rows) if (row.user_id) userIds.add(row.user_id);
+    if (rows.length < pageSize) break;
+  }
+  for (let from = 0; ; from += pageSize) {
+    const result = await db.from("seeds")
+      .select("user_id,id")
+      .not("user_id", "is", null)
+      .eq("active", true)
+      .order("user_id", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    const rows = requireOk(result, "queue seeds scan");
+    for (const row of rows) if (row.user_id) userIds.add(row.user_id);
+    if (rows.length < pageSize) break;
+  }
+  return Array.from(userIds);
 }
 
 export async function materializeUserQueue(

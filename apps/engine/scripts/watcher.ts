@@ -30,6 +30,7 @@ import {
 import {
   claimPreparationTracks,
   evictRetiredQueueAudio,
+  listQueueUsers,
   materializeAllQueues,
   materializeUserQueue,
   markPreparationState,
@@ -37,6 +38,7 @@ import {
   releasePreparationTracks,
   selectPreparationBatch,
 } from "../lib/predictive-queue";
+import { prewarmNonFypStacks } from "../lib/non-fyp-prewarm";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { downloadConcurrency, preferredAcquisitionUrl, ytDlpAudioArgs } from "../lib/yt-dlp";
 import { isExplicitDecision, refreshDecisionQueue } from "../lib/decision-refresh";
@@ -82,6 +84,21 @@ const artworkRecoveryLoop = createRecurringTaskLoop({
   },
   onError: (error) => {
     log("fail", `[Artwork Recovery] Scheduled pass failed: ${error instanceof Error ? error.message : String(error)}`);
+  },
+});
+
+const NON_FYP_PREWARM_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const nonFypPrewarmLoop = createRecurringTaskLoop({
+  initialDelayMs: 45_000,
+  intervalMs: NON_FYP_PREWARM_INTERVAL_MS,
+  task: async () => {
+    log("info", "[Non-FYP Prewarm] Refreshing one front track per stack");
+    const users = await listQueueUsers(db);
+    const result = await prewarmNonFypStacks(db, users);
+    log("ok", `[Non-FYP Prewarm] ${JSON.stringify(result)}`);
+  },
+  onError: (error) => {
+    log("fail", `[Non-FYP Prewarm] Pass failed: ${error instanceof Error ? error.message : String(error)}`);
   },
 });
 
@@ -2725,6 +2742,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     if (shuttingDown) { console.log("\n  Force quit."); process.exit(1); }
     shuttingDown = true;
     artworkRecoveryLoop.stop();
+    nonFypPrewarmLoop.stop();
     console.log(`\n  ${sig} received — shutting down watcher...`);
     await logEngineEvent("watcher_disconnected", "info", {
       message: `Watcher stopped (${sig})`,
@@ -2744,6 +2762,7 @@ console.log(`  ${new Date().toISOString()}\n`);
 startWatcher();
 // Scheduling returns immediately; recovery runs independently of Realtime startup.
 artworkRecoveryLoop.start();
+nonFypPrewarmLoop.start();
 void processPriorityQueue();
 
 // Polling is intentional: it keeps the worker reliable if Realtime misses an

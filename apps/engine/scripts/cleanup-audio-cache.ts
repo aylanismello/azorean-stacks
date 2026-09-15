@@ -146,11 +146,12 @@ function metadataProtection(meta: Record<string, unknown> | null | undefined): s
 }
 
 async function buildManifest(): Promise<Manifest> {
-  const [tracks, userTracks, seeds, requests] = await Promise.all([
+  const [tracks, userTracks, seeds, requests, stackPrewarm] = await Promise.all([
     fetchAll("tracks", "id,artist,title,source,status,storage_path,is_seed,is_re_seed,is_artist_seed,metadata,created_at,downloaded_at"),
     fetchAll("user_tracks", "user_id,track_id,status,super_liked,permanent,local_download_intent,voted_at,created_at,downloaded_at,listen_pct"),
     fetchAll("seeds", "id,user_id,track_id,active,source"),
     fetchAll("download_requests", "track_id,status,created_at"),
+    fetchAll("non_fyp_stack_prewarm", "track_id,expires_at"),
   ]);
 
   const typedTracks = tracks as TrackRow[];
@@ -176,6 +177,10 @@ async function buildManifest(): Promise<Manifest> {
   }
   for (const request of requests) {
     if (["pending", "downloading"].includes(request.status)) protect(request.track_id, "download_request:active");
+  }
+  const now = Date.now();
+  for (const reservation of stackPrewarm) {
+    if (new Date(reservation.expires_at).getTime() > now) protect(reservation.track_id, "stack_prewarm:active");
   }
 
   const recentCutoff = Date.now() - recentDays * 86_400_000;
@@ -317,7 +322,7 @@ async function currentProtectionReasons(tracks: PathTrackRow[]): Promise<Map<str
   const now = new Date().toISOString();
   for (let i = 0; i < trackIds.length; i += EXECUTION_BATCH_SIZE) {
     const ids = trackIds.slice(i, i + EXECUTION_BATCH_SIZE);
-    const [opinionsResult, seedsResult, queueResult, requestsResult] = await Promise.all([
+    const [opinionsResult, seedsResult, queueResult, requestsResult, stackPrewarmResult] = await Promise.all([
       withRetry("current user retention check", () => db.from("user_tracks")
         .select("track_id,status,super_liked,permanent,local_download_intent").in("track_id", ids)),
       withRetry("current seed check", () => db.from("seeds")
@@ -327,6 +332,8 @@ async function currentProtectionReasons(tracks: PathTrackRow[]): Promise<Map<str
         .in("state", ["ranked", "preparing", "ready"]).gt("expires_at", now)),
       withRetry("current download request check", () => db.from("download_requests")
         .select("track_id,status").in("track_id", ids).in("status", ["pending", "downloading"])),
+      withRetry("current stack prewarm check", () => db.from("non_fyp_stack_prewarm")
+        .select("track_id,expires_at").in("track_id", ids).gt("expires_at", now)),
     ]);
 
     for (const row of requireOk(opinionsResult, "current user retention check")) {
@@ -341,6 +348,9 @@ async function currentProtectionReasons(tracks: PathTrackRow[]): Promise<Map<str
     for (const row of requireOk(queueResult, "current warm queue check")) protect(row.track_id, `queue:${row.state}`);
     for (const row of requireOk(requestsResult, "current download request check")) {
       protect(row.track_id, "download_request:active");
+    }
+    for (const row of requireOk(stackPrewarmResult, "current stack prewarm check")) {
+      protect(row.track_id, "stack_prewarm:active");
     }
   }
   return reasons;
