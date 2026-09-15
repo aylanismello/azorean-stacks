@@ -11,7 +11,7 @@ import {
   performEpisodeTracklistAction,
   type EpisodeTracklistAction,
 } from "@/lib/episode-tracklist-actions";
-import type { DiscoveryAction, DiscoveryMutation, DiscoveryTrackRef } from "@/lib/discovery-mutation";
+import type { DiscoveryAction, DiscoveryTrackRef } from "@/lib/discovery-mutation";
 
 interface TrackListItem {
   id: string;
@@ -45,7 +45,6 @@ interface BaseTracklistProps {
   listTitle?: string | null;
   onClose?: () => void;
   onTrackSelect?: (trackId: string) => void;
-  mutation?: DiscoveryMutation | null;
   onDiscoveryAction?: (
     action: DiscoveryAction,
     track: DiscoveryTrackRef,
@@ -85,7 +84,6 @@ export function EpisodeTracklist(props: TracklistProps) {
     listTitle,
     onClose,
     onTrackSelect,
-    mutation,
     onDiscoveryAction,
     variant = "sidebar",
   } = props;
@@ -555,45 +553,6 @@ export function EpisodeTracklist(props: TracklistProps) {
           <p className="text-center text-muted text-xs py-8">No playable tracks yet — processing</p>
         ) : (
           <div className="space-y-0.5">
-            {!showHistory && mutation && mutation.queueChanges.length > 0 && (
-              <div
-                key={mutation.id}
-                role="status"
-                aria-label={mutation.detail}
-                className="discovery-queue-swap mx-1 mb-2 overflow-hidden rounded-xl border border-emerald-300/15 bg-emerald-400/[0.035] px-2.5 py-2"
-              >
-                <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1">
-                  {mutation.queueChanges.map((change) => (
-                    <div
-                      key={`${change.position}:${change.outgoing?.id || "none"}:${change.incoming?.id || "none"}:${change.moved?.id || "none"}`}
-                      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-[11px] font-medium"
-                    >
-                      <span className="shrink-0 pt-px tabular-nums text-foreground/60">#{change.position}</span>
-                      <span className="min-w-0">
-                        {change.outgoing && (
-                          <span className="discovery-swap-out block break-words text-foreground/60 line-through">
-                            {change.outgoing.artist} — {change.outgoing.title}
-                          </span>
-                        )}
-                        {change.incoming && (
-                          <span className="discovery-swap-in block break-words text-foreground">
-                            {change.incoming.artist} — {change.incoming.title}
-                          </span>
-                        )}
-                        {change.moved && (
-                          <span className="discovery-swap-in block break-words text-foreground">
-                            {change.moved.artist} — {change.moved.title}
-                            <span className="ml-1 text-foreground/65">
-                              #{change.fromPosition} → #{change.position}
-                            </span>
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
             {tracks.map((t) => {
               const isPlaying = globalPlayer.currentTrack?.id === t.id;
               const seedBadge = getSeedBadge(t);
@@ -803,7 +762,6 @@ export function TracklistSheet({
   open,
   onClose,
   onTrackSelect,
-  mutation,
   onDiscoveryAction,
 }: {
   episodeId?: string;
@@ -815,7 +773,6 @@ export function TracklistSheet({
   open: boolean;
   onClose: () => void;
   onTrackSelect?: (trackId: string) => void;
-  mutation?: DiscoveryMutation | null;
   onDiscoveryAction?: (
     action: DiscoveryAction,
     track: DiscoveryTrackRef,
@@ -838,7 +795,6 @@ export function TracklistSheet({
             listTitle={listTitle}
             onClose={onClose}
             onTrackSelect={onTrackSelect}
-            mutation={mutation}
             onDiscoveryAction={onDiscoveryAction}
             variant="sheet"
           />
@@ -851,7 +807,6 @@ export function TracklistSheet({
             seedId={seedId}
             onClose={onClose}
             onTrackSelect={onTrackSelect}
-            mutation={mutation}
             onDiscoveryAction={onDiscoveryAction}
             variant="sheet"
           />

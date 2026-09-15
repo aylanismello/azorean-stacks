@@ -213,7 +213,6 @@ function StackPageContent() {
   const [tangentMessage, setTangentMessage] = useState<string | null>(null);
   const [liveMutationIds, setLiveMutationIds] = useState<Set<string>>(() => new Set());
   const [discoveryMutation, setDiscoveryMutation] = useState<DiscoveryMutation | null>(null);
-  const [queueMutation, setQueueMutation] = useState<DiscoveryMutation | null>(null);
   const lastFypGenerationRef = useRef(0);
   const lastSeenTangentRef = useRef<string | null>(null);
   const playerQueueRef = useRef(globalPlayer.queue);
@@ -222,7 +221,6 @@ function StackPageContent() {
   const activeMutationIdRef = useRef<string | null>(null);
   const mutationSequenceRef = useRef(0);
   const mutationTimerRef = useRef<number | null>(null);
-  const queueMutationTimerRef = useRef<number | null>(null);
 
   const showDiscoveryMutation = useCallback((event: DiscoveryMutation) => {
     activeMutationIdRef.current = event.id;
@@ -234,14 +232,6 @@ function StackPageContent() {
       activeMutationIdRef.current = null;
       setDiscoveryMutation(null);
       setLiveMutationIds(new Set());
-    }, 6500);
-  }, []);
-
-  const showQueueMutation = useCallback((event: DiscoveryMutation) => {
-    setQueueMutation(event);
-    if (queueMutationTimerRef.current) window.clearTimeout(queueMutationTimerRef.current);
-    queueMutationTimerRef.current = window.setTimeout(() => {
-      setQueueMutation((active) => active?.id === event.id ? null : active);
     }, 6500);
   }, []);
 
@@ -279,7 +269,6 @@ function StackPageContent() {
 
   useEffect(() => () => {
     if (mutationTimerRef.current) clearTimeout(mutationTimerRef.current);
-    if (queueMutationTimerRef.current) clearTimeout(queueMutationTimerRef.current);
   }, []);
 
   const queueViewKey = episodeId
@@ -421,7 +410,6 @@ function StackPageContent() {
           },
         );
         if (completedMutation) {
-          showQueueMutation(completedMutation);
           // A seed-correlated completion stays visible for its full beat; later
           // readiness-only generations must not immediately overwrite it with a
           // generic refresh chip.
@@ -1495,7 +1483,6 @@ function StackPageContent() {
               refreshKey={voteCount}
               seedId={fromSeedId}
               onTrackSelect={handleTrackSelect}
-              mutation={queueMutation}
               onDiscoveryAction={beginActionMutation}
             />
           ) : (
@@ -1503,7 +1490,6 @@ function StackPageContent() {
               directTracks={queueAsTracklistItems as any}
               listTitle={seedName || genreFilter || "For You"}
               onTrackSelect={handleTrackSelect}
-              mutation={queueMutation}
               onDiscoveryAction={beginActionMutation}
             />
           )}
@@ -1543,7 +1529,6 @@ function StackPageContent() {
         open={tracklistOpen}
         onClose={() => setTracklistOpen(false)}
         onTrackSelect={handleTrackSelect}
-        mutation={queueMutation}
         onDiscoveryAction={beginActionMutation}
       />
 
@@ -1650,7 +1635,7 @@ function TrackContextModal({
 
   const modeLabel = () => {
     if (episodeTitle) return `Episode: ${episodeTitle}${episodePos && episodeTotal ? ` — track ${episodePos} of ${episodeTotal}` : ""}`;
-    if (stackSource === "seed" && seedName) return `Seed stack: ${seedName}`;
+    if ((stackSource === "seed" || stackSource === "ranked") && seedName) return `Seed stack: ${seedName}`;
     if (stackSource === "genre" && genreFilter) return `Genre filter: ${genreFilter}`;
     return "For You — ranked by taste profile";
   };

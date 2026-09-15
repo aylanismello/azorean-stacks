@@ -141,17 +141,13 @@ describe("player control layout contract", () => {
     expect(globals).toContain("@keyframes tangent-leaf-pop");
   });
 
-  test("shows restrained living-tree feedback and exact queue swaps for discovery actions", () => {
+  test("shows compact discovery feedback without a queue-swap ledger", () => {
     expect(fypPage).toContain("beginActionMutation(\"super_like\"");
     expect(fypPage).toContain("completeDiscoveryMutation(");
     expect(fypPage).toContain("discovery-mutation-chip");
-    expect(tracklist).toContain("discovery-queue-swap");
-    expect(tracklist).toContain("mutation.queueChanges.map");
-    expect(tracklist).toContain("change.outgoing.artist");
-    expect(tracklist).toContain("change.incoming.artist");
-    expect(tracklist).toContain("change.moved.artist");
-    expect(tracklist).toContain("#{change.fromPosition} → #{change.position}");
-    expect(tracklist).not.toContain("more queue changes");
+    expect(tracklist).not.toContain("discovery-queue-swap");
+    expect(tracklist).not.toContain("mutation.queueChanges.map");
+    expect(fypPage).not.toContain("mutation={queueMutation}");
     expect(fypPage).toContain("pendingMutationRef = useRef<DiscoveryMutation[]>([])");
     expect(fypPage).toContain("correlatedPendingMutation(pending, generation)");
     expect(fypPage).toContain("{discoveryMutation && (");
@@ -165,6 +161,11 @@ describe("player control layout contract", () => {
     expect(globals).toContain("@keyframes discovery-swap-out");
     expect(globals).toContain("@keyframes discovery-swap-in");
     expect(globals).toContain("prefers-reduced-motion: reduce");
+  });
+
+  test("labels ranked seed destinations as seed stacks", () => {
+    expect(fypPage).toContain('(stackSource === "seed" || stackSource === "ranked") && seedName');
+    expect(fypPage).toContain("`Seed stack: ${seedName}`");
   });
 
   test("keeps tangent labels readable in light and dark themes", () => {
