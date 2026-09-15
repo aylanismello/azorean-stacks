@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
+import { getPersonalizedCandidateTracks } from "@/lib/fyp-personalization";
+import { seedFeedCount } from "@/lib/filtered-feed-preparation";
 
 export const dynamic = "force-dynamic";
 
@@ -93,10 +95,10 @@ export async function GET(req: NextRequest) {
   const artistTracksByEpisode: Record<string, { artist: string; title: string }[]> = {};
 
   const episodeTrackStats: Record<string, { total: number; with_audio: number; enriched: number }> = {};
+  const allStatsRows: { episode_id: string; track_id: string; storage_path: string | null; spotify_url: string | null; youtube_url: string | null }[] = [];
 
   if (allEpisodeIds.length > 0) {
     // Paginated stats query — get track_id + pipeline data for counting
-    const allStatsRows: { episode_id: string; track_id: string; storage_path: string | null; spotify_url: string | null; youtube_url: string | null }[] = [];
     let statsPage = 0;
     while (true) {
       const { data: batch } = await supabase
@@ -208,6 +210,16 @@ export async function GET(req: NextRequest) {
     curatedCountBySeed[seedId] = eps.filter((ep) => curatedEpisodeIds.has(ep.id)).length;
   });
 
+  let feedCandidates: any[];
+  try {
+    const hideLow = req.nextUrl.searchParams.get("hide_low") === "true";
+    feedCandidates = await getPersonalizedCandidateTracks(supabase, user.id, hideLow);
+  } catch (candidateError) {
+    return NextResponse.json({
+      error: candidateError instanceof Error ? candidateError.message : "Failed to load seed candidates",
+    }, { status: 500 });
+  }
+
   // Get latest completed discovery run per seed
   const { data: runs } = await supabase
     .from("discovery_runs")
@@ -248,6 +260,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const feedCount = seedFeedCount(
+      feedCandidates,
+      episodes.map((episode) => episode.id),
+      allStatsRows,
+      seed.track_id,
+    );
+
     return {
       ...seed,
       discovery_count: seed.track_id ? (trackCounts[seed.track_id] || 0) : 0,
@@ -259,6 +278,8 @@ export async function GET(req: NextRequest) {
         tracks: totalTracks,
         enriched: totalEnriched,
         downloaded: totalDownloaded,
+        eligible_for_you: feedCount.eligible,
+        ready_for_you: feedCount.ready,
       },
     };
   });

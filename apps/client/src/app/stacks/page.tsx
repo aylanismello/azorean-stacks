@@ -16,6 +16,8 @@ interface StackSeed {
   total_playable: number;
   total_processing: number;
   total_unavailable: number;
+  eligible_queue_tracks: number;
+  ready_queue_tracks: number;
   cover_art_url: string | null;
   has_exact_match: boolean;
 }
@@ -23,6 +25,8 @@ interface StackSeed {
 interface GenreEntry {
   genre: string;
   pending: number;
+  eligible: number;
+  ready: number;
 }
 
 function decodeEntities(s: string): string {
@@ -46,18 +50,14 @@ export default function StacksPage() {
   const [error, setError] = useState<string | null>(null);
   const [hideLow, setHideLow] = useState(false);
 
-  useEffect(() => {
-    const stored = sessionStorage.getItem("stacks-hide-low-scored");
-    if (stored === "1") setHideLow(true);
-  }, []);
-
-  const fetchData = () => {
+  const fetchData = (nextHideLow = hideLow) => {
+    const query = nextHideLow ? "?hide_low=true" : "";
     Promise.all([
-      fetch("/api/stacks").then((r) => {
+      fetch(`/api/stacks${query}`).then((r) => {
         if (!r.ok) throw new Error(`Stacks: ${r.status}`);
         return r.json();
       }),
-      fetch("/api/genres").then((r) => {
+      fetch(`/api/genres${query}`).then((r) => {
         if (!r.ok) throw new Error(`Genres: ${r.status}`);
         return r.json();
       }),
@@ -72,7 +72,9 @@ export default function StacksPage() {
   };
 
   useEffect(() => {
-    fetchData();
+    const storedHideLow = sessionStorage.getItem("stacks-hide-low-scored") === "1";
+    setHideLow(storedHideLow);
+    fetchData(storedHideLow);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -133,6 +135,7 @@ export default function StacksPage() {
             const next = !hideLow;
             setHideLow(next);
             sessionStorage.setItem("stacks-hide-low-scored", next ? "1" : "0");
+            fetchData(next);
           }}
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
             hideLow ? "bg-accent" : "bg-foreground/20"
@@ -191,7 +194,9 @@ function GenreSection({ genres, router }: { genres: GenreEntry[]; router: Return
             className="group flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-foreground/5 hover:bg-foreground/10 border border-foreground/10 hover:border-accent/30 transition-all duration-150 active:scale-95"
           >
             <span className="text-xs text-foreground/80 group-hover:text-foreground">{g.genre}</span>
-            <span className="text-[10px] font-mono text-foreground/30">{g.pending}</span>
+            <span className="text-[11px] font-mono text-foreground/60">
+              {g.ready === g.eligible ? g.eligible : `${g.ready} ready / ${g.eligible}`}
+            </span>
           </button>
         ))}
         {hasMore && (
@@ -235,13 +240,10 @@ function StackTile({
 
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
 
-      {seed.total > 0 && (
+      {seed.eligible_queue_tracks > 0 && (
         <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-sm rounded-full px-2 py-0.5 flex items-center gap-1">
-          <span className="text-[10px] font-mono font-semibold text-green-400">
-            {seed.total_playable}
-          </span>
-          <span className="text-[10px] font-mono text-white/40">
-            /{seed.total}
+          <span className="text-[11px] font-mono font-semibold text-white">
+            {seed.ready_queue_tracks} ready / {seed.eligible_queue_tracks}
           </span>
         </div>
       )}
@@ -264,29 +266,12 @@ function StackTile({
         <p className="text-[10px] text-white/50 truncate mt-0.5 drop-shadow">
           {decodeEntities(seed.title)}
         </p>
-        {/* Stats: eps · total tracks · downloaded · unavailable · pending */}
-        <p className="text-[9px] font-mono mt-1 flex flex-wrap gap-x-1.5 items-center">
-          <span className="text-white/30">{seed.episodes.length} eps</span>
-          {seed.total > 0 && (
-            <>
-              <span className="text-white/20">·</span>
-              <span className="text-white/50">{seed.total} tracks</span>
-              <span className="text-white/20">·</span>
-              <span className="text-green-400/70">{seed.total_playable} ✅</span>
-            </>
-          )}
-          {seed.total_unavailable > 0 && (
-            <>
-              <span className="text-white/20">·</span>
-              <span className="text-red-400/50">{seed.total_unavailable} 🔻</span>
-            </>
-          )}
-          {seed.total_processing > 0 && (
-            <>
-              <span className="text-white/20">·</span>
-              <span className="text-yellow-400/60">{seed.total_processing} pending</span>
-            </>
-          )}
+        <p className="text-[11px] font-mono mt-1 flex flex-wrap gap-x-1.5 items-center text-white/75">
+          <span>{seed.eligible_queue_tracks} for you</span>
+          <span className="text-white/40">·</span>
+          <span>{seed.total} catalog</span>
+          <span className="text-white/40">·</span>
+          <span>{seed.episodes.length} eps</span>
         </p>
         <div className="flex items-center gap-2 mt-0.5">
           <span

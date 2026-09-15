@@ -68,7 +68,8 @@ export default function SeedsPage() {
 
   const fetchSeeds = useCallback(async () => {
     try {
-      const res = await fetch("/api/seeds");
+      const hideLow = typeof window !== "undefined" && sessionStorage.getItem("stacks-hide-low-scored") === "1";
+      const res = await fetch(`/api/seeds${hideLow ? "?hide_low=true" : ""}`);
       if (!res.ok) throw new Error(`Failed to load seeds (${res.status})`);
       const data = await res.json();
       setSeeds(data || []);
@@ -651,33 +652,11 @@ function SeedCard({
             {seed.stats.episodes} ep{seed.stats.episodes !== 1 ? "s" : ""}
           </span>
           <span className="text-surface-4">·</span>
-          <span className="text-xs text-foreground/50">
-            {seed.stats.tracks} tracks
+          <span className="text-xs text-foreground/80 font-medium">
+            {seed.stats.ready_for_you ?? 0} ready / {seed.stats.eligible_for_you ?? 0} for you
           </span>
-          {seed.stats.downloaded > 0 && (
-            <>
-              <span className="text-surface-4">·</span>
-              <span className="text-xs text-green-400 font-medium">
-                {seed.stats.downloaded} ✅
-              </span>
-            </>
-          )}
-          {seed.stats.enriched > seed.stats.downloaded && (
-            <>
-              <span className="text-surface-4">·</span>
-              <span className="text-xs text-amber-400 font-medium">
-                {seed.stats.enriched - seed.stats.downloaded} ⏳
-              </span>
-            </>
-          )}
-          {seed.stats.tracks > seed.stats.enriched && (
-            <>
-              <span className="text-surface-4">·</span>
-              <span className="text-xs text-muted/50">
-                {seed.stats.tracks - seed.stats.enriched} pending
-              </span>
-            </>
-          )}
+          <span className="text-surface-4">·</span>
+          <span className="text-xs text-foreground/50">{seed.stats.tracks} catalog</span>
         </div>
       )}
     </div>

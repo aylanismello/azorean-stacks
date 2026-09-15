@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
+import { getPersonalizedCandidateTracks } from "@/lib/fyp-personalization";
+import { seedFeedCount, type FeedAppearance } from "@/lib/filtered-feed-preparation";
 
 export const dynamic = "force-dynamic";
 
@@ -29,11 +31,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // 1. Get seeds for the authenticated user (including legacy null-user seeds)
+  // 1. Only expose seeds the destination feed can authorize for this user.
   const { data: seeds, error: seedErr } = await supabase
     .from("seeds")
-    .select("id, artist, title, active, cover_art_url, created_at")
-    .or(`user_id.eq.${user.id},user_id.is.null`)
+    .select("id, track_id, artist, title, active, cover_art_url, created_at")
+    .eq("user_id", user.id)
     .order("created_at", { ascending: false });
 
   if (seedErr) {
@@ -77,9 +79,31 @@ export async function GET(req: NextRequest) {
 
   if (allEpisodeIds.size === 0) {
     return NextResponse.json({
-      stacks: (seeds || []).map((s) => ({ ...s, episodes: [], total_pending: 0, total_approved: 0, total_rejected: 0, total: 0, total_playable: 0, total_processing: 0, total_unavailable: 0 })),
+      stacks: (seeds || []).map((s) => ({ ...s, episodes: [], total_pending: 0, total_approved: 0, total_rejected: 0, total: 0, total_playable: 0, total_processing: 0, total_unavailable: 0, eligible_queue_tracks: 0, ready_queue_tracks: 0 })),
       total_pending: 0,
     });
+  }
+
+  // Use the same personalized eligibility and episode appearance membership as
+  // the queue endpoint. Catalog totals remain available but are not presented
+  // as if every catalog appearance can play in this user's stack.
+  const hideLow = req.nextUrl.searchParams.get("hide_low") === "true";
+  let candidates: any[];
+  try {
+    candidates = await getPersonalizedCandidateTracks(supabase, user.id, hideLow);
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Failed to load stack candidates" }, { status: 500 });
+  }
+  const appearances: FeedAppearance[] = [];
+  for (let appearancePage = 0; ; appearancePage++) {
+    const { data: batch, error } = await supabase.from("episode_tracks")
+      .select("episode_id,track_id")
+      .in("episode_id", Array.from(allEpisodeIds))
+      .range(appearancePage * 1000, (appearancePage + 1) * 1000 - 1);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (!batch || batch.length === 0) break;
+    appearances.push(...batch as FeedAppearance[]);
+    if (batch.length < 1000) break;
   }
 
   // 3. Get per-episode track stats — paginate past Supabase 1000-row cap
@@ -188,7 +212,8 @@ export async function GET(req: NextRequest) {
 
   const stacks = (seeds || []).map((seed) => {
     const seedArtistLower = (seed.artist || "").toLowerCase();
-    const eps = (episodesBySeed[seed.id] || [])
+    const linkedEpisodes = episodesBySeed[seed.id] || [];
+    const eps = linkedEpisodes
       .filter((ep) => !ep.skipped)
       .map((ep) => {
         const stats = episodeStats[ep.id] || { pending: 0, approved: 0, rejected: 0, total: 0, playable: 0, processing: 0, unavailable: 0, cover_art_url: null, sample_tracks: [] };
@@ -207,6 +232,12 @@ export async function GET(req: NextRequest) {
     const totalPlayable = eps.reduce((s, e) => s + e.playable, 0);
     const totalProcessing = eps.reduce((s, e) => s + e.processing, 0);
     const totalUnavailable = eps.reduce((s, e) => s + e.unavailable, 0);
+    const feedCount = seedFeedCount(
+      candidates,
+      linkedEpisodes.map((episode) => episode.id),
+      appearances,
+      seed.track_id,
+    );
     globalPending += totalPending;
 
     // Use the seed's own cover art (from Spotify lookup of the seed song itself)
@@ -229,6 +260,8 @@ export async function GET(req: NextRequest) {
       total_playable: totalPlayable,
       total_processing: totalProcessing,
       total_unavailable: totalUnavailable,
+      eligible_queue_tracks: feedCount.eligible,
+      ready_queue_tracks: feedCount.ready,
       cover_art_url,
       has_exact_match,
     };

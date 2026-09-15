@@ -10,6 +10,12 @@ export interface PersonalizedFypOptions {
   seedArtist?: string | null;
 }
 
+export interface PersonalizedFeedResult {
+  rows: any[];
+  candidateTotal: number;
+  candidates: any[];
+}
+
 function joinedTrack(row: any) {
   return Array.isArray(row.track) ? row.track[0] : row.track;
 }
@@ -177,15 +183,63 @@ export async function getPersonalizedTracks(
   return ranked.slice(offset, target);
 }
 
-/** Load filtered or unfiltered FYP rows without any global-score fallback. */
-export async function loadPersonalizedFyp(
+/** Ranked untouched candidates for a bespoke feed, including tracks whose
+ * audio is still being prepared. */
+export async function getPersonalizedCandidateTracks(
+  db: any,
+  userId: string,
+  hideLow = false,
+) {
+  const { pending } = await getPendingTrackIds(db, userId);
+  const ranked: any[] = [];
+  const seen = new Set<string>();
+
+  for (let page = 0; ; page++) {
+    let query = db.from("user_track_scores")
+      .select("track_id,score,confidence,components,track:tracks!inner(*)")
+      .eq("user_id", userId)
+      .order("score", { ascending: false })
+      .order("confidence", { ascending: false })
+      .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
+    if (hideLow) query = query.gt("score", -0.3);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    for (const scoreRow of data || []) {
+      const track = joinedTrack(scoreRow);
+      if (!track || !pending.has(track.id) || seen.has(track.id)) continue;
+      seen.add(track.id);
+      ranked.push({
+        ...track,
+        status: "pending",
+        super_liked: false,
+        voted_at: null,
+        listen_pct: null,
+        taste_score: Number(scoreRow.score || 0),
+        metadata: {
+          ...(track.metadata || {}),
+          _score_components: scoreRow.components || {},
+          _score_confidence: Number(scoreRow.confidence || 0),
+        },
+      });
+    }
+    if (!data || data.length < QUERY_PAGE_SIZE) break;
+  }
+
+  return ranked;
+}
+
+export async function loadPersonalizedFeed(
   db: any,
   userId: string,
   options: PersonalizedFypOptions,
-) {
+): Promise<PersonalizedFeedResult> {
   const { limit, offset, hideLow, seedId = null, genre = null, seedArtist = null } = options;
   const isFiltered = Boolean(seedId || genre || seedArtist);
-  if (!isFiltered) return getPersonalizedTracks(db, userId, limit, offset, hideLow);
+  if (!isFiltered) {
+    const rows = await getPersonalizedTracks(db, userId, limit, offset, hideLow);
+    return { rows, candidateTotal: rows.length, candidates: rows };
+  }
 
   let allowedBySeed: Set<string> | null = null;
   if (seedId) {
@@ -203,18 +257,25 @@ export async function loadPersonalizedFyp(
     const episodeLinks = await db.from("episode_seeds").select("episode_id").eq("seed_id", seedId);
     if (episodeLinks.error) throw episodeLinks.error;
     const episodeIds = (episodeLinks.data || []).map((link: any) => link.episode_id);
-    const appearances = episodeIds.length
-      ? await db.from("episode_tracks").select("track_id").in("episode_id", episodeIds)
-      : { data: [], error: null };
-    if (appearances.error) throw appearances.error;
-    allowedBySeed = new Set((appearances.data || []).map((link: any) => link.track_id));
+    allowedBySeed = new Set<string>();
+    if (episodeIds.length) {
+      for (let page = 0; ; page++) {
+        const appearances = await db.from("episode_tracks")
+          .select("track_id")
+          .in("episode_id", episodeIds)
+          .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
+        if (appearances.error) throw appearances.error;
+        for (const link of appearances.data || []) allowedBySeed.add(link.track_id);
+        if (!appearances.data || appearances.data.length < QUERY_PAGE_SIZE) break;
+      }
+    }
     if (ownedSeed.track_id) allowedBySeed.add(ownedSeed.track_id);
   }
 
-  const personalized = await getPersonalizedTracks(db, userId, 10_000, 0, hideLow);
+  const personalized = await getPersonalizedCandidateTracks(db, userId, hideLow);
   const genreKey = genre?.toLowerCase();
   const seedArtistKey = seedArtist?.toLowerCase();
-  return personalized.filter((track: any) => {
+  const candidates = personalized.filter((track: any) => {
     if (allowedBySeed && !allowedBySeed.has(track.id)) return false;
     const metadata = (track.metadata || {}) as Record<string, unknown>;
     if (genreKey) {
@@ -223,5 +284,20 @@ export async function loadPersonalizedFyp(
     }
     if (seedArtistKey && String(metadata.seed_artist || "").toLowerCase() !== seedArtistKey) return false;
     return true;
-  }).slice(offset, offset + limit);
+  });
+  const ready = candidates.filter((track: any) => Boolean(track.storage_path));
+  return {
+    rows: ready.slice(offset, offset + limit),
+    candidateTotal: candidates.length,
+    candidates,
+  };
+}
+
+/** Load filtered or unfiltered FYP rows without any global-score fallback. */
+export async function loadPersonalizedFyp(
+  db: any,
+  userId: string,
+  options: PersonalizedFypOptions,
+) {
+  return (await loadPersonalizedFeed(db, userId, options)).rows;
 }

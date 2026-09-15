@@ -126,6 +126,8 @@ export interface SeedStats {
   tracks: number;
   enriched: number;
   downloaded: number;
+  eligible_for_you?: number;
+  ready_for_you?: number;
 }
 
 export interface Seed {

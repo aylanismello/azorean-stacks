@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadPersonalizedFyp } from "./fyp-personalization";
+import { loadPersonalizedFeed, loadPersonalizedFyp } from "./fyp-personalization";
 
 type Fixture = {
   pending?: Array<{ track_id: string; status: string }>;
@@ -57,6 +57,33 @@ const readyTrack = {
 };
 
 describe("loadPersonalizedFyp", () => {
+  test("filtered feeds count ranked candidates before audio readiness", async () => {
+    const unreadyTrack = {
+      ...readyTrack,
+      id: "track-2",
+      storage_path: null,
+      youtube_url: "https://youtube.com/watch?v=track-2",
+    };
+    const fixture = fixtureDb({
+      pending: [
+        { track_id: "track-1", status: "pending" },
+        { track_id: "track-2", status: "pending" },
+      ],
+      rankedScores: [
+        { track_id: "track-1", score: 0.91, confidence: 0.87, components: {}, track: readyTrack },
+        { track_id: "track-2", score: 0.82, confidence: 0.75, components: {}, track: unreadyTrack },
+      ],
+    });
+
+    const result = await loadPersonalizedFeed(fixture.db, "user-a", {
+      limit: 20, offset: 0, hideLow: false, genre: "House",
+    });
+
+    expect(result.rows.map((track) => track.id)).toEqual(["track-1"]);
+    expect(result.candidateTotal).toBe(2);
+    expect(result.candidates.map((track) => track.id)).toEqual(["track-1", "track-2"]);
+  });
+
   test("global track status cannot suppress the user's pending ready candidate and confidence is personalized", async () => {
     const fixture = fixtureDb({
       pending: [{ track_id: "track-1", status: "pending" }],

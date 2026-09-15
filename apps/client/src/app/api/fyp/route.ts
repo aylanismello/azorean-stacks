@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks, paceTracks } from "@/lib/diversify";
-import { loadPersonalizedFyp } from "@/lib/fyp-personalization";
+import { loadPersonalizedFeed, loadPersonalizedFyp } from "@/lib/fyp-personalization";
+import { filteredFeedWarmCandidates, queueFilteredFeedPreparation } from "@/lib/filtered-feed-preparation";
 import {
   loadFypWithOptionalExploration,
   signOptionalExplorationAudio,
@@ -62,24 +63,42 @@ export async function GET(req: NextRequest) {
   }
 
   const db = getServiceClient();
+  const isFiltered = Boolean(seedId || genre || seedArtist);
   let shouldExplore = false;
   if (offset === 0 && !seedId && !genre && !seedArtist) {
     shouldExplore = true;
   }
   let rows: any[];
   let seriesExploration: any[];
+  let candidateTotal: number | null = null;
+  let queuedForPreparation = 0;
+  let preparingTrackIds: string[] = [];
   try {
-    ({ rows, seriesExploration } = await loadFypWithOptionalExploration({
-      loadPersonalized: () => loadPersonalizedFyp(db, user.id, {
+    if (isFiltered) {
+      const feed = await loadPersonalizedFeed(db, user.id, {
         limit, offset, hideLow, seedId, genre, seedArtist,
-      }),
-      loadExploration: (ordinaryRows) => loadSeriesExploration(
-        db,
-        user.id,
-        new Set(ordinaryRows.map((track: any) => track.id)),
-      ),
-      shouldExplore,
-    }));
+      });
+      rows = feed.rows;
+      seriesExploration = [];
+      candidateTotal = feed.candidateTotal;
+      preparingTrackIds = filteredFeedWarmCandidates(feed.candidates).map((track) => track.id);
+      // Entering a bespoke feed warms its highest-ranked unresolved rows. The
+      // client watches those exact catalog rows, so readiness fills this same
+      // filtered URL without replacing its identity with generic 4U.
+      queuedForPreparation = await queueFilteredFeedPreparation(db, user.id, feed.candidates);
+    } else {
+      ({ rows, seriesExploration } = await loadFypWithOptionalExploration({
+        loadPersonalized: () => loadPersonalizedFyp(db, user.id, {
+          limit, offset, hideLow,
+        }),
+        loadExploration: (ordinaryRows) => loadSeriesExploration(
+          db,
+          user.id,
+          new Set(ordinaryRows.map((track: any) => track.id)),
+        ),
+        shouldExplore,
+      }));
+    }
   } catch (error) {
     const status = error instanceof Error && "status" in error && error.status === 404 ? 404 : 500;
     const message = error instanceof Error ? error.message : "Failed to load personalized FYP";
@@ -241,11 +260,13 @@ export async function GET(req: NextRequest) {
     withSeriesExploration = paceTracks(injectSeriesExploration(diversified, seriesExploration));
   }
 
-  const tangentResult = await db.from("user_fyp_tangents")
-    .select("id,seed_id,seed_artist,seed_title,generation,track_ids,added_track_ids,moved_track_ids,removed_track_ids,track_snapshots,removed_track_snapshots,start_rank,created_at")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false })
-    .limit(10);
+  const tangentResult = isFiltered
+    ? { data: [], error: null }
+    : await db.from("user_fyp_tangents")
+        .select("id,seed_id,seed_artist,seed_title,generation,track_ids,added_track_ids,moved_track_ids,removed_track_ids,track_snapshots,removed_track_snapshots,start_rank,created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(10);
   if (tangentResult.error) {
     return NextResponse.json({ error: tangentResult.error.message }, { status: 500 });
   }
@@ -302,7 +323,10 @@ export async function GET(req: NextRequest) {
   // count included other users' already-actioned rows and was not an FYP count.
   return NextResponse.json({
     tracks: withSeriesExploration,
-    total: withSeriesExploration.length,
+    total: candidateTotal ?? withSeriesExploration.length,
+    ready_total: withSeriesExploration.length,
+    queued_for_preparation: queuedForPreparation,
+    preparing_track_ids: preparingTrackIds,
     generation,
     tangents,
   });

@@ -201,6 +201,8 @@ function StackPageContent() {
   // Page-level UI state (no track state — provider owns that)
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
+  const [queuedForPreparation, setQueuedForPreparation] = useState(0);
+  const [preparingTrackFilter, setPreparingTrackFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [hideLowScored, setHideLowScored] = useState(false);
   const [recentTangents, setRecentTangents] = useState<FypTangent[]>([]);
@@ -293,7 +295,6 @@ function StackPageContent() {
   useEffect(() => {
     const stored = sessionStorage.getItem("stacks-hide-low-scored");
     if (stored === "1") setHideLowScored(true);
-    activeQueueViewRef.current = sessionStorage.getItem("stacks-active-queue-view");
     lastSeenTangentRef.current = localStorage.getItem("stacks-last-tangent");
   }, []);
   const [skippingEpisode, setSkippingEpisode] = useState(false);
@@ -346,7 +347,7 @@ function StackPageContent() {
   }, [episodeId, hideLowScored, fromSeedId, genreFilter, seedFilter]);
 
   const fetchTracks = useCallback(async (
-    mode: "navigation" | "live" = "navigation",
+    mode: "navigation" | "live" | "readiness" = "navigation",
     signal?: AbortSignal,
   ) => {
     try {
@@ -374,13 +375,15 @@ function StackPageContent() {
       }
 
       setTotal(data.total || 0);
+      setQueuedForPreparation(data.queued_for_preparation || 0);
+      setPreparingTrackFilter((data.preparing_track_ids || []).join(","));
       setRecentTangents(tangents);
       setError(null);
       setAdvancingEpisode(false);
 
       // Live 4U reconciliation owns only the queue ordering. setQueue preserves
       // the loaded audio element and finds the playing track's new position.
-      if (mode === "live" && !episodeId) {
+      if (mode !== "navigation" && !episodeId) {
         const previousQueue = playerQueueRef.current;
         const reconciledQueue = reconcileLiveFypQueue(
           previousQueue,
@@ -389,7 +392,12 @@ function StackPageContent() {
         );
         globalPlayer.setQueue(reconciledQueue);
         playerQueueRef.current = reconciledQueue;
+        if (!playerCurrentTrackRef.current && reconciledQueue[0]) {
+          globalPlayer.loadTrack(reconciledQueue[0]);
+          playerCurrentTrackRef.current = reconciledQueue[0];
+        }
         setHasEpisodeTracks(false);
+        if (!isHomeFyp) return;
         const latestTangent = tangents[0] || null;
         const revealTangent = shouldRevealTangent(
           latestTangent,
@@ -467,41 +475,47 @@ function StackPageContent() {
           // Ordinary navigation back to the same view must not mutate its
           // active sequence. Low-queue replenishment happens after voting.
         } else {
-          const startIndex = destinationQueueStartIndex(playerTracks, playingTrack?.id);
-          // Preserve the audio element, not a foreign queue row. -1 represents
-          // playback outside this destination so next enters its first track.
+          const startIndex = destinationQueueStartIndex(playerTracks);
+          // A selected feed owns the player immediately. Do not leave a track
+          // from the previous stack displayed above the destination queue.
           globalPlayer.setQueue(playerTracks, startIndex);
-          if (!playingTrack) globalPlayer.loadTrack(playerTracks[0]);
+          globalPlayer.loadTrack(playerTracks[startIndex]);
         }
+        setHasEpisodeTracks(false);
+      } else if (!episodeId && !sameQueueView) {
+        // If this destination is still preparing, clear the foreign player
+        // instead of presenting it as part of the selected feed.
+        globalPlayer.stop();
         setHasEpisodeTracks(false);
       }
 
       activeQueueViewRef.current = queueViewKey;
-      sessionStorage.setItem("stacks-active-queue-view", queueViewKey);
     } catch (err) {
       if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
       setError(err instanceof Error ? err.message : "Failed to load tracks");
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [buildUrl, episodeId, queueViewKey, spotifyConnected]);
+  }, [buildUrl, episodeId, isHomeFyp, queueViewKey, spotifyConnected]);
 
   useEffect(() => {
-    fetchTracks();
+    const controller = new AbortController();
+    fetchTracks("navigation", controller.signal);
+    return () => controller.abort();
   }, [fetchTracks]);
 
   useEffect(() => {
-    if (!isHomeFyp) return;
+    if (episodeId) return;
     const supabase = createBrowserClient();
     let mounted = true;
     let channel: ReturnType<typeof supabase.channel> | null = null;
     const controller = new AbortController();
 
-    const reconcile = () => {
+    const reconcile = (mode: "live" | "readiness" = "readiness") => {
       if (!mounted) return;
       liveRefreshChainRef.current = liveRefreshChainRef.current
         .catch(() => {})
-        .then(() => mounted ? fetchTracks("live", controller.signal) : undefined);
+        .then(() => mounted ? fetchTracks(mode, controller.signal) : undefined);
     };
     const onVisible = () => {
       if (document.visibilityState === "visible") reconcile();
@@ -509,8 +523,8 @@ function StackPageContent() {
 
     void supabase.auth.getUser().then(({ data }) => {
       if (!mounted || !data.user) return;
-      channel = supabase
-        .channel(`live-fyp-${data.user.id}`)
+      let feedChannel = supabase
+        .channel(`live-feed-${data.user.id}`)
         .on(
           "postgres_changes",
           {
@@ -524,10 +538,24 @@ function StackPageContent() {
             if (
               typeof next.generation === "number"
                 && shouldApplyFypGeneration(lastFypGenerationRef.current, next.generation)
-            ) reconcile();
+            ) reconcile("live");
           },
-        )
-        .subscribe((status) => {
+        );
+      if (preparingTrackFilter) {
+        feedChannel = feedChannel.on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "tracks",
+            filter: `id=in.(${preparingTrackFilter})`,
+          },
+          (payload) => {
+            if ((payload.new as { storage_path?: string | null }).storage_path) reconcile("readiness");
+          },
+        );
+      }
+      channel = feedChannel.subscribe((status) => {
           if (status === "SUBSCRIBED") reconcile();
         });
     });
@@ -540,7 +568,7 @@ function StackPageContent() {
       document.removeEventListener("visibilitychange", onVisible);
       if (channel) void supabase.removeChannel(channel);
     };
-  }, [fetchTracks, isHomeFyp]);
+  }, [episodeId, fetchTracks, preparingTrackFilter]);
 
   const advanceToNextEpisode = useCallback(async () => {
     setAdvancingEpisode(true);
@@ -1055,11 +1083,26 @@ function StackPageContent() {
   // ── Empty ──
   const queue = globalPlayer.queue;
   const hasTracksButNonePlayable = queue.length > 0 && !currentTrack;
+  const isPreparingFilteredFeed = !episodeId && !isHomeFyp && total > 0;
 
   if (!currentTrack) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[80vh] px-6 text-center">
-        {hasTracksButNonePlayable ? (
+        {isPreparingFilteredFeed ? (
+          <>
+            <h2 className="text-xl font-medium text-foreground/80 mb-2">Preparing this stack</h2>
+            <p className="text-sm text-muted max-w-xs">
+              {total} track{total !== 1 ? "s" : ""} match. Audio for the first ones is being prepared now.
+              {queuedForPreparation > 0 ? ` ${queuedForPreparation} just joined the preparation queue.` : ""}
+            </p>
+            <button
+              onClick={() => { void fetchTracks(); }}
+              className="mt-6 px-5 py-2 text-sm bg-surface-2 hover:bg-surface-3 rounded-lg text-muted hover:text-foreground transition-colors"
+            >
+              Refresh
+            </button>
+          </>
+        ) : hasTracksButNonePlayable ? (
           <>
             <h2 className="text-xl font-medium text-foreground/80 mb-2">
               No playable tracks yet — processing
@@ -1196,7 +1239,9 @@ function StackPageContent() {
           <span className="text-[10px] font-mono text-muted/60">
             {hasEpisodeTracks
               ? `${currentDisplayIndex + 1} / ${total}`
-              : `${globalPlayer.queue.length} track${globalPlayer.queue.length === 1 ? "" : "s"} in queue`}
+              : !isHomeFyp && total > globalPlayer.queue.length
+                ? `${globalPlayer.queue.length} ready · ${total} matched`
+                : `${globalPlayer.queue.length} track${globalPlayer.queue.length === 1 ? "" : "s"} in queue`}
           </span>
         </div>
 
