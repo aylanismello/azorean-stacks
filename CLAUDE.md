@@ -8,22 +8,19 @@
 - **After finishing work**, update BACKLOG.md: check off completed items, add any new issues you discovered
 - **If you notice something broken/improvable but it's not your current task**, add it to BACKLOG.md instead of fixing it inline
 
-## The /lol board — anything you build, Aylan has to see work
+## /lol is not this repo's board — do not write to it
 
-`/lol` (this app, `src/app/lol`) has two columns: **built** and **verified**. *Built* is a claim you made.
-*Verified* is Aylan having watched it work himself. When you finish something a person has to confirm, add a
-card — not a summary in chat, which scrolls away.
+`src/lol` lives here and is deployed from here, but the board it serves belongs to
+**Mise**. It is one person's queue of Mise changes waiting to be checked on a
+device, and filling it with work from this repo turns a list he trusts into a list
+he has to sort.
 
-Table `public.lol_items`, this project's Supabase. Insert via the Supabase MCP with `title` (what he is
-checking, in his words), `detail` (the steps to check it — and if it is not deployed yet, say so on the first
-line), `area` (the group; reuse one), `source` (repo and file).
+Never insert into `public.lol_items` for work done in this repo. The table refuses
+it — every row must name Mise as its source — but the constraint is a backstop,
+not the reason. Use `BACKLOG.md` for this repo, as above.
 
-**Never move a card to `verified` yourself** — not after passing tests, not after a screenshot. That column
-exists to hold exactly what your confidence does not cover; only a person who watched it work moves it. You
-may write `notes`, and fix a `title`/`detail`/`area`. Never `status`, never `verified_at`.
-
-Read the board before starting: a card already sitting in *built* means you may be redoing something nobody
-has checked yet.
+Changes to `src/lol` itself are the one honest exception, and they are still his
+to raise, not yours to file.
 
 <!-- BACKLOG.MD GUIDELINES START -->
 # Instructions for the usage of Backlog.md CLI Tool
