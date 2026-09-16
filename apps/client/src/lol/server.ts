@@ -92,6 +92,19 @@ export async function PATCH(req: NextRequest) {
     }
     patch.status = body.status;
   }
+  // **Marking a card as landed is one call, not one per card.** A build goes to a
+  // device carrying dozens of them, and "on your phone now" is a fact about the
+  // build rather than about each card — so it is stamped in a sweep, and the
+  // board can say "untestable" for anything the sweep did not reach.
+  if (Array.isArray(body?.devices)) {
+    const known = ["iphone", "ipad", "mac"];
+    const list = body.devices.filter((d: unknown) => typeof d === "string" && known.includes(d));
+    patch.devices = list;
+  }
+  if (typeof body?.shipped_build === "string") {
+    patch.shipped_build = body.shipped_build.trim() || null;
+    patch.shipped_at = new Date().toISOString();
+  }
   for (const field of ["title", "detail", "area", "source", "notes"] as const) {
     if (typeof body?.[field] === "string") {
       const v = (body[field] as string).trim();

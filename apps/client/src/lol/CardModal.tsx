@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { VERIFIED, type Item } from "./types";
+import { VERIFIED, deviceLabel, isTestable, type Item } from "./types";
 import { LOOK, labelFor, stamp } from "./look";
 
 /**
@@ -32,6 +32,7 @@ export function CardModal({
   }, [onClose]);
 
   const done = item.status === VERIFIED;
+  const waiting = !isTestable(item);
 
   return (
     <div
@@ -54,6 +55,26 @@ export function CardModal({
               </span>
             </div>
             <h2 className="text-base font-semibold leading-snug">{item.title}</h2>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              {item.devices.map((d) => (
+                <span
+                  key={d}
+                  className="rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide"
+                  style={
+                    waiting
+                      ? { color: LOOK.soft, border: `1px dashed ${LOOK.line}` }
+                      : { color: "#fff", background: LOOK.listInk }
+                  }
+                >
+                  {deviceLabel(d)}
+                </span>
+              ))}
+              {waiting ? (
+                <span className="font-mono text-[11px]" style={{ color: LOOK.danger }}>
+                  the build carrying this is not on {item.devices.length === 1 ? "it" : "them"} yet
+                </span>
+              ) : null}
+            </div>
             {item.source ? (
               <p className="mt-1 font-mono text-[11px]" style={{ color: LOOK.soft }}>
                 {item.source}
@@ -119,6 +140,13 @@ export function CardModal({
               </>
             ) : null}
             added {stamp(item.created_at)}
+            {item.shipped_at ? (
+              <>
+                <br />
+                on device {stamp(item.shipped_at)}
+                {item.shipped_build ? ` · ${item.shipped_build}` : ""}
+              </>
+            ) : null}
           </span>
           <button
             onClick={onDelete}

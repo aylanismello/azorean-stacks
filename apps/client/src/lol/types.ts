@@ -11,6 +11,12 @@ export interface Item {
   notes: string | null;
   sort: number;
   lane_sort: number;
+  /// Where this has to be checked. More than one when the same code runs on both.
+  devices: Device[];
+  /// When the build carrying it was actually put on those devices — null means it
+  /// is not testable yet, which is a different thing from untested.
+  shipped_at: string | null;
+  shipped_build: string | null;
   created_at: string;
   verified_at: string | null;
 }
@@ -22,6 +28,33 @@ export interface Item {
  * "Built", or a batch of work with a date — and the board does not care what
  * they are called.
  */
+export type Device = "iphone" | "ipad" | "mac";
+
+/**
+ * **Where a card has to be checked, and whether it is there yet.**
+ *
+ * Most of Mise is three apps over one codebase: a fix to the tape is a phone job,
+ * a Rekordbox write-back can only be judged at the Mac. A board that says "go and
+ * test this" without saying *on what* is a board you read twice.
+ *
+ * `devices` and `shipped_at` are deliberately separate. A card that needs the
+ * iPhone and is not on the iPhone yet is not untested, it is **untestable** —
+ * and a queue that cannot tell those apart is a queue full of things that might
+ * be lies.
+ */
+export const DEVICES: { key: Device; label: string; glyph: string }[] = [
+  { key: "iphone", label: "iPhone", glyph: "▯" },
+  { key: "ipad", label: "iPad", glyph: "▭" },
+  { key: "mac", label: "Mac", glyph: "▬" },
+];
+export function deviceLabel(d: Device): string {
+  return DEVICES.find((x) => x.key === d)?.label ?? d;
+}
+/** Testable means the build is on the devices it names. Nothing to name, nothing to wait for. */
+export function isTestable(i: Item): boolean {
+  return i.devices.length === 0 || i.shipped_at !== null;
+}
+
 export const VERIFIED = "verified";
 export const BUILT = "built";
 

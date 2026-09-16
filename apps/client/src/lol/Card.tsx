@@ -1,6 +1,6 @@
 "use client";
 
-import { VERIFIED, type Item } from "./types";
+import { VERIFIED, deviceLabel, isTestable, type Item } from "./types";
 import { LOOK, labelFor, stamp } from "./look";
 
 /**
@@ -32,6 +32,9 @@ export function Card({
   onDropOnCard: () => void;
 }) {
   const done = item.status === VERIFIED;
+  // a card whose build is not on its devices yet cannot be checked — said plainly
+  // rather than left to be discovered by going and looking
+  const waiting = !isTestable(item);
 
   return (
     <div>
@@ -64,13 +67,27 @@ export function Card({
         className={`cursor-grab rounded-lg p-2 shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing ${
           dragging ? "rotate-2 opacity-40" : ""
         }`}
-        style={{ background: LOOK.card, boxShadow: "0 1px 1px rgba(9,30,66,0.25)" }}
+        style={{ background: LOOK.card, boxShadow: "0 1px 1px rgba(9,30,66,0.25)", opacity: waiting ? 0.62 : 1 }}
       >
-        <div className="mb-1.5 flex items-center gap-1.5">
+        <div className="mb-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
           <span className="h-2 w-10 rounded" style={{ background: labelFor(item.area) }} />
           <span className="font-mono text-[10px] uppercase tracking-wider" style={{ color: LOOK.soft }}>
             {item.area}
           </span>
+          {/* where to look. Solid once the build is on them; outlined while it is not. */}
+          {item.devices.map((d) => (
+            <span
+              key={d}
+              className="rounded px-1.5 py-px font-mono text-[9px] uppercase tracking-wide"
+              style={
+                waiting
+                  ? { color: LOOK.soft, border: `1px dashed ${LOOK.line}` }
+                  : { color: "#fff", background: LOOK.listInk }
+              }
+            >
+              {deviceLabel(d)}
+            </span>
+          ))}
         </div>
 
         <div className="flex items-start gap-2">
@@ -111,6 +128,9 @@ export function Card({
               ) : (
                 <span title="when it landed on the board">{stamp(item.created_at)}</span>
               )}
+              {waiting ? (
+                <span style={{ color: LOOK.danger }}>not on your {item.devices.map(deviceLabel).join(" / ")} yet</span>
+              ) : null}
               {item.source ? <span className="truncate">{item.source}</span> : null}
             </div>
           </button>
