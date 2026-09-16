@@ -17,6 +17,17 @@ describe("verified seed discovery contract", () => {
     expect(priority).not.toContain('match_type: "unknown"');
   });
 
+  test("legacy shared-seed discovery catalogs context without assigning broad lineage", () => {
+    const legacy = watcher.slice(
+      watcher.indexOf("async function processSeed"),
+      watcher.indexOf("// ─── REALTIME SUBSCRIPTION"),
+    );
+    expect(legacy).toContain("const eligibleForSeed = matchesSeedCredits && !isDirectSeedTrack");
+    expect(legacy).toContain("metadata: eligibleForSeed");
+    expect(legacy).toContain("seed_track_id: eligibleForSeed ? seed.track_id || null : null");
+    expect(legacy).toContain("if (eligibleForSeed) insertedTracks.push(inserted)");
+  });
+
   test("batch discovery refuses unrelated existing and fresh episodes", () => {
     expect(discover).toContain("Already crawled but unrelated to seed");
     expect(discover).toContain("No match found for seed");

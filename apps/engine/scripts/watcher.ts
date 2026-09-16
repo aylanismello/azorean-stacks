@@ -392,11 +392,14 @@ async function processSeed(seedId: string) {
         { onConflict: "episode_id,seed_id" },
       );
 
-      // Insert candidate tracks from this episode
+      // Catalog every source appearance, but only matching tracks inherit this
+      // seed's lineage or enter downstream enrichment.
       const insertedTracks: any[] = [];
       for (let pos = 0; pos < rawTracks.length; pos++) {
         const track = rawTracks[pos];
-        if (isSameTrack(track, { artist: seed.artist, title: seed.title })) continue;
+        const matchesSeedCredits = hasExactArtistCredits(track.artist, seed.artist);
+        const isDirectSeedTrack = isSameTrack(track, { artist: seed.artist, title: seed.title });
+        const eligibleForSeed = matchesSeedCredits && !isDirectSeedTrack;
 
         if (isGarbageTrack(track.artist, track.title)) continue;
 
@@ -412,14 +415,16 @@ async function processSeed(seedId: string) {
             source: source.name,
             source_url: episodeUrl,
             source_context: context,
-            metadata: { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title },
+            metadata: eligibleForSeed
+              ? { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title }
+              : {},
             status: "pending",
             episode_id: episodeId,
-            seed_track_id: seed.track_id || null,
+            seed_track_id: eligibleForSeed ? seed.track_id || null : null,
           }).select("*").single();
           if (error || !inserted) continue;
           candidate = inserted;
-          insertedTracks.push(inserted);
+          if (eligibleForSeed) insertedTracks.push(inserted);
           tracksAdded++;
         }
 
