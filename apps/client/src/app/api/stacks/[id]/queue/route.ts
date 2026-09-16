@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks } from "@/lib/diversify";
-import { hasExactArtistCredits } from "@/lib/seed-match-evidence";
+
 
 export const dynamic = "force-dynamic";
 
@@ -106,9 +106,7 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   const pendingTracks = [...new Map((rawTracks || [])
     .filter((t: any) =>
       !excludedIds.has(t.id)
-        && t.id !== seed.track_id
-        && t.artist
-        && hasExactArtistCredits(t.artist, seed.artist),
+        && t.id !== seed.track_id,
     )
     .map((track: any) => [track.id, track])).values()];
 

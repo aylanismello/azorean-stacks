@@ -251,8 +251,6 @@ export async function GET(req: NextRequest) {
     const linkedEpisodeIds = new Set(linkedEpisodes.map((episode) => episode.id));
     const eligibleStatsRows = allStatsRows.filter((row) =>
       linkedEpisodeIds.has(row.episode_id)
-      && row.artist
-      && hasExactArtistCredits(row.artist, seed.artist)
     );
     const eligibleStatsByEpisode = new Map<string, { total: number; enriched: number; downloaded: number }>();
     for (const row of eligibleStatsRows) {
@@ -265,7 +263,10 @@ export async function GET(req: NextRequest) {
     const episodes = linkedEpisodes
       .filter((ep) => eligibleStatsByEpisode.has(ep.id))
       .map((ep) => {
-        const matchingRows = eligibleStatsRows.filter((row) => row.episode_id === ep.id);
+        const episodeRows = eligibleStatsRows.filter((row) => row.episode_id === ep.id);
+        const matchingRows = episodeRows.filter((row) =>
+          row.artist && hasExactArtistCredits(row.artist, seed.artist)
+        );
         const evidence = seedMatchEvidence(seed.artist, seed.title, matchingRows);
         return {
           ...ep,
@@ -273,7 +274,7 @@ export async function GET(req: NextRequest) {
           matched_tracks: evidence?.matchType !== "full"
             ? (artistTracksByEpisode[`${ep.id}::${seed.id}`] || [])
             : [],
-          track_count: eligibleStatsByEpisode.get(ep.id)?.total ?? 0,
+          track_count: episodeRows.length,
           // enriched_count = tracks with Spotify/YouTube URLs (metadata enriched)
           enriched_count: eligibleStatsByEpisode.get(ep.id)?.enriched ?? 0,
           // downloaded_count = tracks with local audio file (storage_path set)

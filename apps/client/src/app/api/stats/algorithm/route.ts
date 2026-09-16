@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hasExactArtistCredits } from "@/lib/seed-match-evidence";
+
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 
@@ -220,8 +220,7 @@ export async function GET(req: NextRequest) {
         let approved = 0, rejected = 0, skipped = 0;
         for (const vote of votedStats) {
           const track = tracksById.get(vote.track_id);
-          if (!track || !episodeSet.has(track.episode_id)
-              || !hasExactArtistCredits(track.artist, seed.artist)) continue;
+          if (!track || !episodeSet.has(track.episode_id)) continue;
           if (vote.status === "approved") approved++;
           else if (vote.status === "rejected") rejected++;
           else skipped++;

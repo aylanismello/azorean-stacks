@@ -14,7 +14,7 @@ import { parseArgs } from "util";
 import { getSupabase } from "../lib/supabase";
 import { SOURCES } from "../lib/sources/index";
 import { isGarbageTrack } from "../lib/pipeline";
-import { classifySeedTracklist, hasExactArtistCredits, isSameSeedTrack } from "../lib/seed-match";
+import { classifySeedTracklist, isSameSeedTrack } from "../lib/seed-match";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -350,7 +350,6 @@ async function discoverFromSource(
     let epNew = 0;
     for (let pos = 0; pos < rawTracks.length; pos++) {
       const track = rawTracks[pos];
-      if (!hasExactArtistCredits(track.artist, seedArtist)) continue;
       if (isSameTrack(track, { artist: seedArtist, title: seedTitle })) {
         // Track the seed track's position in this episode for episode_tracks linking
         if (!seedPositionsByEpisode.has(episodeId)) {

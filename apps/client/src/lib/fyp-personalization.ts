@@ -1,4 +1,3 @@
-import { hasExactArtistCredits } from "./seed-match-evidence";
 
 const QUERY_PAGE_SIZE = 1000;
 const MISSING_TABLE_RE = /could not find the table|does not exist|schema cache/i;
@@ -304,12 +303,7 @@ export async function loadPersonalizedFeed(
           .in("episode_id", episodeIds)
           .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
         if (appearances.error) throw appearances.error;
-        for (const link of appearances.data || []) {
-          const track = joinedTrack(link);
-          if (track?.artist && hasExactArtistCredits(track.artist, ownedSeed.artist)) {
-            allowedBySeed.add(link.track_id);
-          }
-        }
+        for (const link of appearances.data || []) allowedBySeed.add(link.track_id);
         if (!appearances.data || appearances.data.length < QUERY_PAGE_SIZE) break;
       }
     }

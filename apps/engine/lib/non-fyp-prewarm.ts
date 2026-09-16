@@ -1,4 +1,3 @@
-import { hasExactArtistCredits } from "./seed-match";
 
 const PAGE_SIZE = 1000;
 export const NON_FYP_PREWARM_TTL_HOURS = 30;
@@ -96,11 +95,7 @@ export function selectNonFypPrewarmTargets(
     }
     if (seed.track_id) allowed.add(seed.track_id);
     for (const track of candidates) {
-      if (allowed.has(track.id)
-          && track.artist
-          && seed.artist
-          && hasExactArtistCredits(track.artist, seed.artist)
-          && track.id !== seed.track_id) {
+      if (allowed.has(track.id) && track.id !== seed.track_id) {
         add(`seed:${seed.id}`, track);
       }
     }

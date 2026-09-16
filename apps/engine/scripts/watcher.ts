@@ -50,7 +50,6 @@ import {
 } from "../lib/seed-refresh";
 import {
   classifySeedTracklist,
-  hasExactArtistCredits,
   seedMatchStrength,
   type SeedMatchType,
 } from "../lib/seed-match";
@@ -392,14 +391,13 @@ async function processSeed(seedId: string) {
         { onConflict: "episode_id,seed_id" },
       );
 
-      // Catalog every source appearance, but only matching tracks inherit this
-      // seed's lineage or enter downstream enrichment.
+      // A verified seed match qualifies the episode. Every other appearance is
+      // a co-occurrence candidate for this seed.
       const insertedTracks: any[] = [];
       for (let pos = 0; pos < rawTracks.length; pos++) {
         const track = rawTracks[pos];
-        const matchesSeedCredits = hasExactArtistCredits(track.artist, seed.artist);
         const isDirectSeedTrack = isSameTrack(track, { artist: seed.artist, title: seed.title });
-        const eligibleForSeed = matchesSeedCredits && !isDirectSeedTrack;
+        const eligibleForSeed = !isDirectSeedTrack;
 
         if (isGarbageTrack(track.artist, track.title)) continue;
 
@@ -433,7 +431,7 @@ async function processSeed(seedId: string) {
           { onConflict: "episode_id,track_id" },
         );
         if (episodeTrackError) log("fail", `Episode link failed for ${candidate.id}: ${episodeTrackError.message}`);
-        if (seed.user_id) {
+        if (seed.user_id && eligibleForSeed) {
           const { error: userTrackError } = await db.from("user_tracks").upsert(
             { user_id: seed.user_id, track_id: candidate.id, status: "pending" },
             { onConflict: "user_id,track_id", ignoreDuplicates: true },
@@ -1343,9 +1341,8 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     for (let pos = 0; pos < best.rawTracklist.length; pos++) {
       const track = best.rawTracklist[pos];
       if (isGarbageTrack(track.artist, track.title)) continue;
-      const matchesSeedCredits = hasExactArtistCredits(track.artist, seed.artist);
       const isDirectSeedTrack = isSameTrack(track, { artist: seed.artist, title: seed.title });
-      const eligibleForSeed = matchesSeedCredits && !isDirectSeedTrack;
+      const eligibleForSeed = !isDirectSeedTrack;
 
       const escArtist = track.artist.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
       const escTitle = track.title.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
@@ -1359,12 +1356,12 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
           source: best.sourceName,
           source_url: best.url,
           source_context: context,
-          metadata: matchesSeedCredits
+          metadata: eligibleForSeed
             ? { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title }
             : {},
           status: "pending",
           episode_id: episodeId,
-          seed_track_id: matchesSeedCredits ? seed.track_id || null : null,
+          seed_track_id: eligibleForSeed ? seed.track_id || null : null,
         }).select("*").single();
         if (!inserted) continue;
         candidate = inserted;
@@ -1400,7 +1397,6 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     const eligibleTrackIds = [...new Set((links || []).flatMap((link: any) => {
       const track = Array.isArray(link.tracks) ? link.tracks[0] : link.tracks;
       return track?.artist
-          && hasExactArtistCredits(track.artist, seed.artist)
           && !isSameTrack(track, { artist: seed.artist, title: seed.title })
         ? [link.track_id]
         : [];

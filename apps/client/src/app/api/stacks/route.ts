@@ -176,7 +176,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Keep a same-artist cover fallback without treating unrelated episode tracks as stack members.
+  // Keep a same-artist cover fallback for the seed card.
   const artistCoverArt: Record<string, string> = {};
   for (const t of (tracks || []) as any[]) {
     if (!t.episode_id) continue;
@@ -187,6 +187,7 @@ export async function GET(req: NextRequest) {
   }
 
   const statsForSeedEpisode = (episodeId: string, seedArtist: string) => {
+    const episodeTracks = (tracks || []).filter((track: any) => track.episode_id === episodeId);
     const matchingTracks = (tracks || []).filter((track: any) =>
       track.episode_id === episodeId
       && track.artist
@@ -203,7 +204,7 @@ export async function GET(req: NextRequest) {
       cover_art_url: null as string | null,
       sample_tracks: [] as { artist: string; title: string }[],
     };
-    for (const track of matchingTracks) {
+    for (const track of episodeTracks) {
       stats.total++;
       if (track.storage_path) stats.playable++;
       const userVote = userVoteMap.get(track.id);
@@ -232,11 +233,9 @@ export async function GET(req: NextRequest) {
     const seedArtistLower = (seed.artist || "").toLowerCase();
     const linkedEpisodes = episodesBySeed[seed.id] || [];
     const linkedEpisodeIds = new Set(linkedEpisodes.map((episode) => episode.id));
-    const eligibleAppearances = (appearances as any[]).filter((appearance) => {
-      if (!linkedEpisodeIds.has(appearance.episode_id)) return false;
-      const track = Array.isArray(appearance.track) ? appearance.track[0] : appearance.track;
-      return Boolean(track?.artist && hasExactArtistCredits(track.artist, seed.artist));
-    });
+    const eligibleAppearances = (appearances as any[]).filter((appearance) =>
+      linkedEpisodeIds.has(appearance.episode_id)
+    );
     const eps = linkedEpisodes
       .filter((ep) => !ep.skipped)
       .map((ep) => {

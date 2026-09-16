@@ -15,7 +15,7 @@ import {
 import { parsePagination } from "@/lib/pagination";
 import { buildRankingExposureRows } from "@/lib/ranking-exposure";
 import { injectSeriesExploration, loadSeriesExploration } from "@/lib/series-exploration";
-import { hasExactArtistCredits, seedMatchEvidence } from "@/lib/seed-match-evidence";
+import { seedMatchEvidence } from "@/lib/seed-match-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -233,7 +233,6 @@ export async function GET(req: NextRequest) {
     ]));
     const compatibleLineages = candidateEpisodeIds.flatMap((episodeId) =>
       (lineageByEpisode.get(episodeId) || [])
-        .filter((entry) => track.artist && hasExactArtistCredits(track.artist, entry.seed.artist))
         .map((entry) => ({ episodeId, ...entry })),
     ).sort((left, right) =>
       Number(right.requested) - Number(left.requested)

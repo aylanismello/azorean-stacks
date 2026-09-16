@@ -27,7 +27,7 @@ describe("non-FYP stack prewarming", () => {
     expect(result.requestCandidates.map((track) => track.id)).toEqual(["shared"]);
   });
 
-  test("uses exact artist-credit membership for direct seed stacks", () => {
+  test("uses co-occurring episode membership for direct seed stacks", () => {
     const result = selectNonFypPrewarmTargets([
       candidate("collaboration", { artist: "Ludwig Göransson, Busiswa" }),
       candidate("seed-front", { artist: "Ludwig Göransson" }),
@@ -40,8 +40,8 @@ describe("non-FYP stack prewarming", () => {
       { episode_id: "episode-a", track_id: "seed-front" },
     ]);
 
-    expect(result.feeds).toEqual([{ feedKey: "seed:seed-a", trackId: "seed-front" }]);
-    expect(result.requestCandidates.map((track) => track.id)).toEqual(["seed-front"]);
+    expect(result.feeds).toEqual([{ feedKey: "seed:seed-a", trackId: "collaboration" }]);
+    expect(result.requestCandidates.map((track) => track.id)).toEqual(["collaboration"]);
   });
 
   test("reserves an already ready front track without requesting it again", () => {
