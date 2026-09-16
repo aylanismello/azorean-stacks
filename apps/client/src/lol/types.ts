@@ -57,6 +57,20 @@ export function isTestable(i: Item): boolean {
 
 export const VERIFIED = "verified";
 export const BUILT = "built";
+/**
+ * **Where a card goes when you looked and it was wrong.**
+ *
+ * Without it there are only two answers — checked, or not checked yet — and a
+ * thing you tried that did not work has to pretend to be one of those. Left in
+ * *built* it looks untouched and gets tested again; dragged to *verified* it is a
+ * lie. Neither says the one thing worth saying, which is **you already spent the
+ * trip and it failed**.
+ *
+ * So this column is not a third state of the work, it is a message: *come back to
+ * this*. It sits between the two because that is the order it happens in, and
+ * whatever you write in the card's note is the whole brief.
+ */
+export const LOOK_AGAIN = "look again";
 
 export interface Lane {
   key: string;
@@ -65,9 +79,10 @@ export interface Lane {
   empty: string;
 }
 
-const LABELS: Record<string, string> = { built: "Built", verified: "Verified" };
+const LABELS: Record<string, string> = { built: "Built", "look again": "Look again", verified: "Verified" };
 const EMPTY: Record<string, string> = {
   built: "Nothing waiting on you.",
+  "look again": "Nothing kicked back.",
   verified: "Nothing checked off yet.",
 };
 
@@ -80,6 +95,7 @@ const EMPTY: Record<string, string> = {
 export function lanesOf(items: Item[]): Lane[] {
   const seen = new Map<string, number>([
     [BUILT, 200],
+    [LOOK_AGAIN, 250],
     [VERIFIED, 300],
   ]);
   for (const i of items) {

@@ -252,6 +252,10 @@ export function Board() {
             move(opened, opened.status === VERIFIED ? BUILT : VERIFIED);
             setOpenId(null);
           }}
+          onSendTo={(lane) => {
+            move(opened, lane);
+            setOpenId(null);
+          }}
           onNote={(notes) => note(opened, notes)}
           onDelete={() => remove(opened)}
         />

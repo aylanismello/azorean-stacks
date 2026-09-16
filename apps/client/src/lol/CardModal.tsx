@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { VERIFIED, deviceLabel, isTestable, type Item } from "./types";
+import { VERIFIED, LOOK_AGAIN, BUILT, deviceLabel, isTestable, type Item } from "./types";
 import { LOOK, labelFor, stamp } from "./look";
 
 /**
@@ -16,12 +16,14 @@ export function CardModal({
   item,
   onClose,
   onMove,
+  onSendTo,
   onNote,
   onDelete,
 }: {
   item: Item;
   onClose: () => void;
   onMove: () => void;
+  onSendTo: (lane: string) => void;
   onNote: (notes: string) => void;
   onDelete: () => void;
 }) {
@@ -132,6 +134,23 @@ export function CardModal({
           >
             {done ? "← Back to Built" : "✓ I watched this work"}
           </button>
+          {/* **The third answer.** You looked and it was wrong — which is neither
+              "checked" nor "not checked yet", and pretending it is one of those is
+              how a thing gets tested twice or ticked off broken. The note above is
+              the brief; this is the button that sends it back. */}
+          {done ? null : (
+            <button
+              onClick={() => onSendTo(item.status === LOOK_AGAIN ? BUILT : LOOK_AGAIN)}
+              className="rounded px-3 py-2 text-sm font-medium"
+              style={
+                item.status === LOOK_AGAIN
+                  ? { background: LOOK.card, color: LOOK.ink, boxShadow: "0 1px 1px rgba(9,30,66,0.2)" }
+                  : { background: LOOK.card, color: LOOK.danger, boxShadow: "0 1px 1px rgba(9,30,66,0.2)" }
+              }
+            >
+              {item.status === LOOK_AGAIN ? "↩ Back to Built" : "✗ Look again"}
+            </button>
+          )}
           <span className="font-mono text-[11px] leading-tight" style={{ color: LOOK.soft }}>
             {item.verified_at ? (
               <>

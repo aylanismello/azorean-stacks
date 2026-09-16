@@ -1,6 +1,6 @@
 "use client";
 
-import { VERIFIED, deviceLabel, isTestable, type Item } from "./types";
+import { VERIFIED, LOOK_AGAIN, deviceLabel, isTestable, type Item } from "./types";
 import { LOOK, labelFor, stamp } from "./look";
 
 /**
@@ -35,6 +35,7 @@ export function Card({
   // a card whose build is not on its devices yet cannot be checked — said plainly
   // rather than left to be discovered by going and looking
   const waiting = !isTestable(item);
+  const kicked = item.status === LOOK_AGAIN;
 
   return (
     <div>
@@ -67,7 +68,14 @@ export function Card({
         className={`cursor-grab rounded-lg p-2 shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing ${
           dragging ? "rotate-2 opacity-40" : ""
         }`}
-        style={{ background: LOOK.card, boxShadow: "0 1px 1px rgba(9,30,66,0.25)", opacity: waiting ? 0.62 : 1 }}
+        style={{
+          background: LOOK.card,
+          boxShadow: "0 1px 1px rgba(9,30,66,0.25)",
+          opacity: waiting ? 0.62 : 1,
+          // a kicked-back card wears the reason down its edge, so the column reads
+          // as a list of problems rather than a second pile of work
+          borderLeft: kicked ? `3px solid ${LOOK.danger}` : undefined,
+        }}
       >
         <div className="mb-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
           <span className="h-2 w-10 rounded" style={{ background: labelFor(item.area) }} />
@@ -128,6 +136,9 @@ export function Card({
               ) : (
                 <span title="when it landed on the board">{stamp(item.created_at)}</span>
               )}
+              {kicked && !item.notes?.trim() ? (
+                <span style={{ color: LOOK.danger }}>no note — say what went wrong</span>
+              ) : null}
               {waiting ? (
                 <span style={{ color: LOOK.danger }}>not on your {item.devices.map(deviceLabel).join(" / ")} yet</span>
               ) : null}
