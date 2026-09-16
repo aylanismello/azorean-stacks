@@ -138,7 +138,7 @@ export async function GET(req: NextRequest) {
   // Get all seeds for this user with their episode-linked tracks + vote stats
   const { data: userSeeds } = await db
     .from("seeds")
-    .select("id, artist, title, active, cover_art_url")
+    .select("id, artist, title, active, cover_art_url, track_id")
     .or(`user_id.eq.${user.id},user_id.is.null`)
     .eq("active", true)
     .order("created_at", { ascending: false })
@@ -176,23 +176,29 @@ export async function GET(req: NextRequest) {
     // For each seed, count approved/rejected tracks from its episodes (via user_tracks)
     const allEpIds = Array.from(new Set((epSeedLinks || []).map((l: any) => l.episode_id)));
     if (allEpIds.length > 0) {
-      // Get all tracks from these episodes with user's vote status (paginated)
-      const epTracks: any[] = [];
+      // Get canonical appearances from the many-to-many junction. A track's
+      // legacy scalar episode_id is not complete lineage.
+      const epTracks: Array<{ episode_id: string; track_id: string }> = [];
       let epTrackPage = 0;
       while (true) {
         const { data: batch } = await db
-          .from("tracks")
-          .select("id, episode_id, artist")
+          .from("episode_tracks")
+          .select("episode_id, track_id")
           .in("episode_id", allEpIds)
           .range(epTrackPage * 1000, (epTrackPage + 1) * 1000 - 1);
         if (!batch || batch.length === 0) break;
-        epTracks.push(...batch);
+        epTracks.push(...(batch as Array<{ episode_id: string; track_id: string }>));
         if (batch.length < 1000) break;
         epTrackPage++;
       }
 
-      const epTrackIds = epTracks.map((t: any) => t.id);
-      const tracksById = new Map(epTracks.map((t: any) => [t.id, t]));
+      const epTrackIds = [...new Set(epTracks.map((track) => track.track_id))];
+      const trackIdsByEpisode = new Map<string, Set<string>>();
+      for (const track of epTracks) {
+        const ids = trackIdsByEpisode.get(track.episode_id) || new Set<string>();
+        ids.add(track.track_id);
+        trackIdsByEpisode.set(track.episode_id, ids);
+      }
 
       let votedStats: any[] = [];
       if (epTrackIds.length > 0) {
@@ -216,11 +222,14 @@ export async function GET(req: NextRequest) {
 
       for (const seed of userSeeds as any[]) {
         const eps = seedToEps.get(seed.id) || [];
-        const episodeSet = new Set(eps);
+        const candidateIds = new Set<string>();
+        for (const episodeId of eps) {
+          for (const trackId of trackIdsByEpisode.get(episodeId) || []) candidateIds.add(trackId);
+        }
+        if (seed.track_id) candidateIds.delete(seed.track_id);
         let approved = 0, rejected = 0, skipped = 0;
         for (const vote of votedStats) {
-          const track = tracksById.get(vote.track_id);
-          if (!track || !episodeSet.has(track.episode_id)) continue;
+          if (!candidateIds.has(vote.track_id)) continue;
           if (vote.status === "approved") approved++;
           else if (vote.status === "rejected") rejected++;
           else skipped++;

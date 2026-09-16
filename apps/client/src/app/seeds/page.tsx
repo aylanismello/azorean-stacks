@@ -719,7 +719,7 @@ function SeedCard({
                 </div>
               )}
               <p className="mt-2 leading-relaxed text-foreground/80">
-                Only {seed.match_summary.related_tracks} other track{seed.match_summary.related_tracks === 1 ? "" : "s"} matching the complete artist credit enter this stack.
+                {seed.match_summary.related_tracks} co-occurring track{seed.match_summary.related_tracks === 1 ? "" : "s"} from verified episodes enter this stack.
               </p>
               {seed.match_summary.unverified_episode_matches > 0 && (
                 <p className="mt-2 font-medium text-amber-600 dark:text-amber-300">

@@ -90,11 +90,11 @@ export function buildSeedMatchSummary(
       .filter((episode) => !exactEpisodeIds.has(episode.id) && artistEvidenceEpisodeIds.has(episode.id))
       .map((episode) => episode.id),
   );
+  const verifiedEpisodeIds = new Set([...exactEpisodeIds, ...artistEpisodeIds]);
 
   const uniqueRelatedTracks = new Map<string, SeedMatchTrack>();
   for (const track of tracks) {
-    if (!episodeIds.has(track.episode_id) || track.track_id === seedTrackId || isSeedTrack(track)) continue;
-    if (matchingSeedCredits(track).length === 0) continue;
+    if (!verifiedEpisodeIds.has(track.episode_id) || track.track_id === seedTrackId || isSeedTrack(track)) continue;
     if (!uniqueRelatedTracks.has(track.track_id)) uniqueRelatedTracks.set(track.track_id, track);
   }
 

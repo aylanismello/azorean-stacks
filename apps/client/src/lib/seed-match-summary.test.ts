@@ -27,8 +27,8 @@ describe("seed match summary", () => {
       matching_artist_tracks: 1,
       matching_artist_track_names: ["Mountains Pt. 1"],
       artist_match_breakdown: [{ artist: "DjRUM", episodes: 2, tracks: 1 }],
-      related_tracks: 1,
-      related_artists: 1,
+      related_tracks: 2,
+      related_artists: 2,
     });
   });
 
@@ -99,6 +99,7 @@ describe("seed match summary", () => {
     expect(seedsPage).toContain("Exact song");
     expect(seedsPage).toContain("Same artist");
     expect(seedsPage).toContain("Artist-only links");
-    expect(seedsPage).toContain("matching the complete artist credit");
+    expect(seedsPage).toContain("co-occurring track");
+    expect(seedsPage).toContain("verified episodes");
   });
 });

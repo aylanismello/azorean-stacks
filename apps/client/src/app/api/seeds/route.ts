@@ -71,31 +71,6 @@ export async function GET(req: NextRequest) {
     })));
   }
 
-  // Get discovery counts — batch query all tracks with seed_track_ids in one go
-  const seedTrackIds = (data || [])
-    .map((s) => s.track_id)
-    .filter(Boolean);
-  const trackCounts: Record<string, number> = {};
-
-  if (seedTrackIds.length > 0) {
-    const allSeedTracks: { seed_track_id: string | null }[] = [];
-    let seedTrackPage = 0;
-    while (true) {
-      const { data: batch } = await supabase
-        .from("tracks")
-        .select("seed_track_id")
-        .in("seed_track_id", seedTrackIds)
-        .range(seedTrackPage * 1000, (seedTrackPage + 1) * 1000 - 1);
-      if (!batch || batch.length === 0) break;
-      allSeedTracks.push(...(batch as { seed_track_id: string | null }[]));
-      if (batch.length < 1000) break;
-      seedTrackPage++;
-    }
-
-    allSeedTracks.forEach((t) => {
-      if (t.seed_track_id) trackCounts[t.seed_track_id] = (trackCounts[t.seed_track_id] || 0) + 1;
-    });
-  }
 
   // Count curated episodes per seed (episodes where all tracks have been voted on)
   const allEpisodeIds = Array.from(new Set(Object.values(episodesBySeed).flat().map((ep) => ep.id)));
@@ -300,9 +275,17 @@ export async function GET(req: NextRequest) {
       seed.track_id,
     );
 
+    const matchSummary = buildSeedMatchSummary(
+      seed.artist || "",
+      seed.title || "",
+      seed.track_id,
+      episodes,
+      allStatsRows,
+    );
+
     return {
       ...seed,
-      discovery_count: seed.track_id ? (trackCounts[seed.track_id] || 0) : 0,
+      discovery_count: matchSummary.related_tracks,
       episodes,
       curated_count: curatedCountBySeed[seed.id] || 0,
       last_run: lastRunBySeed[seed.id] || null,
@@ -314,7 +297,7 @@ export async function GET(req: NextRequest) {
         eligible_for_you: feedCount.eligible,
         ready_for_you: feedCount.ready,
       },
-      match_summary: buildSeedMatchSummary(seed.artist || "", seed.title || "", seed.track_id, episodes, allStatsRows),
+      match_summary: matchSummary,
     };
   });
 
