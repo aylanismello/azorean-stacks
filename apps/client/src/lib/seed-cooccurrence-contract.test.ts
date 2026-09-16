@@ -19,6 +19,7 @@ describe("verified-episode co-occurrence contract", () => {
     expect(stacks).toContain("for (const track of episodeTracks)");
     expect(personalization).toContain("allowedBySeed.add(link.track_id)");
     expect(personalization).not.toContain("hasExactArtistCredits(track.artist, ownedSeed.artist)");
+    expect(personalization).toContain("seedId ? paceTracks(candidates) : candidates");
   });
 
   test("FYP attribution may name the qualifying seed for a co-occurring track", () => {

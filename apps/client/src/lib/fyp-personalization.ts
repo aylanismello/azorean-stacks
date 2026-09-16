@@ -1,3 +1,4 @@
+import { paceTracks } from "./diversify";
 
 const QUERY_PAGE_SIZE = 1000;
 const MISSING_TABLE_RE = /could not find the table|does not exist|schema cache/i;
@@ -323,11 +324,12 @@ export async function loadPersonalizedFeed(
     if (seedArtistKey && String(metadata.seed_artist || "").toLowerCase() !== seedArtistKey) return false;
     return true;
   });
-  const ready = candidates.filter((track: any) => Boolean(track.storage_path));
+  const orderedCandidates = seedId ? paceTracks(candidates) : candidates;
+  const ready = orderedCandidates.filter((track: any) => Boolean(track.storage_path));
   return {
     rows: ready.slice(offset, offset + limit),
-    candidateTotal: candidates.length,
-    candidates,
+    candidateTotal: orderedCandidates.length,
+    candidates: orderedCandidates,
   };
 }
 
