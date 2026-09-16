@@ -48,7 +48,12 @@ import {
   latestStatelessUserSeeds,
   recoverSeedFypRefreshes,
 } from "../lib/seed-refresh";
-import { classifySeedTracklist, seedMatchStrength, type SeedMatchType } from "../lib/seed-match";
+import {
+  classifySeedTracklist,
+  hasExactArtistCredits,
+  seedMatchStrength,
+  type SeedMatchType,
+} from "../lib/seed-match";
 
 const db = getSupabase();
 const STATUS_FILE = `${process.env.HOME}/.hermes/data/azorean-engine-status.json`;
@@ -1332,8 +1337,10 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     const context = `${best.title}${best.date ? ` (${best.date})` : ""}`;
     for (let pos = 0; pos < best.rawTracklist.length; pos++) {
       const track = best.rawTracklist[pos];
-      if (isSameTrack(track, { artist: seed.artist, title: seed.title })) continue;
       if (isGarbageTrack(track.artist, track.title)) continue;
+      const matchesSeedCredits = hasExactArtistCredits(track.artist, seed.artist);
+      const isDirectSeedTrack = isSameTrack(track, { artist: seed.artist, title: seed.title });
+      const eligibleForSeed = matchesSeedCredits && !isDirectSeedTrack;
 
       const escArtist = track.artist.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
       const escTitle = track.title.trim().replace(/[%_\\]/g, (c: string) => `\\${c}`);
@@ -1347,14 +1354,16 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
           source: best.sourceName,
           source_url: best.url,
           source_context: context,
-          metadata: { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title },
+          metadata: matchesSeedCredits
+            ? { co_occurrence: 1, seed_artist: seed.artist, seed_title: seed.title }
+            : {},
           status: "pending",
           episode_id: episodeId,
-          seed_track_id: seed.track_id || null,
+          seed_track_id: matchesSeedCredits ? seed.track_id || null : null,
         }).select("*").single();
         if (!inserted) continue;
         candidate = inserted;
-        tracksToProcess.push(inserted);
+        if (eligibleForSeed) tracksToProcess.push(inserted);
       }
 
       const { error: episodeTrackError } = await db.from("episode_tracks").upsert(
@@ -1362,7 +1371,15 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
         { onConflict: "episode_id,track_id" },
       );
       if (episodeTrackError) log("fail", `Priority episode link failed for ${candidate.id}: ${episodeTrackError.message}`);
-      if (seed.user_id) {
+      if (!seed.track_id && isDirectSeedTrack) {
+        const { error: seedTrackError } = await db.from("seeds")
+          .update({ track_id: candidate.id })
+          .eq("id", seedId)
+          .is("track_id", null);
+        if (seedTrackError) log("fail", `Priority seed track link failed: ${seedTrackError.message}`);
+        else seed.track_id = candidate.id;
+      }
+      if (seed.user_id && eligibleForSeed) {
         const { error: userTrackError } = await db.from("user_tracks").upsert(
           { user_id: seed.user_id, track_id: candidate.id, status: "pending" },
           { onConflict: "user_id,track_id", ignoreDuplicates: true },
@@ -1372,21 +1389,28 @@ async function processPrioritySeed(fence: SeedPipelineFence) {
     }
   } else {
     const { data: links, error: linksError } = await db.from("episode_tracks")
-      .select("track_id")
+      .select("track_id,tracks!inner(artist,title)")
       .eq("episode_id", episodeId);
     if (linksError) log("fail", `Priority episode lookup failed: ${linksError.message}`);
-    const trackIds = [...new Set((links || []).map((link) => link.track_id))];
-    if (trackIds.length > 0) {
+    const eligibleTrackIds = [...new Set((links || []).flatMap((link: any) => {
+      const track = Array.isArray(link.tracks) ? link.tracks[0] : link.tracks;
+      return track?.artist
+          && hasExactArtistCredits(track.artist, seed.artist)
+          && !isSameTrack(track, { artist: seed.artist, title: seed.title })
+        ? [link.track_id]
+        : [];
+    }))] as string[];
+    if (eligibleTrackIds.length > 0) {
       const { data: episodeTracks, error: tracksError } = await db.from("tracks")
         .select("*")
-        .in("id", trackIds);
+        .in("id", eligibleTrackIds);
       if (tracksError) log("fail", `Priority track lookup failed: ${tracksError.message}`);
       tracksToProcess = (episodeTracks || []).filter((track) =>
         track.status === "pending" || (track.youtube_url && !track.storage_path)
       );
       if (seed.user_id) {
         const { error: userTrackError } = await db.from("user_tracks").upsert(
-          trackIds.map((trackId) => ({ user_id: seed.user_id, track_id: trackId, status: "pending" })),
+          eligibleTrackIds.map((trackId) => ({ user_id: seed.user_id, track_id: trackId, status: "pending" })),
           { onConflict: "user_id,track_id", ignoreDuplicates: true },
         );
         if (userTrackError) log("fail", `Priority user candidate batch failed: ${userTrackError.message}`);

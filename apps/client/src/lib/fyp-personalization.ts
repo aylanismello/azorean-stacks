@@ -1,3 +1,5 @@
+import { hasExactArtistCredits } from "./seed-match-evidence";
+
 const QUERY_PAGE_SIZE = 1000;
 const MISSING_TABLE_RE = /could not find the table|does not exist|schema cache/i;
 
@@ -278,7 +280,7 @@ export async function loadPersonalizedFeed(
   let allowedBySeed: Set<string> | null = null;
   if (seedId) {
     const { data: ownedSeed, error: seedError } = await db.from("seeds")
-      .select("id,track_id")
+      .select("id,track_id,artist,title")
       .eq("id", seedId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -298,11 +300,16 @@ export async function loadPersonalizedFeed(
     if (episodeIds.length) {
       for (let page = 0; ; page++) {
         const appearances = await db.from("episode_tracks")
-          .select("track_id")
+          .select("track_id,track:tracks!inner(artist,title)")
           .in("episode_id", episodeIds)
           .range(page * QUERY_PAGE_SIZE, (page + 1) * QUERY_PAGE_SIZE - 1);
         if (appearances.error) throw appearances.error;
-        for (const link of appearances.data || []) allowedBySeed.add(link.track_id);
+        for (const link of appearances.data || []) {
+          const track = joinedTrack(link);
+          if (track?.artist && hasExactArtistCredits(track.artist, ownedSeed.artist)) {
+            allowedBySeed.add(link.track_id);
+          }
+        }
         if (!appearances.data || appearances.data.length < QUERY_PAGE_SIZE) break;
       }
     }

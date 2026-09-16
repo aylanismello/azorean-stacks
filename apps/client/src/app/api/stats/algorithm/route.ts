@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hasExactArtistCredits } from "@/lib/seed-match-evidence";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 
@@ -181,7 +182,7 @@ export async function GET(req: NextRequest) {
       while (true) {
         const { data: batch } = await db
           .from("tracks")
-          .select("id, episode_id")
+          .select("id, episode_id, artist")
           .in("episode_id", allEpIds)
           .range(epTrackPage * 1000, (epTrackPage + 1) * 1000 - 1);
         if (!batch || batch.length === 0) break;
@@ -191,7 +192,7 @@ export async function GET(req: NextRequest) {
       }
 
       const epTrackIds = epTracks.map((t: any) => t.id);
-      const epIdByTrack = new Map(epTracks.map((t: any) => [t.id, t.episode_id]));
+      const tracksById = new Map(epTracks.map((t: any) => [t.id, t]));
 
       let votedStats: any[] = [];
       if (epTrackIds.length > 0) {
@@ -213,24 +214,17 @@ export async function GET(req: NextRequest) {
         votedStats = allVoted;
       }
 
-      // Roll up per episode
-      const epVoteStats = new Map<string, { approved: number; rejected: number; skipped: number }>();
-      for (const v of votedStats) {
-        const epId = epIdByTrack.get(v.track_id);
-        if (!epId) continue;
-        const s = epVoteStats.get(epId) || { approved: 0, rejected: 0, skipped: 0 };
-        if (v.status === "approved") s.approved++;
-        else if (v.status === "rejected") s.rejected++;
-        else s.skipped++;
-        epVoteStats.set(epId, s);
-      }
-
       for (const seed of userSeeds as any[]) {
         const eps = seedToEps.get(seed.id) || [];
+        const episodeSet = new Set(eps);
         let approved = 0, rejected = 0, skipped = 0;
-        for (const epId of eps) {
-          const s = epVoteStats.get(epId);
-          if (s) { approved += s.approved; rejected += s.rejected; skipped += s.skipped; }
+        for (const vote of votedStats) {
+          const track = tracksById.get(vote.track_id);
+          if (!track || !episodeSet.has(track.episode_id)
+              || !hasExactArtistCredits(track.artist, seed.artist)) continue;
+          if (vote.status === "approved") approved++;
+          else if (vote.status === "rejected") rejected++;
+          else skipped++;
         }
         const totalVoted = approved + rejected + skipped;
         const approvalRate = totalVoted > 0

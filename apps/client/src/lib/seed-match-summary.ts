@@ -63,14 +63,19 @@ export function buildSeedMatchSummary(
   const seedTitleIdentity = normalizedIdentity(seedTitle);
   const trackCreditKeys = (track: SeedMatchTrack) =>
     new Set(splitArtistCredits(track.artist).map((credit) => credit.key));
-  const matchingSeedCredits = (track: SeedMatchTrack) =>
-    [...trackCreditKeys(track)].filter((key) => seedCreditKeys.has(key));
+  const matchingSeedCredits = (track: SeedMatchTrack) => {
+    const trackKeys = trackCreditKeys(track);
+    if (trackKeys.size !== seedCreditKeys.size) return [];
+    return [...trackKeys].every((key) => seedCreditKeys.has(key))
+      ? [...trackKeys]
+      : [];
+  };
   const isSeedTrack = (track: SeedMatchTrack) =>
     normalizedIdentity(track.title) === seedTitleIdentity && matchingSeedCredits(track).length > 0;
 
-  const exactEpisodeIds = new Set(
-    episodes.filter((episode) => episode.match_type === "full").map((episode) => episode.id),
-  );
+  // Stored episode labels are historical hints, not sufficient evidence.
+  // Re-derive every current match from the actual credited track appearances.
+  const exactEpisodeIds = new Set<string>();
   for (const track of tracks) {
     if (episodeIds.has(track.episode_id) && isSeedTrack(track)) exactEpisodeIds.add(track.episode_id);
   }
@@ -82,15 +87,14 @@ export function buildSeedMatchSummary(
   );
   const artistEpisodeIds = new Set(
     episodes
-      .filter((episode) =>
-        !exactEpisodeIds.has(episode.id)
-        && (episode.match_type === "artist" || artistEvidenceEpisodeIds.has(episode.id)))
+      .filter((episode) => !exactEpisodeIds.has(episode.id) && artistEvidenceEpisodeIds.has(episode.id))
       .map((episode) => episode.id),
   );
 
   const uniqueRelatedTracks = new Map<string, SeedMatchTrack>();
   for (const track of tracks) {
     if (!episodeIds.has(track.episode_id) || track.track_id === seedTrackId || isSeedTrack(track)) continue;
+    if (matchingSeedCredits(track).length === 0) continue;
     if (!uniqueRelatedTracks.has(track.track_id)) uniqueRelatedTracks.set(track.track_id, track);
   }
 

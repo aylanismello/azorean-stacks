@@ -15,7 +15,7 @@ import {
 import { parsePagination } from "@/lib/pagination";
 import { buildRankingExposureRows } from "@/lib/ranking-exposure";
 import { injectSeriesExploration, loadSeriesExploration } from "@/lib/series-exploration";
-import { seedMatchEvidence } from "@/lib/seed-match-evidence";
+import { hasExactArtistCredits, seedMatchEvidence } from "@/lib/seed-match-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -181,22 +181,14 @@ export async function GET(req: NextRequest) {
 
   // Prefer the requested seed in a seed-filtered view, otherwise the strongest
   // canonical match when an episode has multiple links for this user.
-  const lineageMap = new Map<string, { matchType: string; seed: any; requested: boolean }>();
+  const lineageByEpisode = new Map<string, Array<{ matchType: string; seed: any; requested: boolean }>>();
   for (const link of esRes.data || []) {
     const seed = userSeedMap.get(link.seed_id);
     if (!seed) continue;
-    const existing = lineageMap.get(link.episode_id);
     const requested = link.seed_id === seedId;
-    const shouldReplace = !existing
-      || (requested && !existing.requested)
-      || (requested === existing.requested && existing.matchType !== "full" && link.match_type === "full");
-    if (shouldReplace) {
-      lineageMap.set(link.episode_id, {
-        matchType: link.match_type || "unknown",
-        seed,
-        requested,
-      });
-    }
+    const candidates = lineageByEpisode.get(link.episode_id) || [];
+    candidates.push({ matchType: link.match_type || "unknown", seed, requested });
+    lineageByEpisode.set(link.episode_id, candidates);
   }
 
   // A seed-stack explanation needs the source track that verified the episode,
@@ -239,10 +231,17 @@ export async function GET(req: NextRequest) {
       ...(track.episode_id ? [track.episode_id] : []),
       ...(appearanceEpisodesByTrack.get(track.id) || []),
     ]));
-    const lineageEpisodeId = candidateEpisodeIds.find((episodeId) => lineageMap.get(episodeId)?.requested)
-      || candidateEpisodeIds.find((episodeId) => lineageMap.get(episodeId)?.matchType === "full")
-      || candidateEpisodeIds.find((episodeId) => lineageMap.has(episodeId));
-    const lineage = lineageEpisodeId ? lineageMap.get(lineageEpisodeId) : undefined;
+    const compatibleLineages = candidateEpisodeIds.flatMap((episodeId) =>
+      (lineageByEpisode.get(episodeId) || [])
+        .filter((entry) => track.artist && hasExactArtistCredits(track.artist, entry.seed.artist))
+        .map((entry) => ({ episodeId, ...entry })),
+    ).sort((left, right) =>
+      Number(right.requested) - Number(left.requested)
+        || Number(right.matchType === "full") - Number(left.matchType === "full"),
+    );
+    const selectedLineage = compatibleLineages[0];
+    const lineageEpisodeId = selectedLineage?.episodeId;
+    const lineage = selectedLineage;
     const matchEvidence = lineageEpisodeId ? matchEvidenceByEpisode.get(lineageEpisodeId) : null;
     track.seed_track = seedTrackMap.get(track.seed_track_id) || null;
     const contextEpisodeId = lineageEpisodeId || track.episode_id || candidateEpisodeIds[0];

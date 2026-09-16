@@ -27,15 +27,16 @@ describe("non-FYP stack prewarming", () => {
     expect(result.requestCandidates.map((track) => track.id)).toEqual(["shared"]);
   });
 
-  test("uses episode membership for direct seed stacks", () => {
+  test("uses exact artist-credit membership for direct seed stacks", () => {
     const result = selectNonFypPrewarmTargets([
-      candidate("unrelated"),
-      candidate("seed-front"),
+      candidate("collaboration", { artist: "Ludwig Göransson, Busiswa" }),
+      candidate("seed-front", { artist: "Ludwig Göransson" }),
     ], [
-      { id: "seed-a", track_id: "seed-source" },
+      { id: "seed-a", track_id: "seed-source", artist: "Ludwig Göransson" },
     ], [
       { seed_id: "seed-a", episode_id: "episode-a" },
     ], [
+      { episode_id: "episode-a", track_id: "collaboration" },
       { episode_id: "episode-a", track_id: "seed-front" },
     ]);
 

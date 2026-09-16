@@ -18,27 +18,25 @@ function identity(value: string | null | undefined): string {
     .replace(/[^\p{L}\p{N}]/gu, "");
 }
 
-/** Full credit plus conservatively split collaboration credits. */
+/** Normalize an artist credit into its complete credited-artist set. */
 export function artistCreditKeys(value: string | null | undefined): Set<string> {
-  const raw = (value || "").trim();
-  const keys = new Set<string>();
-  const fullKey = identity(raw);
-  if (fullKey) keys.add(fullKey);
-
-  const credits = raw
+  const credits = (value || "")
+    .trim()
     .replace(/\s+(?:feat(?:uring)?|ft)\.?\s+/gi, ",")
     .replace(/\s+(?:and|x)\s+/gi, ",")
     .split(/\s*(?:,|&|\/|\+|;)\s*/)
     .map((credit) => identity(credit))
     .filter(Boolean);
-  for (const credit of credits) keys.add(credit);
-  return keys;
+  return new Set(credits);
 }
 
-export function hasArtistCreditMatch(a: string, b: string): boolean {
+/** Artist matches require the same complete credit set, in any order. */
+export function hasExactArtistCredits(a: string, b: string): boolean {
   const aKeys = artistCreditKeys(a);
   const bKeys = artistCreditKeys(b);
-  return [...aKeys].some((key) => bKeys.has(key));
+  return aKeys.size > 0
+    && aKeys.size === bKeys.size
+    && [...aKeys].every((key) => bKeys.has(key));
 }
 
 export function classifySeedTracklist(
@@ -46,7 +44,7 @@ export function classifySeedTracklist(
   seed: SeedTrackIdentity,
 ): SeedTracklistMatch | null {
   const seedTitle = identity(seed.title);
-  const artistMatches = tracklist.filter((track) => hasArtistCreditMatch(track.artist, seed.artist));
+  const artistMatches = tracklist.filter((track) => hasExactArtistCredits(track.artist, seed.artist));
   const exactMatches = artistMatches.filter((track) => identity(track.title) === seedTitle);
   if (exactMatches.length > 0) return { matchType: "full", matchedTracks: exactMatches };
   if (artistMatches.length > 0) return { matchType: "artist", matchedTracks: artistMatches };

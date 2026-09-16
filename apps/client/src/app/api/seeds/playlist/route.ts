@@ -63,7 +63,10 @@ async function fetchPlaylistTracks(
     for (const item of data.items || []) {
       if (!item.track || item.track.type === "local") continue;
       const title = item.track.name?.trim();
-      const artist = item.track.artists?.[0]?.name?.trim();
+      const artist = (item.track.artists || [])
+        .map((credit: { name?: string }) => credit.name?.trim())
+        .filter(Boolean)
+        .join(", ");
       if (title && artist) tracks.push({ title, artist });
     }
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { diversifyTracks } from "@/lib/diversify";
+import { hasExactArtistCredits } from "@/lib/seed-match-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   // 1. Verify seed ownership
   const { data: seed, error: seedErr } = await db
     .from("seeds")
-    .select("id, artist, title")
+    .select("id, artist, title, track_id")
     .eq("id", seedId)
     .or(`user_id.eq.${user.id},user_id.is.null`)
     .single();
@@ -68,16 +69,22 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   );
   const episodeIds = Array.from(episodeMatchTypes.keys());
 
-  // 3. Fetch tracks with audio from these episodes, sorted by pre-computed taste_score
-  const { data: rawTracks } = await db
-    .from("tracks")
-    .select(
-      "id, artist, title, source, source_url, source_context, status, episode_id, cover_art_url, spotify_url, youtube_url, storage_path, preview_url, metadata, created_at, seed_track_id, taste_score, seed_track:tracks!seed_track_id(artist, title), episode:episodes!episode_id(id, title, source, aired_date, artwork_url, url)"
-    )
-    .in("episode_id", episodeIds)
-    .eq("status", "pending")
-    .not("storage_path", "is", null)
-    .order("taste_score", { ascending: false, nullsFirst: false });
+  // 3. Fetch playable candidates through canonical episode appearances. The
+  // legacy tracks.episode_id is only the first source where a track was seen.
+  const { data: appearanceRows, error: appearanceError } = await db
+    .from("episode_tracks")
+    .select("episode_id,track:tracks!inner(id,artist,title,source,source_url,source_context,status,cover_art_url,spotify_url,youtube_url,storage_path,preview_url,metadata,created_at,seed_track_id,taste_score),episode:episodes!inner(id,title,source,aired_date,artwork_url,url)")
+    .in("episode_id", episodeIds);
+  if (appearanceError) {
+    return NextResponse.json({ error: appearanceError.message }, { status: 500 });
+  }
+  const rawTracks = (appearanceRows || []).flatMap((appearance: any) => {
+    const track = Array.isArray(appearance.track) ? appearance.track[0] : appearance.track;
+    const episode = Array.isArray(appearance.episode) ? appearance.episode[0] : appearance.episode;
+    return track ? [{ ...track, episode_id: appearance.episode_id, episode }] : [];
+  }).filter((track: any) =>
+    track.status === "pending" && track.storage_path,
+  ).sort((left: any, right: any) => Number(right.taste_score || 0) - Number(left.taste_score || 0));
 
   // 4. Filter out ALL tracks the user has voted on (any status in user_tracks)
   const allExcluded: string[] = [];
@@ -96,7 +103,14 @@ export async function GET(req: NextRequest, props: { params: Promise<{ id: strin
   }
 
   const excludedIds = new Set(allExcluded);
-  const pendingTracks = (rawTracks || []).filter((t: any) => !excludedIds.has(t.id));
+  const pendingTracks = [...new Map((rawTracks || [])
+    .filter((t: any) =>
+      !excludedIds.has(t.id)
+        && t.id !== seed.track_id
+        && t.artist
+        && hasExactArtistCredits(t.artist, seed.artist),
+    )
+    .map((track: any) => [track.id, track])).values()];
 
   // Fetch user votes for these tracks
   const trackIds = pendingTracks.map((t: any) => t.id);

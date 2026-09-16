@@ -3,6 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { getServiceClient } from "@/lib/supabase";
 import { getPersonalizedCandidateTrackSummaries } from "@/lib/fyp-personalization";
 import { genreFeedCounts, seedFeedCount, type FeedAppearance } from "@/lib/filtered-feed-preparation";
+import { hasExactArtistCredits, seedMatchEvidence } from "@/lib/seed-match-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -136,7 +137,7 @@ export async function GET(req: NextRequest) {
   const appearances: FeedAppearance[] = [];
   for (let appearancePage = 0; ; appearancePage++) {
     const { data: batch, error } = await supabase.from("episode_tracks")
-      .select("episode_id,track_id")
+      .select("episode_id,track_id,track:tracks!inner(id,status,cover_art_url,artist,title,source_url,source_context,storage_path,spotify_url,youtube_url)")
       .in("episode_id", Array.from(allEpisodeIds))
       .range(appearancePage * 1000, (appearancePage + 1) * 1000 - 1);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -145,21 +146,12 @@ export async function GET(req: NextRequest) {
     if (batch.length < 1000) break;
   }
 
-  // 3. Get per-episode track stats — paginate past Supabase 1000-row cap
-  const allTracks: any[] = [];
-  let tracksPage = 0;
-  while (true) {
-    const { data: batch } = await supabase
-      .from("tracks")
-      .select("id, episode_id, status, cover_art_url, artist, title, source_url, source_context, storage_path")
-      .in("episode_id", Array.from(allEpisodeIds))
-      .range(tracksPage * 1000, (tracksPage + 1) * 1000 - 1);
-    if (!batch || batch.length === 0) break;
-    allTracks.push(...batch);
-    if (batch.length < 1000) break;
-    tracksPage++;
-  }
-  const tracks = allTracks;
+  // 3. Build per-episode appearance rows from the canonical junction. A track's
+  // legacy tracks.episode_id points only to its first-discovered episode.
+  const tracks = (appearances as any[]).flatMap((appearance) => {
+    const track = Array.isArray(appearance.track) ? appearance.track[0] : appearance.track;
+    return track ? [{ ...track, episode_id: appearance.episode_id }] : [];
+  });
 
   // Get user's votes for these tracks
   const allTrackIds = tracks.map((t: any) => t.id);
@@ -184,67 +176,54 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Aggregate stats per episode using user_tracks votes
-  const episodeStats: Record<string, {
-    pending: number; approved: number; rejected: number; total: number;
-    playable: number; processing: number; unavailable: number;
-    cover_art_url: string | null;
-    sample_tracks: { artist: string; title: string }[];
-  }> = {};
-
-  for (const t of (tracks || []) as any[]) {
-    const epId = t.episode_id;
-    if (!epId) continue;
-
-    if (!episodeStats[epId]) {
-      episodeStats[epId] = { pending: 0, approved: 0, rejected: 0, total: 0, playable: 0, processing: 0, unavailable: 0, cover_art_url: null, sample_tracks: [] };
-    }
-
-    const s = episodeStats[epId];
-    s.total++;
-    if (t.storage_path) s.playable++;
-
-    // Use user's vote status, fall back to pipeline status
-    const userVote = userVoteMap.get(t.id);
-    const effectiveStatus = userVote && userVote !== "pending" ? userVote : t.status;
-
-    if (effectiveStatus === "approved") s.approved++;
-    else if (effectiveStatus === "rejected") s.rejected++;
-    else if (effectiveStatus === "pending") s.pending++;
-
-    // Processing: pending enrichment or download (no storage_path yet, not terminal)
-    if (t.status === "pending" && !t.storage_path) s.processing++;
-    // Unavailable: skipped, failed, or dead-end (pipeline states)
-    if (t.status === "skipped" || t.status === "failed" ||
-        (t.status !== "pending" && t.status !== "approved" && t.status !== "rejected" && !t.storage_path)) {
-      s.unavailable++;
-    }
-
-    if (!s.cover_art_url && t.cover_art_url) s.cover_art_url = t.cover_art_url;
-    // Sample tracks: unvoted by this user
-    if (s.sample_tracks.length < 3 && (!userVote || userVote === "pending")) {
-      s.sample_tracks.push({ artist: t.artist, title: t.title });
-    }
-  }
-
-  // 4. Build per-episode, per-artist matched tracks for artist-only episodes
-  // Key: `${episodeId}::${artistLower}` → tracks by that artist in that episode
-  const artistTracksByEpisode: Record<string, { artist: string; title: string }[]> = {};
-  // Also track cover art by artist (across all episodes) for fallback
+  // Keep a same-artist cover fallback without treating unrelated episode tracks as stack members.
   const artistCoverArt: Record<string, string> = {};
   for (const t of (tracks || []) as any[]) {
     if (!t.episode_id) continue;
-    const key = `${t.episode_id}::${(t.artist || "").toLowerCase()}`;
-    if (!artistTracksByEpisode[key]) artistTracksByEpisode[key] = [];
-    if (artistTracksByEpisode[key].length < 5) {
-      artistTracksByEpisode[key].push({ artist: t.artist, title: t.title });
-    }
-    // Save first cover art we find for each artist
     const artistLower = (t.artist || "").toLowerCase();
     if (t.cover_art_url && !artistCoverArt[artistLower]) {
       artistCoverArt[artistLower] = t.cover_art_url;
     }
   }
+
+  const statsForSeedEpisode = (episodeId: string, seedArtist: string) => {
+    const matchingTracks = (tracks || []).filter((track: any) =>
+      track.episode_id === episodeId
+      && track.artist
+      && hasExactArtistCredits(track.artist, seedArtist)
+    );
+    const stats = {
+      pending: 0,
+      approved: 0,
+      rejected: 0,
+      total: 0,
+      playable: 0,
+      processing: 0,
+      unavailable: 0,
+      cover_art_url: null as string | null,
+      sample_tracks: [] as { artist: string; title: string }[],
+    };
+    for (const track of matchingTracks) {
+      stats.total++;
+      if (track.storage_path) stats.playable++;
+      const userVote = userVoteMap.get(track.id);
+      const effectiveStatus = userVote && userVote !== "pending" ? userVote : track.status;
+      if (effectiveStatus === "approved") stats.approved++;
+      else if (effectiveStatus === "rejected") stats.rejected++;
+      else if (effectiveStatus === "pending") stats.pending++;
+      if (track.status === "pending" && !track.storage_path) stats.processing++;
+      if (track.status === "skipped" || track.status === "failed"
+          || (track.status !== "pending" && track.status !== "approved"
+            && track.status !== "rejected" && !track.storage_path)) {
+        stats.unavailable++;
+      }
+      if (!stats.cover_art_url && track.cover_art_url) stats.cover_art_url = track.cover_art_url;
+      if (stats.sample_tracks.length < 3 && (!userVote || userVote === "pending")) {
+        stats.sample_tracks.push({ artist: track.artist, title: track.title });
+      }
+    }
+    return { stats, matchingTracks };
+  };
 
   // 5. Build response: seeds with enriched episodes
   let globalPending = 0;
@@ -252,16 +231,24 @@ export async function GET(req: NextRequest) {
   const stacks = (seeds || []).map((seed) => {
     const seedArtistLower = (seed.artist || "").toLowerCase();
     const linkedEpisodes = episodesBySeed[seed.id] || [];
+    const linkedEpisodeIds = new Set(linkedEpisodes.map((episode) => episode.id));
+    const eligibleAppearances = (appearances as any[]).filter((appearance) => {
+      if (!linkedEpisodeIds.has(appearance.episode_id)) return false;
+      const track = Array.isArray(appearance.track) ? appearance.track[0] : appearance.track;
+      return Boolean(track?.artist && hasExactArtistCredits(track.artist, seed.artist));
+    });
     const eps = linkedEpisodes
       .filter((ep) => !ep.skipped)
       .map((ep) => {
-        const stats = episodeStats[ep.id] || { pending: 0, approved: 0, rejected: 0, total: 0, playable: 0, processing: 0, unavailable: 0, cover_art_url: null, sample_tracks: [] };
-        // For artist-only matches, show which tracks by that artist are in this episode
-        const matched_tracks = ep.match_type !== "full"
-          ? (artistTracksByEpisode[`${ep.id}::${seedArtistLower}`] || [])
+        const { stats, matchingTracks } = statsForSeedEpisode(ep.id, seed.artist);
+        const evidence = seedMatchEvidence(seed.artist, seed.title, matchingTracks);
+        // For artist-only matches, show the tracks with the seed's exact artist credit set.
+        const matched_tracks = evidence?.matchType !== "full"
+          ? matchingTracks.slice(0, 5).map((track: any) => ({ artist: track.artist, title: track.title }))
           : [];
-        return { ...ep, ...stats, matched_tracks };
+        return { ...ep, match_type: evidence?.matchType || "unknown", ...stats, matched_tracks };
       })
+      .filter((ep) => ep.total > 0)
       .sort((a, b) => b.pending - a.pending); // pending-heavy first
 
     const totalPending = eps.reduce((s, e) => s + e.pending, 0);
@@ -273,8 +260,8 @@ export async function GET(req: NextRequest) {
     const totalUnavailable = eps.reduce((s, e) => s + e.unavailable, 0);
     const feedCount = seedFeedCount(
       candidates,
-      linkedEpisodes.map((episode) => episode.id),
-      appearances,
+      eps.map((episode) => episode.id),
+      eligibleAppearances,
       seed.track_id,
     );
     globalPending += totalPending;

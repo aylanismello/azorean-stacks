@@ -4,6 +4,7 @@ import { getServiceClient } from "@/lib/supabase";
 import { getPersonalizedCandidateTrackSummaries } from "@/lib/fyp-personalization";
 import { seedFeedCount } from "@/lib/filtered-feed-preparation";
 import { buildSeedMatchSummary } from "@/lib/seed-match-summary";
+import { hasExactArtistCredits, seedMatchEvidence } from "@/lib/seed-match-evidence";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,8 @@ export async function GET(req: NextRequest) {
     const { data: episodeLinks } = await supabase
       .from("episode_seeds")
       .select("seed_id, match_type, episodes(id, title, url, source, aired_date)")
-      .in("seed_id", seedIds);
+      .in("seed_id", seedIds)
+      .in("match_type", ["full", "artist"]);
 
     (episodeLinks || []).forEach((link: any) => {
       if (!link.episodes) return;
@@ -172,13 +174,13 @@ export async function GET(req: NextRequest) {
     });
 
     // Artist-match tracks: only fetch artist+title for non-"full" match episodes
-    const artistMatchEpisodes: { episodeId: string; seedArtist: string }[] = [];
+    const artistMatchEpisodes: { episodeId: string; seedId: string; seedArtist: string }[] = [];
     for (const [seedId, eps] of Object.entries(episodesBySeed)) {
       const seed = (data || []).find((s) => s.id === seedId);
       if (!seed) continue;
       for (const ep of eps) {
         if (ep.match_type !== "full") {
-          artistMatchEpisodes.push({ episodeId: ep.id, seedArtist: (seed.artist || "").toLowerCase() });
+          artistMatchEpisodes.push({ episodeId: ep.id, seedId, seedArtist: seed.artist || "" });
         }
       }
     }
@@ -201,10 +203,9 @@ export async function GET(req: NextRequest) {
 
       for (const row of artistTracks as any[]) {
         if (!row.tracks?.artist) continue;
-        const rowArtistLower = (row.tracks.artist as string).toLowerCase();
         for (const am of artistMatchEpisodes) {
-          if (row.episode_id === am.episodeId && rowArtistLower === am.seedArtist) {
-            const key = `${row.episode_id}::${am.seedArtist}`;
+          if (row.episode_id === am.episodeId && hasExactArtistCredits(row.tracks.artist, am.seedArtist)) {
+            const key = `${row.episode_id}::${am.seedId}`;
             if (!artistTracksByEpisode[key]) artistTracksByEpisode[key] = [];
             if (artistTracksByEpisode[key].length < 5) {
               artistTracksByEpisode[key].push({ artist: row.tracks.artist, title: row.tracks.title });
@@ -246,34 +247,55 @@ export async function GET(req: NextRequest) {
   });
 
   const seedsWithCounts = (data || []).map((seed) => {
-    const seedArtistLower = (seed.artist || "").toLowerCase();
-    const episodes = (episodesBySeed[seed.id] || []).map((ep) => ({
-      ...ep,
-      matched_tracks: ep.match_type !== "full"
-        ? (artistTracksByEpisode[`${ep.id}::${seedArtistLower}`] || [])
-        : [],
-      track_count: episodeTrackStats[ep.id]?.total ?? 0,
-      // enriched_count = tracks with Spotify/YouTube URLs (metadata enriched)
-      enriched_count: episodeTrackStats[ep.id]?.enriched ?? 0,
-      // downloaded_count = tracks with local audio file (storage_path set)
-      downloaded_count: episodeTrackStats[ep.id]?.with_audio ?? 0,
-    }));
+    const linkedEpisodes = episodesBySeed[seed.id] || [];
+    const linkedEpisodeIds = new Set(linkedEpisodes.map((episode) => episode.id));
+    const eligibleStatsRows = allStatsRows.filter((row) =>
+      linkedEpisodeIds.has(row.episode_id)
+      && row.artist
+      && hasExactArtistCredits(row.artist, seed.artist)
+    );
+    const eligibleStatsByEpisode = new Map<string, { total: number; enriched: number; downloaded: number }>();
+    for (const row of eligibleStatsRows) {
+      const stats = eligibleStatsByEpisode.get(row.episode_id) || { total: 0, enriched: 0, downloaded: 0 };
+      stats.total++;
+      if (row.spotify_url || row.youtube_url) stats.enriched++;
+      if (row.storage_path) stats.downloaded++;
+      eligibleStatsByEpisode.set(row.episode_id, stats);
+    }
+    const episodes = linkedEpisodes
+      .filter((ep) => eligibleStatsByEpisode.has(ep.id))
+      .map((ep) => {
+        const matchingRows = eligibleStatsRows.filter((row) => row.episode_id === ep.id);
+        const evidence = seedMatchEvidence(seed.artist, seed.title, matchingRows);
+        return {
+          ...ep,
+          match_type: evidence?.matchType || "unknown",
+          matched_tracks: evidence?.matchType !== "full"
+            ? (artistTracksByEpisode[`${ep.id}::${seed.id}`] || [])
+            : [],
+          track_count: eligibleStatsByEpisode.get(ep.id)?.total ?? 0,
+          // enriched_count = tracks with Spotify/YouTube URLs (metadata enriched)
+          enriched_count: eligibleStatsByEpisode.get(ep.id)?.enriched ?? 0,
+          // downloaded_count = tracks with local audio file (storage_path set)
+          downloaded_count: eligibleStatsByEpisode.get(ep.id)?.downloaded ?? 0,
+        };
+      });
 
     // Aggregate stats across all episodes for this seed
     let totalTracks = 0, totalEnriched = 0, totalDownloaded = 0;
     for (const ep of episodes) {
-      const epStats = episodeTrackStats[ep.id];
+      const epStats = eligibleStatsByEpisode.get(ep.id);
       if (epStats) {
         totalTracks += epStats.total;
         totalEnriched += epStats.enriched;
-        totalDownloaded += epStats.with_audio;
+        totalDownloaded += epStats.downloaded;
       }
     }
 
     const feedCount = seedFeedCount(
       feedCandidates,
       episodes.map((episode) => episode.id),
-      allStatsRows,
+      eligibleStatsRows,
       seed.track_id,
     );
 
@@ -354,41 +376,53 @@ export async function DELETE(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-// Resolve a Spotify URL to artist + title (no API key needed)
+function spotifyTrackId(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const index = parts.indexOf("track");
+    return index >= 0 && parts[index + 1] ? parts[index + 1] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function spotifyClientToken(): Promise<string | null> {
+  const clientId = process.env.SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  const response = await fetch("https://accounts.spotify.com/api/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+    },
+    body: "grant_type=client_credentials",
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) return null;
+  const body = await response.json();
+  return typeof body.access_token === "string" ? body.access_token : null;
+}
+
+// Resolve the canonical Spotify object so every credited artist is preserved.
 async function resolveSpotifyUrl(url: string): Promise<{ artist: string; title: string } | null> {
   try {
-    // Fetch the Spotify page HTML — <title> has format: "Track - song and lyrics by Artist | Spotify"
-    // og:description has: "Artist · Album · Song · Year"
-    const res = await fetch(url, {
+    const trackId = spotifyTrackId(url);
+    const token = await spotifyClientToken();
+    if (!trackId || !token) return null;
+    const res = await fetch(`https://api.spotify.com/v1/tracks/${encodeURIComponent(trackId)}`, {
       signal: AbortSignal.timeout(8000),
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; bot)" },
-      redirect: "follow",
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) return null;
-    const html = await res.text();
-
-    // Try <title> first: "Track Name - song and lyrics by Artist | Spotify"
-    const titleMatch = html.match(/<title>(.+?)<\/title>/);
-    if (titleMatch) {
-      const raw = titleMatch[1];
-      const m = raw.match(/^(.+?)\s+-\s+song and lyrics by\s+(.+?)\s*\|\s*Spotify$/i)
-        || raw.match(/^(.+?)\s+by\s+(.+?)\s*\|\s*Spotify$/i);
-      if (m) {
-        return { title: m[1].trim(), artist: m[2].trim() };
-      }
-    }
-
-    // Fallback: og:description "Artist · Album · Song · Year" + og:title for track name
-    const ogTitle = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
-    const ogDesc = html.match(/<meta\s+property="og:description"\s+content="([^"]+)"/);
-    if (ogTitle && ogDesc) {
-      const artist = ogDesc[1].split("·")[0].trim();
-      if (artist) {
-        return { title: ogTitle[1].trim(), artist };
-      }
-    }
-
-    return null;
+    const body = await res.json();
+    const title = typeof body.name === "string" ? body.name.trim() : "";
+    const artist = (body.artists || [])
+      .map((credit: { name?: string }) => credit.name?.trim())
+      .filter(Boolean)
+      .join(", ");
+    return title && artist ? { title, artist } : null;
   } catch {
     return null;
   }

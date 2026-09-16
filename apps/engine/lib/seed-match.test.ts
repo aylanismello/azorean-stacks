@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   artistCreditKeys,
   classifySeedTracklist,
-  hasArtistCreditMatch,
+  hasExactArtistCredits,
   isSameSeedTrack,
   seedMatchStrength,
 } from "./seed-match";
@@ -10,18 +10,13 @@ import {
 describe("seed tracklist matching", () => {
   const seed = { artist: "Ludwig Göransson", title: "Ithaca" };
 
-  test("recognizes a seed artist inside a collaboration credit", () => {
+  test("rejects an added collaborator for a solo-artist seed", () => {
     const result = classifySeedTracklist([
       { artist: "Ludwig Göransson, Busiswa", title: "We Know What You Whisper" },
       { artist: "Other Artist", title: "Elsewhere" },
     ], seed);
 
-    expect(result).toEqual({
-      matchType: "artist",
-      matchedTracks: [
-        { artist: "Ludwig Göransson, Busiswa", title: "We Know What You Whisper" },
-      ],
-    });
+    expect(result).toBeNull();
   });
 
   test("exact song wins over other same-artist tracks", () => {
@@ -45,9 +40,12 @@ describe("seed tracklist matching", () => {
     ], seed)).toBeNull();
   });
 
-  test("supports multi-artist seeds while keeping exact matches stronger", () => {
-    expect(hasArtistCreditMatch("Frikstailers", "El Guincho, Frikstailers")).toBe(true);
-    expect(artistCreditKeys("Ludwig Göransson feat. Busiswa")).toContain("ludwiggoransson");
+  test("supports the same multi-artist credit set in any order", () => {
+    expect(hasExactArtistCredits("Frikstailers, El Guincho", "El Guincho & Frikstailers")).toBe(true);
+    expect(hasExactArtistCredits("Frikstailers", "El Guincho, Frikstailers")).toBe(false);
+    expect(artistCreditKeys("Ludwig Göransson feat. Busiswa")).toEqual(
+      new Set(["ludwiggoransson", "busiswa"]),
+    );
     expect(seedMatchStrength("full")).toBeGreaterThan(seedMatchStrength("artist"));
   });
 });

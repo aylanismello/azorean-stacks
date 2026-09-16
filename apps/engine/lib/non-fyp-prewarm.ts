@@ -1,8 +1,11 @@
+import { hasExactArtistCredits } from "./seed-match";
+
 const PAGE_SIZE = 1000;
 export const NON_FYP_PREWARM_TTL_HOURS = 30;
 
 interface Candidate {
   id: string;
+  artist?: string | null;
   storage_path?: string | null;
   youtube_url?: string | null;
   source_url?: string | null;
@@ -13,6 +16,7 @@ interface Candidate {
 
 interface SeedRow {
   id: string;
+  artist?: string | null;
   track_id?: string | null;
 }
 
@@ -92,7 +96,13 @@ export function selectNonFypPrewarmTargets(
     }
     if (seed.track_id) allowed.add(seed.track_id);
     for (const track of candidates) {
-      if (allowed.has(track.id)) add(`seed:${seed.id}`, track);
+      if (allowed.has(track.id)
+          && track.artist
+          && seed.artist
+          && hasExactArtistCredits(track.artist, seed.artist)
+          && track.id !== seed.track_id) {
+        add(`seed:${seed.id}`, track);
+      }
     }
   }
 
@@ -216,7 +226,7 @@ export async function prewarmNonFypStacks(
     try {
       const candidates = await loadPersonalizedCandidateTracks(db, userId);
       const seedsResult = await db.from("seeds")
-        .select("id,track_id")
+        .select("id,track_id,artist")
         .eq("user_id", userId)
         .eq("active", true);
       if (seedsResult.error) throw new Error(seedsResult.error.message);

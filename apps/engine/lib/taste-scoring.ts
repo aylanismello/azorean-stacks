@@ -1,3 +1,5 @@
+import { hasExactArtistCredits } from "./seed-match";
+
 export interface YieldAccumulator {
   positive: number;
   negative: number;
@@ -21,10 +23,12 @@ export interface EpisodeSeedLink {
 export interface SeedRecord {
   id: string;
   track_id?: string | null;
+  artist?: string | null;
 }
 
 export interface TrackLineageInput {
   id: string;
+  artist?: string | null;
   episode_id?: string | null;
   seed_track_id?: string | null;
   metadata?: Record<string, unknown> | null;
@@ -160,6 +164,11 @@ export function buildTrackSeedLineage(
   seeds: SeedRecord[]
 ): Map<string, Map<string, string>> {
   const allowedSeedIds = new Set(seeds.map((seed) => seed.id));
+  const seedById = new Map(seeds.map((seed) => [seed.id, seed]));
+  const creditsMatch = (track: TrackLineageInput, seedId: string) => {
+    const seed = seedById.get(seedId);
+    return Boolean(track.artist && seed?.artist && hasExactArtistCredits(track.artist, seed.artist));
+  };
   const seedIdsByTrackId = new Map<string, string[]>();
   for (const seed of seeds) {
     if (!seed.track_id) continue;
@@ -183,16 +192,18 @@ export function buildTrackSeedLineage(
     const lineage = new Map<string, string>();
     for (const episodeId of episodesByTrack.get(track.id) || []) {
       for (const link of seedsByEpisode.get(episodeId) || []) {
+        if (!creditsMatch(track, link.seed_id)) continue;
         lineage.set(link.seed_id, strongerMatchType(lineage.get(link.seed_id), link.match_type || "unknown"));
       }
     }
 
     const metadataSeedId = typeof track.metadata?.seed_id === "string" ? track.metadata.seed_id : null;
-    if (metadataSeedId && allowedSeedIds.has(metadataSeedId)) {
+    if (metadataSeedId && allowedSeedIds.has(metadataSeedId) && creditsMatch(track, metadataSeedId)) {
       lineage.set(metadataSeedId, strongerMatchType(lineage.get(metadataSeedId), "unknown"));
     }
     if (track.seed_track_id) {
       for (const seedId of seedIdsByTrackId.get(track.seed_track_id) || []) {
+        if (!creditsMatch(track, seedId)) continue;
         lineage.set(seedId, strongerMatchType(lineage.get(seedId), "full"));
       }
     }

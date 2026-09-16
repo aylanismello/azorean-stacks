@@ -2,15 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { seedMatchEvidence } from "./seed-match-evidence";
 
 describe("seed match evidence", () => {
-  test("names the actual collaboration track behind an artist match", () => {
+  test("rejects a collaboration for a solo-artist seed", () => {
     expect(seedMatchEvidence("Ludwig Göransson", "Ithaca", [
       { artist: "Ludwig Göransson, Busiswa", title: "We Know What You Whisper" },
       { artist: "Other Artist", title: "Elsewhere" },
+    ])).toBeNull();
+  });
+
+  test("names the actual solo-artist track behind an artist match", () => {
+    expect(seedMatchEvidence("Ludwig Göransson", "Ithaca", [
+      { artist: "Ludwig Göransson", title: "Sator" },
     ])).toEqual({
       matchType: "artist",
       matchedTrack: {
-        artist: "Ludwig Göransson, Busiswa",
-        title: "We Know What You Whisper",
+        artist: "Ludwig Göransson",
+        title: "Sator",
       },
     });
   });

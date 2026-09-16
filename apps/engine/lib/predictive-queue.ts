@@ -1,6 +1,7 @@
 import { getSupabase } from "./supabase";
 import { applySonicAffinityRanking } from "./sonic-ranking";
 import { episodeContextKey } from "./taste-scoring";
+import { hasExactArtistCredits } from "./seed-match";
 
 export const QUEUE_TARGET = Number(process.env.AUDIO_QUEUE_TARGET || 50);
 export const WARM_TARGET = Number(process.env.AUDIO_WARM_TARGET || 20);
@@ -484,7 +485,7 @@ async function activeQueueCandidates(
 
 async function seedCandidateTrackIds(db: Db, userId: string, seedId?: string | null): Promise<Set<string>> {
   let seedQuery = db.from("seeds")
-    .select("id")
+    .select("id,artist,track_id")
     .eq("user_id", userId)
     .eq("active", true);
   seedQuery = seedId
@@ -503,12 +504,16 @@ async function seedCandidateTrackIds(db: Db, userId: string, seedId?: string | n
   const trackIds = new Set<string>();
   for (let start = 0; start < episodeIds.length; start += 300) {
     const tracksResult = await db.from("episode_tracks")
-      .select("track_id")
+      .select("track_id,track:tracks!inner(artist)")
       .in("episode_id", episodeIds.slice(start, start + 300));
     for (const row of requireOk(tracksResult, "latest seed candidate lookup")) {
-      if (row.track_id) trackIds.add(row.track_id);
+      const track = Array.isArray((row as any).track) ? (row as any).track[0] : (row as any).track;
+      if (row.track_id && track?.artist && hasExactArtistCredits(track.artist, seedResult.data.artist)) {
+        trackIds.add(row.track_id);
+      }
     }
   }
+  if (seedResult.data.track_id) trackIds.delete(seedResult.data.track_id);
   return trackIds;
 }
 

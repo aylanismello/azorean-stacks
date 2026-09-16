@@ -82,9 +82,9 @@ describe("indexTrackEpisodes", () => {
 });
 
 describe("buildTrackSeedLineage", () => {
-  test("attributes all user-scoped episode appearances without leaking foreign seeds", () => {
+  test("attributes only complete-credit matches without leaking foreign seeds", () => {
     const lineage = buildTrackSeedLineage(
-      [{ id: "track-1" }],
+      [{ id: "track-1", artist: "Ludwig Göransson" }],
       [
         { track_id: "track-1", episode_id: "episode-a" },
         { track_id: "track-1", episode_id: "episode-b" },
@@ -94,8 +94,16 @@ describe("buildTrackSeedLineage", () => {
         { episode_id: "episode-b", seed_id: "owned", match_type: "full" },
         { episode_id: "episode-b", seed_id: "foreign", match_type: "full" },
       ],
-      [{ id: "owned" }],
+      [{ id: "owned", artist: "Ludwig Göransson" }],
     );
     expect([...lineage.get("track-1")!]).toEqual([["owned", "full"]]);
+
+    const collaboration = buildTrackSeedLineage(
+      [{ id: "track-2", artist: "Ludwig Göransson, Busiswa" }],
+      [{ track_id: "track-2", episode_id: "episode-a" }],
+      [{ episode_id: "episode-a", seed_id: "owned", match_type: "artist" }],
+      [{ id: "owned", artist: "Ludwig Göransson" }],
+    );
+    expect([...collaboration.get("track-2")!]).toEqual([]);
   });
 });
